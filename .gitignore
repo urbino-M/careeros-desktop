@@ -1,0 +1,56 @@
+# Rust / Tauri build artifacts
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+**/*.rs.bk
+
+# Bundled third-party runtimes stay local and are attached to releases separately
+/src-tauri/resources/runtime/codex
+/src-tauri/resources/runtime/typst
+
+# Node / frontend build artifacts
+/node_modules/
+/dist/
+/build/
+/.next/
+/.vite/
+
+# Environment files and private credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+**/credentials.json
+**/client_secret*.json
+**/token.json
+
+# Runtime databases and user-generated material
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+/output/
+/tmp/
+/backups/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+
+# IDE and editor files
+/.idea/
+/.vscode/
+*.swp
+*.swo

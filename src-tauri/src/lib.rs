@@ -1,0 +1,408 @@
+#![recursion_limit = "256"]
+
+mod codex;
+mod cover_letter;
+mod cv_schema;
+mod db;
+mod gmail;
+mod materials;
+mod migration;
+mod models;
+mod paths;
+mod providers;
+mod scheduler;
+mod secrets;
+mod typst;
+mod workflows;
+
+use codex::CodexManager;
+use base64::Engine;
+use models::{
+    DashboardData, GmailDraftInfo, GmailOAuthStart, GmailStatus, JobGroups,
+    InboundReplyRequest, MigrationReport, ProviderInfo, ReplyItem, TargetCard,
+    TargetDetail, TaskModelDefault,
+};
+use paths::AppPaths;
+use scheduler::{EnqueueRequest, Scheduler};
+use serde_json::Value;
+use std::sync::Arc;
+use tauri::Manager;
+
+pub struct AppState {
+    paths: AppPaths,
+    migration: MigrationReport,
+    scheduler: Arc<Scheduler>,
+    codex: Arc<CodexManager>,
+    gmail: Arc<gmail::GmailManager>,
+}
+
+#[tauri::command]
+fn get_migration_report(state: tauri::State<'_, AppState>) -> MigrationReport {
+    state.migration.clone()
+}
+
+#[tauri::command]
+fn get_app_paths(state: tauri::State<'_, AppState>) -> AppPaths {
+    state.paths.clone()
+}
+
+#[tauri::command]
+fn get_dashboard(state: tauri::State<'_, AppState>) -> Result<DashboardData, String> {
+    db::dashboard(&state.paths.database).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_contact_targets(
+    state: tauri::State<'_, AppState>,
+    status: Option<String>,
+    search: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<Vec<TargetCard>, String> {
+    db::list_targets(
+        &state.paths.database,
+        status.as_deref(),
+        search.as_deref(),
+        offset.unwrap_or(0),
+        limit.unwrap_or(20),
+    )
+    .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_contact_target(
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+) -> Result<TargetDetail, String> {
+    db::target_detail(&state.paths.database, &state.paths.data_root, &target_id)
+        .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn set_contact_status(
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+    status: String,
+) -> Result<(), String> {
+    db::update_target_status(&state.paths.database, &target_id, &status).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn read_material_text(
+    state: tauri::State<'_, AppState>,
+    artifact_path: String,
+) -> Result<String, String> {
+    db::read_artifact(&state.paths, &artifact_path).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn read_pdf_preview(
+    state: tauri::State<'_, AppState>,
+    artifact_path: String,
+) -> Result<String, String> {
+    let bytes = db::read_pdf_preview(&state.paths, &artifact_path).map_err(display_error)?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+#[tauri::command]
+async fn save_manual_material(
+    state: tauri::State<'_, AppState>,
+    request: materials::ManualRevisionRequest,
+) -> Result<materials::RevisionResult, String> {
+    let result = materials::save_manual(&state.paths, &request).map_err(display_error)?;
+    if request.artifact_type == "cv_data" {
+        typst::generate_cv(&state.paths, &request.target_id)
+            .await
+            .map_err(display_error)?;
+    } else if request.artifact_type == "cover_letter_text" {
+        cover_letter::regenerate_from_text(&state.paths, &request.target_id)
+            .await
+            .map_err(display_error)?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn save_inbound_reply(
+    state: tauri::State<'_, AppState>,
+    request: InboundReplyRequest,
+) -> Result<ReplyItem, String> {
+    db::save_inbound_reply(&state.paths.database, &request).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn generate_typst_cv(
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+) -> Result<typst::CvGenerationResult, String> {
+    typst::generate_cv(&state.paths, &target_id)
+        .await
+        .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn generate_cover_letter(
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+) -> Result<cover_letter::CoverLetterGenerationResult, String> {
+    cover_letter::generate(&state.paths, &target_id)
+        .await
+        .map_err(display_error)
+}
+
+#[tauri::command]
+fn get_model_providers(state: tauri::State<'_, AppState>) -> Result<Vec<ProviderInfo>, String> {
+    db::providers(&state.paths.database).map_err(display_error)
+}
+
+#[tauri::command]
+fn get_task_model_defaults(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<TaskModelDefault>, String> {
+    db::task_defaults(&state.paths.database).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn save_task_model_default(
+    state: tauri::State<'_, AppState>,
+    value: TaskModelDefault,
+) -> Result<(), String> {
+    db::save_task_default(&state.paths.database, &value).map_err(display_error)
+}
+
+#[tauri::command]
+fn get_jobs(
+    state: tauri::State<'_, AppState>,
+    page_size: Option<usize>,
+) -> Result<JobGroups, String> {
+    db::job_groups(&state.paths.database, page_size.unwrap_or(5)).map_err(display_error)
+}
+
+#[tauri::command]
+fn enqueue_job(
+    state: tauri::State<'_, AppState>,
+    request: EnqueueRequest,
+) -> Result<String, String> {
+    state.scheduler.enqueue(request).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn cancel_job(state: tauri::State<'_, AppState>, job_id: String) -> Result<(), String> {
+    state.scheduler.cancel(&job_id).await.map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn retry_job(state: tauri::State<'_, AppState>, job_id: String) -> Result<(), String> {
+    state.scheduler.retry(&job_id).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn approve_job(state: tauri::State<'_, AppState>, job_id: String) -> Result<(), String> {
+    state.scheduler.approve(&job_id).map_err(display_error)
+}
+
+#[tauri::command]
+async fn get_codex_account(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    state.codex.account_status().await.map_err(display_error)
+}
+
+#[tauri::command]
+async fn get_codex_models(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    state.codex.model_list().await.map_err(display_error)
+}
+
+#[tauri::command]
+async fn connect_chatgpt(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    state.codex.start_chatgpt_login().await.map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn wait_for_chatgpt_login(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    login_id: String,
+) -> Result<Value, String> {
+    let account = state
+        .codex
+        .wait_for_chatgpt_login(&login_id)
+        .await
+        .map_err(display_error)?;
+    db::set_openai_auth_kind(&state.paths.database, "chatgpt_oauth").map_err(display_error)?;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    Ok(account)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn save_openai_api_key(
+    state: tauri::State<'_, AppState>,
+    api_key: String,
+) -> Result<Value, String> {
+    if !api_key.starts_with("sk-") || api_key.len() < 20 {
+        return Err("API Key 格式不正确".into());
+    }
+    secrets::set_secret("openai-api-key", &api_key).map_err(display_error)?;
+    let result = state.codex.login_with_api_key(&api_key).await.map_err(display_error)?;
+    db::set_openai_auth_kind(&state.paths.database, "api_key").map_err(display_error)?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn has_openai_api_key() -> Result<bool, String> {
+    secrets::get_secret("openai-api-key")
+        .map(|value| value.is_some())
+        .map_err(display_error)
+}
+
+#[tauri::command]
+async fn remove_openai_api_key(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    secrets::delete_secret("openai-api-key").map_err(display_error)?;
+    state.codex.logout().await.map_err(display_error)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_gmail_status(state: tauri::State<'_, AppState>) -> Result<GmailStatus, String> {
+    state.gmail.status().map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn import_gmail_client(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    state
+        .gmail
+        .import_client_file(std::path::Path::new(&path))
+        .map_err(display_error)
+}
+
+#[tauri::command]
+fn import_legacy_gmail(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    state.gmail.import_legacy_credentials().map_err(display_error)
+}
+
+#[tauri::command]
+async fn start_gmail_oauth(
+    state: tauri::State<'_, AppState>,
+) -> Result<GmailOAuthStart, String> {
+    state.gmail.start_oauth().await.map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn approve_cv_for_gmail(
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+) -> Result<String, String> {
+    state.gmail.approve_cv(&target_id).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_cv_approval(
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+) -> Result<bool, String> {
+    state.gmail.cv_approval_status(&target_id).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn create_gmail_draft(
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+    recipient: String,
+    subject: String,
+    body: String,
+) -> Result<GmailDraftInfo, String> {
+    state
+        .gmail
+        .create_draft(&target_id, &recipient, &subject, &body)
+        .await
+        .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn list_gmail_drafts(
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+) -> Result<Vec<GmailDraftInfo>, String> {
+    state.gmail.list_drafts(&target_id).map_err(display_error)
+}
+
+pub fn run() {
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let paths = AppPaths::resolve()?;
+            let migration = migration::initialize(&paths)?;
+            let codex = Arc::new(CodexManager::new(paths.clone()));
+            let gmail = Arc::new(gmail::GmailManager::new(paths.clone()));
+            let scheduler = Arc::new(Scheduler::new(
+                paths.clone(),
+                codex.clone(),
+                Some(app.handle().clone()),
+            ));
+            scheduler.start()?;
+            app.manage(AppState {
+                paths,
+                migration,
+                scheduler,
+                codex,
+                gmail,
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_migration_report,
+            get_app_paths,
+            get_dashboard,
+            get_contact_targets,
+            get_contact_target,
+            set_contact_status,
+            read_material_text,
+            read_pdf_preview,
+            save_manual_material,
+            save_inbound_reply,
+            generate_typst_cv,
+            generate_cover_letter,
+            get_model_providers,
+            get_task_model_defaults,
+            save_task_model_default,
+            get_jobs,
+            enqueue_job,
+            cancel_job,
+            retry_job,
+            approve_job,
+            get_codex_account,
+            get_codex_models,
+            connect_chatgpt,
+            wait_for_chatgpt_login,
+            save_openai_api_key,
+            has_openai_api_key,
+            remove_openai_api_key,
+            get_gmail_status,
+            import_gmail_client,
+            import_legacy_gmail,
+            start_gmail_oauth,
+            approve_cv_for_gmail,
+            get_cv_approval,
+            create_gmail_draft,
+            list_gmail_drafts,
+        ])
+        .build(tauri::generate_context!())
+        .expect("PostdocOS 启动失败");
+    app.run(|app_handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+        ) {
+            app_handle.state::<AppState>().scheduler.shutdown();
+        }
+    });
+}
+
+fn display_error(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}

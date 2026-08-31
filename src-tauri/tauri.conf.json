@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PostdocOS",
+  "version": "0.1.0",
+  "identifier": "com.postdocos.desktop",
+  "build": {
+    "beforeDevCommand": "./node_modules/.bin/vite --host 127.0.0.1 --port 1420",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "./node_modules/.bin/tsc && ./node_modules/.bin/vite build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "PostdocOS",
+        "width": 1440,
+        "height": 940,
+        "minWidth": 1040,
+        "minHeight": 720,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost https://accounts.google.com https://oauth2.googleapis.com https://gmail.googleapis.com; frame-src 'self' blob:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/runtime/*",
+      "resources/templates/*",
+      "resources/skills/**/*"
+    ],
+    "targets": ["app", "dmg"],
+    "category": "Productivity",
+    "shortDescription": "Research opportunity and application workspace",
+    "longDescription": "A private, local-first workspace for postdoctoral research opportunities, application materials and agent tasks.",
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "PostdocOS Local Development"
+    }
+  }
+}
