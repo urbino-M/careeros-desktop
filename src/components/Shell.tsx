@@ -10,34 +10,29 @@ import type { AppRoute, CareerSystem, Locale } from "../types";
 
 interface ShellProps {
   route: AppRoute;
-  careerSystem: CareerSystem;
   locale: Locale;
-  onCareerSystem: (system: CareerSystem, destination?: AppRoute) => void;
   onLocale: (locale: Locale) => void;
   onNavigate: (route: AppRoute) => void;
   children: React.ReactNode;
 }
 
-function isActive(route: AppRoute, target: AppRoute) {
+function isActive(route: AppRoute, target: AppRoute, system?: CareerSystem) {
   if (target.page === "applications") {
-    return route.page === "applications" || route.page === "application";
+    return route.page === "applications" && route.careerSystem === system;
   }
   return route.page === target.page;
 }
 
 export function Shell({
   route,
-  careerSystem,
   locale,
-  onCareerSystem,
   onLocale,
   onNavigate,
   children,
 }: ShellProps) {
-  const internship = careerSystem === "internship";
   const navItems: Array<{ label: string; icon: typeof Home; route: AppRoute }> = [
     { label: "仪表盘", icon: Home, route: { page: "dashboard" } },
-    { label: internship ? "机会搜索" : "Agent 运行中心", icon: Bot, route: { page: "automation" } },
+    { label: "Agent 运行中心", icon: Bot, route: { page: "automation" } },
     { label: "设置", icon: Settings, route: { page: "settings" } },
   ];
   const applicationItems: Array<{
@@ -46,8 +41,8 @@ export function Shell({
     icon: typeof Home;
     route: Extract<AppRoute, { page: "applications" }>;
   }> = [
-    { label: "Postdoc 申请", system: "postdoc", icon: BriefcaseBusiness, route: { page: "applications", status: "ready_to_contact" } },
-    { label: "Internship 申请", system: "internship", icon: BriefcaseBusiness, route: { page: "applications", status: "all" } },
+    { label: "Postdoc 申请", system: "postdoc", icon: BriefcaseBusiness, route: { page: "applications", careerSystem: "postdoc", status: "ready_to_contact" } },
+    { label: "Internship 申请", system: "internship", icon: BriefcaseBusiness, route: { page: "applications", careerSystem: "internship", status: "all" } },
   ];
   const startDragging = (event: React.MouseEvent<HTMLElement>) => {
     if (event.button === 0) void getCurrentWindow().startDragging();
@@ -55,23 +50,15 @@ export function Shell({
   return (
     <div className="app-shell">
       <div className="window-titlebar" data-tauri-drag-region onMouseDown={startDragging}>
-        <span data-tauri-drag-region>{internship ? "INTERNOS" : "POSTDOCOS"} · LOCAL WORKSPACE</span>
+        <span data-tauri-drag-region>POSTDOCOS · LOCAL WORKSPACE</span>
       </div>
       <aside className="sidebar">
         <div className="traffic-spacer" data-tauri-drag-region onMouseDown={startDragging} />
         <div className="brand-lockup">
-          <div className="brand-mark">{internship ? "I" : "P"}</div>
+          <div className="brand-mark">P</div>
           <div>
-            <div className="brand-kicker">{internship ? "行业实习决策系统" : "研究机会决策系统"}</div>
-            <div className="brand-name">{internship ? "InternOS" : "PostdocOS"}</div>
-          </div>
-        </div>
-
-        <div className="workspace-switcher" role="group" aria-label="选择职业系统">
-          <span>选择系统</span>
-          <div>
-            <button className={!internship ? "selected" : ""} aria-pressed={!internship} onClick={() => onCareerSystem("postdoc")}>PostdocOS</button>
-            <button className={internship ? "selected" : ""} aria-pressed={internship} onClick={() => onCareerSystem("internship")}>InternOS</button>
+            <div className="brand-kicker">研究与职业机会决策系统</div>
+            <div className="brand-name">PostdocOS</div>
           </div>
         </div>
 
@@ -87,8 +74,8 @@ export function Shell({
               label={item.label}
               icon={item.icon}
               route={item.route}
-              active={careerSystem === item.system && isActive(route, item.route)}
-              onNavigate={(destination) => onCareerSystem(item.system, destination)}
+              active={isActive(route, item.route, item.system)}
+              onNavigate={onNavigate}
             />
           ))}
           <div className="nav-heading">系统</div>

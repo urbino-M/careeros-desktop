@@ -20,28 +20,17 @@ import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "../api";
 import { ModelControls, type ModelSelection } from "../components/ModelControls";
 import { ErrorState, LoadingState, StatusBadge, formatLocalTime, jobLabels } from "../components/Ui";
-import type { ApplicationTab, AppRoute, CareerSystem, JobGroups, JobSummary } from "../types";
+import type { ApplicationTab, AppRoute, JobGroups, JobSummary } from "../types";
 
 type ComposerType = "internship_search" | "full_search" | "research_pi" | "opportunity_health" | "follow_up_scan" | null;
 
-export function AutomationPage({
-  careerSystem,
-  onNavigate,
-}: {
-  careerSystem: CareerSystem;
-  onNavigate: (route: AppRoute) => void;
-}) {
-  const internshipMode = careerSystem === "internship";
+export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
   const [jobs, setJobs] = useState<JobGroups>();
   const [error, setError] = useState("");
   const [historySize, setHistorySize] = useState(5);
   const [composer, setComposer] = useState<ComposerType>(null);
   const [notice, setNotice] = useState("");
   const load = () => api.jobs(historySize).then(setJobs).catch((value) => setError(errorMessage(value)));
-
-  useEffect(() => {
-    setComposer(internshipMode ? "internship_search" : null);
-  }, [careerSystem]);
 
   useEffect(() => {
     load();
@@ -51,34 +40,17 @@ export function AutomationPage({
     return () => { window.clearInterval(timer); unlisten?.(); };
   }, [historySize]);
 
-  const visibleJobs = useMemo(() => {
-    if (!jobs) return jobs;
-    const belongsToSystem = (job: JobSummary) => internshipMode
-      ? job.jobType === "internship_search"
-      : job.jobType !== "internship_search";
-    const needsReview = jobs.needsReview.filter(belongsToSystem);
-    const recent = jobs.recent.filter(belongsToSystem);
-    const recentTotal = new Set([...needsReview, ...recent].map((job) => job.id)).size;
-    return {
-      ...jobs,
-      running: jobs.running.filter(belongsToSystem),
-      queued: jobs.queued.filter(belongsToSystem),
-      needsReview,
-      needsReviewTotal: needsReview.length,
-      recent,
-      recentTotal,
-    };
-  }, [jobs, internshipMode]);
-
   const taskHistory = useMemo(() => {
-    if (!visibleJobs) return [];
+    if (!jobs) return [];
     const seen = new Set<string>();
-    return [...visibleJobs.needsReview, ...visibleJobs.recent].filter((job) => {
+    return [...jobs.needsReview, ...jobs.recent].filter((job) => {
       if (seen.has(job.id)) return false;
       seen.add(job.id);
       return true;
     }).slice(0, historySize);
-  }, [visibleJobs, historySize]);
+  }, [jobs, historySize]);
+
+  const visibleJobs = jobs;
 
   return (
     <div className="page automation-page">
@@ -86,29 +58,23 @@ export function AutomationPage({
         <ArrowLeft size={17} /> 返回仪表盘
       </button>
       <header className="page-header automation-header">
-        <div className="eyebrow">{internshipMode ? "CAREER TRACK · INDUSTRY" : "NATIVE AGENT CONTROL"}</div>
-        <h1>{internshipMode ? "Internship Hunter" : "Agent 运行中心"}</h1>
-        <p>{internshipMode
-          ? "InternOS 独立管理行业实习：核验官方职位来源与硬性资格，结果只进入 Internship 申请工作区。"
-          : "启动研究任务、查看实时进度，并处理需要你确认的结果。最多 5 个任务并行，第 6 个自动排队。"}</p>
+        <div className="eyebrow">NATIVE AGENT CONTROL</div>
+        <h1>Agent 运行中心</h1>
+        <p>统一启动研究机会与 Internship 检索，查看实时进度，并处理需要你确认的结果。最多 5 个任务并行，第 6 个自动排队。</p>
         <div className="quick-actions">
-          {internshipMode ? <>
-            <button className="button primary" onClick={() => setComposer("internship_search")}><BriefcaseBusiness size={17} /> 寻找 Internship</button>
-            <button className="button secondary" onClick={() => onNavigate({ page: "applications", status: "all" })}><ListRestart size={17} /> 查看申请中心</button>
-            <button className="button secondary" onClick={() => setComposer("opportunity_health")}><SearchCheck size={17} /> 检查机会</button>
-          </> : <>
-            <button className="button primary" onClick={() => setComposer("full_search")}><Plus size={17} /> 新建完整检索</button>
-            <button className="button secondary" onClick={() => setComposer("research_pi")}><UserSearch size={17} /> 按姓名找机会</button>
-            <button className="button secondary" onClick={() => setComposer("opportunity_health")}><SearchCheck size={17} /> 检查机会</button>
-            <button className="button secondary" onClick={() => onNavigate({ page: "applications", status: "all" })}><ListRestart size={17} /> 选择申请刷新清单</button>
-            <button className="button secondary" onClick={() => setComposer("follow_up_scan")}><Clock3 size={17} /> 扫描跟进</button>
-            <button className="button secondary" onClick={async () => {
-              try {
-                const id = await api.enqueue({ jobType: "preference_rebuild", targetType: "preferences", payload: { source: "recorded_revisions" } });
-                setNotice(`偏好学习已加入：${id}`); load();
-              } catch (value) { setNotice(errorMessage(value)); }
-            }}><Bot size={17} /> 更新偏好</button>
-          </>}
+          <button className="button primary" onClick={() => setComposer("full_search")}><Plus size={17} /> 寻找 Postdoc 机会</button>
+          <button className="button secondary" onClick={() => setComposer("internship_search")}><BriefcaseBusiness size={17} /> 寻找 Internship</button>
+          <button className="button secondary" onClick={() => setComposer("research_pi")}><UserSearch size={17} /> 按姓名找机会</button>
+          <button className="button secondary" onClick={() => setComposer("opportunity_health")}><SearchCheck size={17} /> 检查机会</button>
+          <button className="button secondary" onClick={() => onNavigate({ page: "applications", careerSystem: "postdoc", status: "all" })}><ListRestart size={17} /> 查看 Postdoc 申请</button>
+          <button className="button secondary" onClick={() => onNavigate({ page: "applications", careerSystem: "internship", status: "all" })}><ListRestart size={17} /> 查看 Internship 申请</button>
+          <button className="button secondary" onClick={() => setComposer("follow_up_scan")}><Clock3 size={17} /> 扫描跟进</button>
+          <button className="button secondary" onClick={async () => {
+            try {
+              const id = await api.enqueue({ jobType: "preference_rebuild", targetType: "preferences", payload: { source: "recorded_revisions" } });
+              setNotice(`偏好学习已加入：${id}`); load();
+            } catch (value) { setNotice(errorMessage(value)); }
+          }}><Bot size={17} /> 更新偏好</button>
         </div>
       </header>
 
@@ -163,7 +129,7 @@ function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () 
   const finished = ["needs_review", "completed"].includes(job.status);
   return (
     <article className={`job-card ${failed ? "job-failed" : ""}`}>
-      <div className="job-card-title"><h3>{jobLabels[job.jobType] || job.jobType}</h3><StatusBadge status={job.status} /></div>
+      <div className="job-card-title"><div className="job-card-heading"><h3>{jobLabels[job.jobType] || job.jobType}</h3><span className="track-pill">{job.jobType === "internship_search" ? "Internship" : "Postdoc"}</span></div><StatusBadge status={job.status} /></div>
       <p>{failed ? job.error || "任务失败，展开技术详情查看原因。" : job.message || "任务正在处理。"}</p>
       {job.status === "running" && <div className="progress-track"><i style={{ width: `${job.progress}%` }} /></div>}
       <div className="job-meta"><span>{formatLocalTime(job.createdAt)}</span><span>{job.id}</span>{job.modelId && <span>{job.providerId} · {job.accountId || "默认账号"} · {job.modelId} · {job.reasoning}</span>}{job.threadId && <span>会话 {job.threadId}</span>}</div>
@@ -242,7 +208,7 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
   return (
     <div className="composer-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
       <section className="task-composer">
-        <div className="composer-heading"><div><span className="section-index">NEW</span><h2>{isInternship ? "寻找 Internship" : isPi ? "按姓名找机会" : isHealth ? "检查机会" : isScan ? "扫描跟进" : "新建完整检索"}</h2></div><button onClick={onClose}>关闭</button></div>
+        <div className="composer-heading"><div><span className="section-index">NEW</span><h2>{isInternship ? "寻找 Internship" : isPi ? "按姓名找机会" : isHealth ? "检查机会" : isScan ? "扫描跟进" : "寻找 Postdoc 机会"}</h2></div><button onClick={onClose}>关闭</button></div>
         <label className="field"><span>{isInternship ? "目标岗位、地点和硬性条件" : isPi ? "PI / 研究者姓名与线索" : isHealth ? "要核验的机会、URL 或范围" : isScan ? "补充要求（可选）" : "本次检索要求"}</span><textarea className="tall" autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isInternship ? "例如：2027 暑期，新加坡或远程，机器学习 / AI research internship；优先官方职位页。" : isPi ? "例如：Li Cheng，香港，水下声学" : isHealth ? "粘贴机会 URL，或说明要检查的机构与职位。" : isScan ? "例如：优先检查超过 14 天没有回复的联系人。" : "例如：检索香港和欧洲近期的水下声学、海洋机器人博士后。"} /></label>
         {["full_search", "internship_search"].includes(type) && <label className="field"><span>严格匹配阈值（只保留大于该分数）</span><input type="number" min={0} max={99} value={threshold} onChange={(event) => setThreshold(Math.min(99, Math.max(0, Number(event.target.value) || 0)))} /></label>}
         <ModelControls taskType={isPi ? "research_pi" : isHealth || isScan ? "maintenance" : "full_search"} value={model} onChange={setModel} />

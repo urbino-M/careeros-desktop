@@ -100,7 +100,11 @@ export function ApplicationDetailPage({
       <button className="back-button" onClick={() => onNavigate(
         returnPage === "automation"
           ? { page: "automation" }
-          : { page: "applications", status: internship ? target.submissionStatus : target.status },
+          : {
+            page: "applications",
+            careerSystem: internship ? "internship" : "postdoc",
+            status: internship ? target.submissionStatus : target.status,
+          },
       )}>
         <ArrowLeft size={17} /> {returnPage === "automation" ? "返回 Agent 运行中心" : "返回申请列表"}
       </button>

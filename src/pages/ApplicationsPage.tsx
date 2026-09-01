@@ -97,7 +97,7 @@ export function ApplicationsPage({
             aria-selected={activeStatus === filter}
             className={activeStatus === filter ? "selected" : ""}
             key={filter}
-            onClick={() => onNavigate({ page: "applications", status: filter })}
+            onClick={() => onNavigate({ page: "applications", careerSystem, status: filter })}
           >
             {filterLabels[filter]}
             <span>{filter === "all" ? counts.all ?? 0 : counts[filter] ?? 0}</span>
@@ -108,7 +108,7 @@ export function ApplicationsPage({
       <div className="status-explainer">
         <Mail size={18} />
         {internship
-          ? "InternOS 只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。"
+          ? "PostdocOS 的 Internship 轨道只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。"
           : "PostdocOS 将每位 PI 作为独立联系目标；状态变化不会影响其他联系人。"}
       </div>
 

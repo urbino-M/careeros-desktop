@@ -7,6 +7,23 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { ApplicationFilter, ApplicationTab, AppRoute, CareerSystem, Locale } from "./types";
 
+const applicationStatuses: ApplicationFilter[] = [
+  "ready_to_contact",
+  "contacted",
+  "replied",
+  "follow_up",
+  "shelved",
+  "not_set",
+  "portal_pending",
+  "submitted",
+  "not_required",
+  "all",
+];
+
+function isCareerSystem(value?: string): value is CareerSystem {
+  return value === "postdoc" || value === "internship";
+}
+
 function parseHash(): AppRoute {
   const hash = window.location.hash.replace(/^#\/?/, "");
   const [page, value, section, origin, job] = hash.split("/");
@@ -23,10 +40,16 @@ function parseHash(): AppRoute {
     };
   }
   if (page === "applications") {
-    const allowed = ["ready_to_contact", "contacted", "replied", "follow_up", "shelved", "not_set", "portal_pending", "submitted", "not_required", "all"];
+    const prefixed = isCareerSystem(value);
+    const careerSystem: CareerSystem = prefixed ? value : "postdoc";
+    const candidateStatus = prefixed ? section : value;
+    const fallbackStatus: ApplicationFilter = careerSystem === "internship" ? "all" : "ready_to_contact";
     return {
       page: "applications",
-      status: allowed.includes(value) ? (value as ApplicationFilter) : "ready_to_contact",
+      careerSystem,
+      status: applicationStatuses.includes(candidateStatus as ApplicationFilter)
+        ? candidateStatus as ApplicationFilter
+        : fallbackStatus,
     };
   }
   return { page: "dashboard" };
@@ -37,7 +60,7 @@ function routeHash(route: AppRoute) {
     case "dashboard": return "#/dashboard";
     case "automation": return "#/automation";
     case "settings": return "#/settings";
-    case "applications": return `#/applications/${route.status}`;
+    case "applications": return `#/applications/${route.careerSystem}/${route.status}`;
     case "application": return `#/application/${encodeURIComponent(route.targetId)}/${route.tab || "cv"}${route.returnPage ? `/${route.returnPage}` : route.jobId ? "/direct" : ""}${route.jobId ? `/${encodeURIComponent(route.jobId)}` : ""}`;
   }
 }
@@ -46,9 +69,6 @@ export default function App() {
   const [route, setRoute] = useState<AppRoute>(() => parseHash());
   const [locale, setLocale] = useState<Locale>(() =>
     localStorage.getItem("postdocos-locale") === "en" ? "en" : "zh",
-  );
-  const [careerSystem, setCareerSystem] = useState<CareerSystem>(() =>
-    localStorage.getItem("postdocos-career-system") === "internship" ? "internship" : "postdoc",
   );
 
   useEffect(() => {
@@ -69,18 +89,12 @@ export default function App() {
     localStorage.setItem("postdocos-locale", next);
   };
 
-  const changeCareerSystem = (next: CareerSystem, destination: AppRoute = { page: "dashboard" }) => {
-    setCareerSystem(next);
-    localStorage.setItem("postdocos-career-system", next);
-    navigate(destination);
-  };
-
   return (
-    <Shell route={route} careerSystem={careerSystem} locale={locale} onCareerSystem={changeCareerSystem} onLocale={changeLocale} onNavigate={navigate}>
-      {route.page === "dashboard" && <DashboardPage careerSystem={careerSystem} onNavigate={navigate} />}
-      {route.page === "automation" && <AutomationPage careerSystem={careerSystem} onNavigate={navigate} />}
+    <Shell route={route} locale={locale} onLocale={changeLocale} onNavigate={navigate}>
+      {route.page === "dashboard" && <DashboardPage onNavigate={navigate} />}
+      {route.page === "automation" && <AutomationPage onNavigate={navigate} />}
       {route.page === "applications" && (
-        <ApplicationsPage careerSystem={careerSystem} status={route.status} onNavigate={navigate} />
+        <ApplicationsPage careerSystem={route.careerSystem} status={route.status} onNavigate={navigate} />
       )}
       {route.page === "application" && (
         <ApplicationDetailPage targetId={route.targetId} initialTab={route.tab} returnPage={route.returnPage} focusJobId={route.jobId} locale={locale} onNavigate={navigate} />

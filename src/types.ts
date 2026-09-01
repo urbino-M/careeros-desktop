@@ -284,7 +284,7 @@ export type ApplicationTab =
 export type AppRoute =
   | { page: "dashboard" }
   | { page: "automation" }
-  | { page: "applications"; status: ApplicationFilter }
+  | { page: "applications"; careerSystem: CareerSystem; status: ApplicationFilter }
   | { page: "application"; targetId: string; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
   | { page: "settings" };
 

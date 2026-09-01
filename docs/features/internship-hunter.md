@@ -1,13 +1,13 @@
-# InternOS / Internship Hunter Handoff
+# Internship Hunter Handoff
 
 ## Product shape
 
-InternOS is a parallel career workspace inside the PostdocOS desktop app. The
-user selects `PostdocOS` or `InternOS` in the sidebar; the selected system
-controls the brand, dashboard, navigation, task history, and application
-filters. The two systems share the local SQLite database, Agent scheduler,
-model settings, and safety boundaries, but they do not mix opportunity records
-or workflow-specific status views.
+Internship Hunter is a second application track inside the unified PostdocOS
+desktop workspace. The sidebar keeps one PostdocOS identity and shared entries
+for the dashboard, Agent 运行中心, settings, and scheduler. Under `申请`,
+`Postdoc 申请` and `Internship 申请` are separate list entry points, so their
+opportunity records and workflow-specific status views remain distinct without
+introducing a second system selector.
 
 ## Scope
 
@@ -29,11 +29,11 @@ the repository-wide ownership map.
 
 | Area | Primary files | Responsibility |
 |---|---|---|
-| System switcher | `src/App.tsx`; `src/components/Shell.tsx` | Persisted PostdocOS / InternOS selection and system-scoped navigation |
+| Unified shell and application routing | `src/App.tsx`; `src/components/Shell.tsx` | Shared PostdocOS navigation plus explicit Postdoc / Internship application routes |
 | Entry point | `src/pages/AutomationPage.tsx` | Search request, threshold, and review navigation |
 | Runtime contract | `src-tauri/resources/skills/internship-application-agent/SKILL.md`; `src-tauri/src/materials.rs` | Evidence rules and workspace contract |
 | Domain import | `src-tauri/src/workflows.rs` | Result schema, validation, deduplication, and import |
-| Presentation | `src/pages/DashboardPage.tsx`; `src/pages/ApplicationsPage.tsx`; `src/pages/ApplicationDetailPage.tsx` | System-scoped dashboard, application filters, opportunity and checklist views |
+| Presentation | `src/pages/DashboardPage.tsx`; `src/pages/ApplicationsPage.tsx`; `src/pages/ApplicationDetailPage.tsx` | Unified dashboard overview, shared Agent center, track-specific application filters, opportunity and checklist views |
 
 ## Runtime Flow
 
@@ -97,9 +97,9 @@ is the track discriminator. No schema migration is introduced.
 The first slice uses a synthetic `Application portal` contact target so existing
 job-result routing and application views remain usable. Track-specific pipeline
 storage should replace this compatibility seam before interview/offer stages are
-added. The current system selector is intentionally small and local; account-level
-preferences and separate onboarding can be added without changing the shared
-storage boundary.
+added. The two application tracks are explicit in the UI route while remaining
+inside one shared workspace; separate onboarding can be added later without
+changing the shared storage boundary.
 
 ## Out of Scope
 
