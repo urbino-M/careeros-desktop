@@ -25,6 +25,7 @@ pub enum ContactStatus {
     Contacted,
     Replied,
     FollowUp,
+    Shelved,
 }
 
 #[allow(dead_code)]
@@ -35,6 +36,7 @@ impl ContactStatus {
             Self::Contacted => "contacted",
             Self::Replied => "replied",
             Self::FollowUp => "follow_up",
+            Self::Shelved => "shelved",
         }
     }
 }
@@ -70,6 +72,7 @@ pub struct TargetCard {
     pub fit_score: Option<f64>,
     pub priority: i64,
     pub status: String,
+    pub submission_status: String,
     pub deadline: Option<String>,
     pub source_url: Option<String>,
     pub updated_at: String,

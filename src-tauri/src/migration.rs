@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 const NATIVE_MIGRATION: &str = include_str!("../migrations/0008_native_desktop.sql");
+const REPLY_ROUTING_MIGRATION: &str = include_str!("../migrations/0009_reply_routing_and_submission_status.sql");
+const LATEST_NATIVE_SCHEMA_VERSION: i64 = 9;
 
 pub fn initialize(paths: &AppPaths) -> Result<MigrationReport> {
     paths.ensure()?;
@@ -102,32 +104,67 @@ fn open_migration_connection(path: &Path) -> Result<Connection> {
 
 fn backup_before_native_migration(paths: &AppPaths) -> Result<Option<PathBuf>> {
     let conn = Connection::open(&paths.database)?;
-    let migrated: bool = conn
+    let has_migration_table: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='native_schema_migrations')",
             [],
             |row| row.get(0),
         )?;
+    let current_version = if has_migration_table {
+        conn.query_row(
+            "SELECT COALESCE(MAX(version),0) FROM native_schema_migrations",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?
+    } else {
+        0
+    };
     drop(conn);
-    if migrated {
+    if current_version >= LATEST_NATIVE_SCHEMA_VERSION {
         return Ok(None);
     }
 
     let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
+    let label = if current_version >= 8 {
+        format!("schema-v{current_version}-before-v{LATEST_NATIVE_SCHEMA_VERSION}")
+    } else {
+        "schema-v7-before-native".into()
+    };
     let destination = paths
         .backups
-        .join(format!("schema-v7-before-native-{timestamp}.sqlite3"));
+        .join(format!("{label}-{timestamp}.sqlite3"));
     fs::copy(&paths.database, &destination)?;
     Ok(Some(destination))
 }
 
 fn apply_native_schema(conn: &mut Connection) -> Result<()> {
+    {
+        let tx = conn.transaction()?;
+        tx.execute_batch(NATIVE_MIGRATION)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO native_schema_migrations(version, name) VALUES(8, 'native-desktop-foundation')",
+            [],
+        )?;
+        tx.commit()?;
+    }
+    apply_reply_routing_schema(conn)?;
+    Ok(())
+}
+
+fn apply_reply_routing_schema(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction()?;
-    tx.execute_batch(NATIVE_MIGRATION)?;
-    tx.execute(
-        "INSERT OR IGNORE INTO native_schema_migrations(version, name) VALUES(8, 'native-desktop-foundation')",
+    let applied: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=9)",
         [],
+        |row| row.get(0),
     )?;
+    if !applied {
+        tx.execute_batch(REPLY_ROUTING_MIGRATION)?;
+        tx.execute(
+            "INSERT INTO native_schema_migrations(version,name) VALUES(9,'reply-routing-and-submission-status')",
+            [],
+        )?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -622,6 +659,43 @@ mod tests {
         assert_eq!(map_application_status("ready_for_review"), "ready_to_contact");
         assert_eq!(map_application_status("contacted"), "contacted");
         assert_eq!(map_contact_status("to_contact"), "ready_to_contact");
+    }
+
+    #[test]
+    fn schema_v9_adds_shelving_and_submission_status_idempotently() -> Result<()> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE native_schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL);
+             INSERT INTO native_schema_migrations(version,name) VALUES(8,'native-desktop-foundation');
+             CREATE TABLE contact_targets_v2(
+                 id TEXT PRIMARY KEY,
+                 status TEXT NOT NULL,
+                 archived_at TEXT,
+                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );",
+        )?;
+
+        apply_reply_routing_schema(&mut conn)?;
+        apply_reply_routing_schema(&mut conn)?;
+        conn.execute("INSERT INTO contact_targets_v2(id,status) VALUES('target-1','replied')", [])?;
+        let (submission_status, shelved_at): (String, Option<String>) = conn.query_row(
+            "SELECT submission_status,shelved_at FROM contact_targets_v2 WHERE id='target-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(submission_status, "not_set");
+        assert!(shelved_at.is_none());
+        let version_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM native_schema_migrations WHERE version=9",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(version_count, 1);
+        assert!(conn.execute(
+            "UPDATE contact_targets_v2 SET submission_status='invalid' WHERE id='target-1'",
+            [],
+        ).is_err());
+        Ok(())
     }
 
     #[test]

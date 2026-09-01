@@ -34,6 +34,8 @@ export const api = {
     invoke<TargetDetail>("get_contact_target", { targetId }),
   setStatus: (targetId: string, status: string) =>
     invoke<void>("set_contact_status", { targetId, status }),
+  setSubmissionStatus: (targetId: string, status: string) =>
+    invoke<void>("set_submission_status", { targetId, status }),
   readMaterial: (artifactPath: string) =>
     invoke<string>("read_material_text", { artifactPath }),
   pdfPreview: (artifactPath: string) =>

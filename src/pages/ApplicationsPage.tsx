@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowRight, Filter, Mail, Search, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api";
-import { EmptyState, ErrorState, LoadingState, StatusBadge, statusLabels } from "../components/Ui";
+import { EmptyState, ErrorState, LoadingState, StatusBadge, SubmissionBadge, statusLabels } from "../components/Ui";
 import type { AppRoute, DashboardData, StatusFilter, TargetCard } from "../types";
 
 const filters: StatusFilter[] = [
@@ -9,6 +9,7 @@ const filters: StatusFilter[] = [
   "contacted",
   "replied",
   "follow_up",
+  "shelved",
   "all",
 ];
 
@@ -87,7 +88,7 @@ export function ApplicationsPage({
 
       <div className="status-explainer">
         <Mail size={18} />
-        Gmail 草稿不会改变状态；只有你确认实际发送后才进入“已联系”，收到回复后先进入“已回复”。
+        Gmail 草稿不会改变状态；回复 Agent 完成后才进入“跟进”，明确拒绝会进入“搁置”。投递标记只显示在卡片上，不影响分组。
       </div>
 
       <div className="search-row">
@@ -122,7 +123,10 @@ export function ApplicationsPage({
             <article className="target-card" key={target.id}>
               <div className="target-card-top">
                 <div className="score"><strong>{Math.round(target.fitScore ?? 0)}</strong><span>/ 100</span></div>
-                <StatusBadge status={target.status} />
+                <div className="target-card-badges">
+                  <SubmissionBadge status={target.submissionStatus} />
+                  <StatusBadge status={target.status} />
+                </div>
               </div>
               <h3>{target.organization}</h3>
               <p className="target-role">{target.title}</p>

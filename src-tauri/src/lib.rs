@@ -88,6 +88,16 @@ fn set_contact_status(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn set_submission_status(
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+    status: String,
+) -> Result<(), String> {
+    db::update_submission_status(&state.paths.database, &target_id, &status)
+        .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn read_material_text(
     state: tauri::State<'_, AppState>,
     artifact_path: String,
@@ -361,6 +371,7 @@ pub fn run() {
             get_contact_targets,
             get_contact_target,
             set_contact_status,
+            set_submission_status,
             read_material_text,
             read_pdf_preview,
             save_manual_material,

@@ -1,11 +1,19 @@
 import { AlertTriangle, LoaderCircle } from "lucide-react";
-import type { ContactStatus } from "../types";
+import type { ContactStatus, SubmissionStatus } from "../types";
 
 export const statusLabels: Record<ContactStatus, string> = {
   ready_to_contact: "待联系",
   contacted: "已联系",
   replied: "已回复",
   follow_up: "跟进",
+  shelved: "搁置",
+};
+
+export const submissionStatusLabels: Record<SubmissionStatus, string> = {
+  not_set: "投递未标记",
+  portal_pending: "官网待投递",
+  submitted: "已投递",
+  not_required: "无需投递",
 };
 
 export const jobLabels: Record<string, string> = {
@@ -26,6 +34,10 @@ export const jobLabels: Record<string, string> = {
 export function StatusBadge({ status }: { status: string }) {
   const label = statusLabels[status as ContactStatus] ?? translateJobStatus(status);
   return <span className={`status-badge status-${status}`}>{label}</span>;
+}
+
+export function SubmissionBadge({ status }: { status: SubmissionStatus }) {
+  return <span className={`submission-badge submission-${status}`}>{submissionStatusLabels[status]}</span>;
 }
 
 export function translateJobStatus(status: string) {

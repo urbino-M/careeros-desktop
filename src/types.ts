@@ -2,7 +2,14 @@ export type ContactStatus =
   | "ready_to_contact"
   | "contacted"
   | "replied"
-  | "follow_up";
+  | "follow_up"
+  | "shelved";
+
+export type SubmissionStatus =
+  | "not_set"
+  | "portal_pending"
+  | "submitted"
+  | "not_required";
 
 export type StatusFilter = ContactStatus | "all";
 
@@ -46,6 +53,7 @@ export interface TargetCard {
   fitScore?: number;
   priority: number;
   status: ContactStatus;
+  submissionStatus: SubmissionStatus;
   deadline?: string;
   sourceUrl?: string;
   updatedAt: string;
@@ -260,6 +268,7 @@ export interface EnqueueRequest {
 
 export type ApplicationTab =
   | "cv"
+  | "cover_letter"
   | "checklist"
   | "email_en"
   | "email_zh"

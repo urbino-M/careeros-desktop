@@ -10,24 +10,34 @@
 )
 #set text(
   font: ("Times New Roman", "New Computer Modern", "Libertinus Serif"),
-  size: 9.45pt,
+  size: 10pt,
   fill: rgb("#15191a"),
   lang: "en",
 )
-#set par(justify: true, leading: 0.43em)
+#set par(justify: true, leading: 0.36em)
 
 #let section-title(title) = block(
-  above: 7.2pt,
-  below: 3.6pt,
+  above: 5.4pt,
+  below: 2.6pt,
   breakable: false,
 )[
   #text(size: 13.8pt, weight: "bold")[#title]
-  #v(-1.8pt)
+  #v(-9pt)
   #line(length: 100%, stroke: 1.25pt + section-rule)
 ]
 
+#let author-body(body) = {
+  let parts = body.split("Miao, H.")
+  for (index, part) in parts.enumerate() {
+    part
+    if index < parts.len() - 1 { strong("Miao, H.") }
+  }
+}
+
 #let styled-body(section, body) = {
-  if section == "Research Profile" {
+  if section.contains("Research Outputs") or section.contains("Publications") or section.contains("Papers") or section.contains("Articles") {
+    author-body(body)
+  } else if section == "Research Profile" {
     let parts = body.split(":")
     if parts.len() > 1 {
       strong(parts.at(0) + ":")
@@ -45,10 +55,10 @@
 }
 
 #let entry(section, item) = grid(
-  columns: (4.5mm, 1fr, 31mm),
-  column-gutter: 2mm,
+  columns: (2.8mm, 1fr, 34.7mm),
+  column-gutter: 1mm,
   row-gutter: 0pt,
-  inset: (y: 1.35pt),
+  inset: (y: 0.9pt),
   [#align(top)[#v(1.4pt)#rect(width: 3.4pt, height: 8pt, fill: burgundy)]],
   [#styled-body(section, item.body)],
   [#align(right)[#text(size: 8.8pt, fill: quiet)[#item.key]]],
@@ -56,7 +66,7 @@
 
 #align(left)[
   #text(size: 18.5pt, weight: "bold")[#data.name]
-  #v(0.8pt)
+  #v(-11pt)
   #text(size: 9.7pt)[#data.tagline]
   #v(1.8pt)
   #grid(
@@ -76,7 +86,7 @@
 ]
 
 #for section in data.sections [
-  #if section.title.contains("(continued)") [#pagebreak()]
+  #if section.title.contains("(continued)") or section.title.contains("Research Projects") [#pagebreak()]
   #section-title(section.title)
   #for item in section.entries [#entry(section.title, item)]
 ]

@@ -13,7 +13,7 @@ function parseHash(): AppRoute {
   if (page === "automation") return { page: "automation" };
   if (page === "settings") return { page: "settings" };
   if (page === "application" && value) {
-    const allowedTabs: ApplicationTab[] = ["cv", "checklist", "email_en", "email_zh", "fit", "pi", "revision", "reply", "other"];
+    const allowedTabs: ApplicationTab[] = ["cv", "cover_letter", "checklist", "email_en", "email_zh", "fit", "pi", "revision", "reply", "other"];
     return {
       page: "application",
       targetId: decodeURIComponent(value),
@@ -23,7 +23,7 @@ function parseHash(): AppRoute {
     };
   }
   if (page === "applications") {
-    const allowed = ["ready_to_contact", "contacted", "replied", "follow_up", "all"];
+    const allowed = ["ready_to_contact", "contacted", "replied", "follow_up", "shelved", "all"];
     return {
       page: "applications",
       status: allowed.includes(value) ? (value as StatusFilter) : "ready_to_contact",

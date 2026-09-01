@@ -7,6 +7,7 @@ use crate::paths::AppPaths;
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
@@ -23,11 +24,16 @@ pub fn connect(path: &Path) -> Result<Connection> {
 pub fn dashboard(path: &Path) -> Result<DashboardData> {
     let conn = connect(path)?;
     let status_count = |status: &str| -> Result<i64> {
-        Ok(conn.query_row(
-            "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL AND status=?1",
-            [status],
-            |row| row.get(0),
-        )?)
+        let sql = if status == "shelved" {
+            "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL AND shelved_at IS NOT NULL"
+        } else {
+            "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL AND shelved_at IS NULL AND status=?1"
+        };
+        Ok(if status == "shelved" {
+            conn.query_row(sql, [], |row| row.get(0))?
+        } else {
+            conn.query_row(sql, [status], |row| row.get(0))?
+        })
     };
     let total: i64 = conn.query_row(
         "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL",
@@ -35,16 +41,18 @@ pub fn dashboard(path: &Path) -> Result<DashboardData> {
         |row| row.get(0),
     )?;
     let high_fit: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL AND fit_score >= 85",
+        "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL AND shelved_at IS NULL AND fit_score >= 85",
         [],
         |row| row.get(0),
     )?;
     let replied = status_count("replied")?;
     let (follow_up_running, follow_up_review): (i64, i64) = conn.query_row(
         "SELECT
-            COUNT(DISTINCT CASE WHEN status IN ('queued','running') THEN target_id END),
-            COUNT(DISTINCT CASE WHEN status='needs_review' THEN target_id END)
-         FROM native_jobs WHERE job_type='reply_followup'",
+            COUNT(DISTINCT CASE WHEN j.status IN ('queued','running') THEN j.target_id END),
+            COUNT(DISTINCT CASE WHEN j.status='needs_review' THEN j.target_id END)
+         FROM native_jobs j
+         LEFT JOIN contact_targets_v2 t ON t.id=j.target_id
+         WHERE j.job_type='reply_followup' AND t.shelved_at IS NULL",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -89,23 +97,47 @@ pub fn dashboard(path: &Path) -> Result<DashboardData> {
             value: status_count("follow_up")?,
             helper: follow_up_helper,
         },
+        DashboardMetric {
+            key: "shelved".into(),
+            label: "搁置".into(),
+            value: status_count("shelved")?,
+            helper: "明确拒绝或无需继续".into(),
+        },
     ];
 
     let mut region_statement = conn.prepare(
-        "SELECT COALESCE(NULLIF(o.region,''), NULLIF(o.country,''), '其他') region, COUNT(*)
+        "SELECT NULLIF(TRIM(o.region),''), NULLIF(TRIM(o.country),''), COUNT(*)
          FROM contact_targets_v2 t
          LEFT JOIN opportunities o ON o.id=t.opportunity_id
          WHERE t.archived_at IS NULL
-         GROUP BY region ORDER BY COUNT(*) DESC, region LIMIT 8",
+         GROUP BY NULLIF(TRIM(o.region),''), NULLIF(TRIM(o.country),'')",
     )?;
-    let regions = region_statement
+    let raw_regions = region_statement
         .query_map([], |row| {
-            Ok(RegionCount {
-                region: row.get(0)?,
-                count: row.get(1)?,
-            })
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut region_counts = BTreeMap::new();
+    for (region, country, count) in raw_regions {
+        *region_counts
+            .entry(dashboard_region(region.as_deref(), country.as_deref()))
+            .or_insert(0) += count;
+    }
+    let mut regions = region_counts
+        .into_iter()
+        .map(|(region, count)| RegionCount { region, count })
+        .collect::<Vec<_>>();
+    regions.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.region.cmp(&right.region))
+    });
+    regions.truncate(8);
 
     let priority_targets = list_targets_with_conn(
         &conn,
@@ -120,6 +152,70 @@ pub fn dashboard(path: &Path) -> Result<DashboardData> {
         regions,
         priority_targets,
     })
+}
+
+fn dashboard_region(region: Option<&str>, country: Option<&str>) -> String {
+    let region = region.map(str::trim).filter(|value| !value.is_empty());
+    let country = country.map(str::trim).filter(|value| !value.is_empty());
+    if region.is_some_and(|value| value.eq_ignore_ascii_case("Europe"))
+        || country.is_some_and(is_european_country)
+    {
+        return "Europe".into();
+    }
+    region.or(country).unwrap_or("其他").to_owned()
+}
+
+fn is_european_country(country: &str) -> bool {
+    matches!(
+        country.to_ascii_lowercase().as_str(),
+        "albania"
+            | "andorra"
+            | "austria"
+            | "belarus"
+            | "belgium"
+            | "bosnia and herzegovina"
+            | "bulgaria"
+            | "croatia"
+            | "cyprus"
+            | "czech republic"
+            | "czechia"
+            | "denmark"
+            | "estonia"
+            | "finland"
+            | "france"
+            | "germany"
+            | "greece"
+            | "hungary"
+            | "iceland"
+            | "ireland"
+            | "italy"
+            | "kosovo"
+            | "latvia"
+            | "liechtenstein"
+            | "lithuania"
+            | "luxembourg"
+            | "malta"
+            | "moldova"
+            | "monaco"
+            | "montenegro"
+            | "netherlands"
+            | "north macedonia"
+            | "norway"
+            | "poland"
+            | "portugal"
+            | "romania"
+            | "russia"
+            | "san marino"
+            | "serbia"
+            | "slovakia"
+            | "slovenia"
+            | "spain"
+            | "sweden"
+            | "switzerland"
+            | "ukraine"
+            | "united kingdom"
+            | "vatican city"
+    )
 }
 
 pub fn list_targets(
@@ -153,12 +249,16 @@ fn list_targets_with_conn(
     let sql = format!(
         "SELECT t.id, t.application_id, t.opportunity_id, t.name, t.email,
                 t.organization, t.title, o.country, o.region, t.fit_score,
-                t.priority, t.status, o.deadline, COALESCE(t.source_url,o.source_url),
-                t.updated_at
+                t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
+                t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at
          FROM contact_targets_v2 t
          LEFT JOIN opportunities o ON o.id=t.opportunity_id
          WHERE t.archived_at IS NULL
-           AND (?1 IS NULL OR t.status=?1)
+           AND (
+                ?1 IS NULL
+                OR (?1='shelved' AND t.shelved_at IS NOT NULL)
+                OR (?1<>'shelved' AND t.shelved_at IS NULL AND t.status=?1)
+           )
            AND (?2 IS NULL OR lower(t.name) LIKE ?2 OR lower(t.organization) LIKE ?2
                 OR lower(t.title) LIKE ?2 OR lower(COALESCE(t.email,'')) LIKE ?2)
          ORDER BY {order}
@@ -178,8 +278,8 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
         .query_row(
             "SELECT t.id, t.application_id, t.opportunity_id, t.name, t.email,
                     t.organization, t.title, o.country, o.region, t.fit_score,
-                    t.priority, t.status, o.deadline, COALESCE(t.source_url,o.source_url),
-                    t.updated_at
+                    t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
+                    t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at
              FROM contact_targets_v2 t
              LEFT JOIN opportunities o ON o.id=t.opportunity_id
              WHERE t.id=?1 AND t.archived_at IS NULL",
@@ -319,7 +419,11 @@ pub fn update_target_status(path: &Path, target_id: &str, status: &str) -> Resul
     let conn = connect(path)?;
     let changed = conn.execute(
         "UPDATE contact_targets_v2
-         SET status=?2,
+         SET status=CASE WHEN ?2='shelved' THEN status ELSE ?2 END,
+             shelved_at=CASE
+                 WHEN ?2='shelved' THEN COALESCE(shelved_at,strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                 ELSE NULL
+             END,
              contacted_at=CASE WHEN ?2='contacted' THEN COALESCE(contacted_at,strftime('%Y-%m-%dT%H:%M:%SZ','now')) ELSE contacted_at END,
              replied_at=CASE WHEN ?2='replied' THEN COALESCE(replied_at,strftime('%Y-%m-%dT%H:%M:%SZ','now')) ELSE replied_at END,
              follow_up_at=CASE WHEN ?2='follow_up' THEN COALESCE(follow_up_at,strftime('%Y-%m-%dT%H:%M:%SZ','now')) ELSE follow_up_at END,
@@ -329,6 +433,23 @@ pub fn update_target_status(path: &Path, target_id: &str, status: &str) -> Resul
     )?;
     if changed != 1 {
         bail!("联系目标不存在，状态未更新")
+    }
+    Ok(())
+}
+
+pub fn update_submission_status(path: &Path, target_id: &str, status: &str) -> Result<()> {
+    if !matches!(status, "not_set" | "portal_pending" | "submitted" | "not_required") {
+        bail!("未知投递状态：{status}")
+    }
+    let conn = connect(path)?;
+    let changed = conn.execute(
+        "UPDATE contact_targets_v2
+         SET submission_status=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+         WHERE id=?1 AND archived_at IS NULL",
+        params![target_id, status],
+    )?;
+    if changed != 1 {
+        bail!("联系目标不存在，投递状态未更新")
     }
     Ok(())
 }
@@ -385,6 +506,7 @@ pub fn save_inbound_reply(path: &Path, request: &InboundReplyRequest) -> Result<
     tx.execute(
         "UPDATE contact_targets_v2
          SET status='replied',
+             shelved_at=NULL,
              replied_at=COALESCE(replied_at,?2,strftime('%Y-%m-%dT%H:%M:%SZ','now')),
              updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
          WHERE id=?1 AND archived_at IS NULL",
@@ -633,9 +755,10 @@ fn target_from_row(row: &Row<'_>) -> rusqlite::Result<TargetCard> {
         fit_score: row.get(9)?,
         priority: row.get(10)?,
         status: row.get(11)?,
-        deadline: row.get(12)?,
-        source_url: row.get(13)?,
-        updated_at: row.get(14)?,
+        submission_status: row.get(12)?,
+        deadline: row.get(13)?,
+        source_url: row.get(14)?,
+        updated_at: row.get(15)?,
     })
 }
 
@@ -700,7 +823,7 @@ fn validate_status_filter(status: Option<&str>) -> Result<()> {
     if let Some(value) = status {
         if !matches!(
             value,
-            "ready_to_contact" | "contacted" | "replied" | "follow_up" | "all"
+            "ready_to_contact" | "contacted" | "replied" | "follow_up" | "shelved" | "all"
         ) {
             bail!("未知申请状态：{value}")
         }
@@ -750,4 +873,68 @@ pub fn read_pdf_preview(paths: &AppPaths, artifact_path: &str) -> Result<Vec<u8>
         bail!("PDF 超过 25 MB，请使用系统预览打开")
     }
     Ok(std::fs::read(canonical)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn shelving_preserves_underlying_stage_and_submission_is_independent() -> Result<()> {
+        let temp = TempDir::new()?;
+        let database = temp.path().join("status.sqlite3");
+        let conn = connect(&database)?;
+        conn.execute_batch(
+            "CREATE TABLE contact_targets_v2(
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                shelved_at TEXT,
+                submission_status TEXT NOT NULL DEFAULT 'not_set',
+                contacted_at TEXT,
+                replied_at TEXT,
+                follow_up_at TEXT,
+                archived_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             INSERT INTO contact_targets_v2(id,status) VALUES('target-1','replied');",
+        )?;
+        drop(conn);
+
+        update_target_status(&database, "target-1", "shelved")?;
+        update_submission_status(&database, "target-1", "portal_pending")?;
+        let conn = connect(&database)?;
+        let (status, shelved, submission): (String, Option<String>, String) = conn.query_row(
+            "SELECT status,shelved_at,submission_status FROM contact_targets_v2 WHERE id='target-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(status, "replied");
+        assert!(shelved.is_some());
+        assert_eq!(submission, "portal_pending");
+        drop(conn);
+
+        update_target_status(&database, "target-1", "follow_up")?;
+        let conn = connect(&database)?;
+        let (status, shelved): (String, Option<String>) = conn.query_row(
+            "SELECT status,shelved_at FROM contact_targets_v2 WHERE id='target-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(status, "follow_up");
+        assert!(shelved.is_none());
+        assert!(update_submission_status(&database, "target-1", "invalid").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn dashboard_region_normalizes_european_city_and_subregion_labels() {
+        assert_eq!(dashboard_region(Some("Trondheim"), Some("Norway")), "Europe");
+        assert_eq!(dashboard_region(Some("Catalonia"), Some("Spain")), "Europe");
+        assert_eq!(dashboard_region(Some("Europe"), Some("Netherlands")), "Europe");
+        assert_eq!(
+            dashboard_region(Some("Middle East"), Some("Saudi Arabia")),
+            "Middle East"
+        );
+    }
 }

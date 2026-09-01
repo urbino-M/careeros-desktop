@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,65 +53,98 @@ pub(crate) fn normalize_text(raw: &str) -> Result<String> {
 }
 
 pub(crate) fn normalize(value: &Value) -> Result<CvData> {
-    if let Ok(data) = serde_json::from_value::<CvData>(value.clone()) {
-        validate(&data)?;
-        return Ok(data)
-    }
-    convert_legacy_agent_shape(value)
-}
-
-pub(crate) fn completeness_score(data: &CvData) -> usize {
-    let canonical = data.sections.iter().map(|section| canonical_section(&section.title))
-        .collect::<std::collections::HashSet<_>>();
-    let essential = [
-        "research profile", "target alignment", "education", "selected research outputs",
-        "selected research experience", "technical skills", "selected patents",
-        "honors and academic service", "referees",
-    ];
-    essential.iter().filter(|title| canonical.contains(**title)).count() * 100
-        + data.sections.iter().map(|section| section.entries.len()).sum::<usize>()
-}
-
-/// Keep the complete verified CV as the source of truth and allow a task to tailor
-/// the headline and target alignment. A shorter Agent selection must never erase
-/// education, publications, patents, service or referees from the master CV.
-pub(crate) fn merge_preserving_baseline(baseline: &CvData, proposed: &CvData) -> CvData {
-    let mut merged = baseline.clone();
-    if !proposed.tagline.trim().is_empty() { merged.tagline = proposed.tagline.clone(); }
-
-    let proposed_alignment = proposed.sections.iter()
-        .find(|section| canonical_section(&section.title) == "target alignment")
-        .cloned();
-    if let Some(alignment) = proposed_alignment {
-        if let Some(index) = merged.sections.iter().position(|section| canonical_section(&section.title) == "target alignment") {
-            merged.sections[index] = alignment;
-        } else {
-            let insert_at = merged.sections.iter().position(|section| canonical_section(&section.title) == "research profile")
-                .map(|index| index + 1).unwrap_or(0);
-            merged.sections.insert(insert_at, alignment);
-        }
-    }
-
-    for section in &proposed.sections {
-        let key = canonical_section(&section.title);
-        if key == "target alignment" { continue }
-        let baseline_entries = merged.sections.iter()
-            .filter(|candidate| canonical_section(&candidate.title) == key)
-            .map(|candidate| candidate.entries.len()).sum::<usize>();
-        if baseline_entries == 0 {
-            merged.sections.push(section.clone());
-        } else if section.entries.len() >= baseline_entries {
-            let matching = merged.sections.iter().enumerate()
-                .filter(|(_, candidate)| canonical_section(&candidate.title) == key)
-                .map(|(index, _)| index).collect::<Vec<_>>();
-            if matching.len() == 1 { merged.sections[matching[0]] = section.clone(); }
-        }
-    }
-    merged
+    let data = match serde_json::from_value::<CvData>(value.clone()) {
+        Ok(data) => data,
+        Err(_) => convert_legacy_agent_shape(value)?,
+    };
+    let data = deduplicate(data);
+    validate(&data)?;
+    Ok(data)
 }
 
 fn canonical_section(title: &str) -> String {
     title.trim().to_lowercase().replace("(continued)", "").trim().to_owned()
+}
+
+fn research_section_order(title: &str) -> Option<u8> {
+    let title = canonical_section(title);
+    if ["research output", "publication", "paper", "article"]
+        .iter()
+        .any(|label| title.contains(label))
+    {
+        Some(0)
+    } else if title.contains("patent") || title.contains("intellectual property") {
+        Some(1)
+    } else if title.contains("project") {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+fn order_research_sections(sections: &mut Vec<CvSection>) {
+    let Some(first_research_position) = sections
+        .iter()
+        .position(|section| research_section_order(&section.title).is_some())
+    else {
+        return;
+    };
+    let insert_at = sections[..first_research_position]
+        .iter()
+        .filter(|section| research_section_order(&section.title).is_none())
+        .count();
+    let mut ordered = sections
+        .iter()
+        .filter(|section| research_section_order(&section.title).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|section| research_section_order(&section.title));
+    let mut retained = std::mem::take(sections)
+        .into_iter()
+        .filter(|section| research_section_order(&section.title).is_none())
+        .collect::<Vec<_>>();
+    retained.splice(insert_at..insert_at, ordered);
+    *sections = retained;
+}
+
+fn canonical_entry(body: &str) -> String {
+    body.to_lowercase()
+        .chars()
+        .map(|character| if character.is_alphanumeric() { character } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Agent output is already the target-specific selection. Normalize repeated
+/// continuation sections and exact repeated claims inside that one target only;
+/// never borrow entries from another contact's CV.
+fn deduplicate(mut data: CvData) -> CvData {
+    let mut sections = Vec::<CvSection>::new();
+    let mut section_positions = HashMap::<String, usize>::new();
+    let mut seen_entries = HashSet::<String>::new();
+
+    for mut section in data.sections {
+        let section_key = canonical_section(&section.title);
+        section.entries.retain(|entry| {
+            let key = canonical_entry(&entry.body);
+            !key.is_empty() && seen_entries.insert(key)
+        });
+        if section.entries.is_empty() {
+            continue;
+        }
+        if let Some(index) = section_positions.get(&section_key).copied() {
+            sections[index].entries.extend(section.entries);
+        } else {
+            section.title = section.title.replace(" (continued)", "").replace("(continued)", "");
+            section_positions.insert(section_key, sections.len());
+            sections.push(section);
+        }
+    }
+    order_research_sections(&mut sections);
+    data.sections = sections;
+    data
 }
 
 fn validate(data: &CvData) -> Result<()> {
@@ -282,32 +316,50 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_agent_selection_cannot_erase_master_cv_sections() -> Result<()> {
-        let baseline = normalize(&json!({
-            "schemaVersion":1,"name":"Hongbo Miao","tagline":"Master headline",
+    fn repeated_sections_and_claims_are_collapsed_within_one_target() -> Result<()> {
+        let data = normalize(&json!({
+            "schemaVersion":1,"name":"Hongbo Miao","tagline":"Target headline",
             "contact":"verified@example.com","affiliations":"HKU · HEU",
             "sections":[
-                {"title":"Research Profile","entries":[{"key":"Focus","body":"Verified profile"}]},
-                {"title":"Target Alignment","entries":[{"key":"Target","body":"Old target"}]},
-                {"title":"Education","entries":[{"key":"PhD","body":"Doctoral education"},{"key":"BEng","body":"Bachelor education"}]},
-                {"title":"Selected Patents","entries":[{"key":"Granted","body":"Verified patent"}]},
-                {"title":"Referees","entries":[{"key":"HKU","body":"Verified referee"}]}
+                {"title":"Selected Research Experience","entries":[
+                    {"key":"One","body":"Physics-informed localization."},
+                    {"key":"Duplicate","body":"Physics informed localization"}
+                ]},
+                {"title":"Selected Research Experience (continued)","entries":[
+                    {"key":"Two","body":"Marine robotics field validation."}
+                ]}
             ]
         }))?;
-        let proposed = normalize(&json!({
-            "schemaVersion":1,"name":"Hongbo Miao","tagline":"KAUST target headline",
+        assert_eq!(data.sections.len(), 1);
+        assert_eq!(data.sections[0].title, "Selected Research Experience");
+        assert_eq!(data.sections[0].entries.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn outputs_and_patents_are_ordered_before_projects() -> Result<()> {
+        let data = normalize(&json!({
+            "schemaVersion":1,"name":"Hongbo Miao","tagline":"Target headline",
             "contact":"verified@example.com","affiliations":"HKU · HEU",
             "sections":[
-                {"title":"Target Alignment","entries":[{"key":"Target","body":"KAUST alignment"}]},
-                {"title":"Education","entries":[{"key":"PhD","body":"Only one selected degree"}]}
+                {"title":"Education","entries":[{"key":"Degree","body":"Verified education."}]},
+                {"title":"Selected Research Projects","entries":[{"key":"Project","body":"Verified project."}]},
+                {"title":"Technical Expertise","entries":[{"key":"Skill","body":"Verified skill."}]},
+                {"title":"Selected Patents","entries":[{"key":"Patent","body":"Verified patent."}]},
+                {"title":"Selected Publications","entries":[{"key":"Paper","body":"Verified publication."}]}
             ]
         }))?;
-        let merged = merge_preserving_baseline(&baseline, &proposed);
-        assert_eq!(merged.tagline, "KAUST target headline");
-        assert!(merged.sections.iter().any(|section| section.title == "Selected Patents"));
-        assert!(merged.sections.iter().any(|section| section.title == "Referees"));
-        assert_eq!(merged.sections.iter().find(|section| section.title == "Education").unwrap().entries.len(), 2);
-        assert_eq!(merged.sections.iter().find(|section| section.title == "Target Alignment").unwrap().entries[0].body, "KAUST alignment");
+        let titles = data.sections.iter().map(|section| section.title.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            titles,
+            vec![
+                "Education",
+                "Selected Publications",
+                "Selected Patents",
+                "Selected Research Projects",
+                "Technical Expertise",
+            ]
+        );
         Ok(())
     }
 }

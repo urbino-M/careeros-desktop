@@ -198,10 +198,13 @@ pub fn prepare_general_workspace(
     } else if matches!(job_type, "opportunity_health" | "follow_up_scan" | "checklist_refresh") {
         let conn=db::connect(&paths.database)?;
         let mut statement=conn.prepare(
-            "SELECT id,application_id,name,email,organization,title,status,source_url
-             FROM contact_targets_v2 WHERE archived_at IS NULL ORDER BY updated_at DESC,id"
+            "SELECT id,application_id,name,email,organization,title,
+                    CASE WHEN shelved_at IS NOT NULL THEN 'shelved' ELSE status END,source_url
+             FROM contact_targets_v2
+             WHERE archived_at IS NULL AND (?1<>'follow_up_scan' OR shelved_at IS NULL)
+             ORDER BY updated_at DESC,id"
         )?;
-        let targets=statement.query_map([],|row|Ok(json!({
+        let targets=statement.query_map([job_type],|row|Ok(json!({
             "targetId":row.get::<_,String>(0)?,"applicationId":row.get::<_,String>(1)?,
             "name":row.get::<_,String>(2)?,"email":row.get::<_,Option<String>>(3)?,
             "organization":row.get::<_,String>(4)?,"title":row.get::<_,String>(5)?,

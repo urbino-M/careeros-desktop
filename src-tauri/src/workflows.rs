@@ -206,7 +206,17 @@ pub fn result_contract(job_type: &str) -> Value {
             "rules": [
                 "Use exact camelCase keys shown below; do not emit snake_case alternatives.",
                 "Every contact must contain a complete reviewable material package.",
-                "cvData must match the exact object shape shown below."
+                "cvData must match the exact object shape shown below.",
+                "cvData is the final target-specific selection, not a full master CV and not content copied from another contact.",
+                "Select CV evidence by fit: target research direction first, then the strongest relevant experience, outputs, and required skills.",
+                "For an open formal vacancy or fellowship, tailor cvData to the verified duties and requirements on the primary recruitment page.",
+                "For a prospective PI without an open vacancy, tailor cvData to the PI's verified current research direction and never imply that a vacancy exists.",
+                "Do not repeat the same claim in multiple sections or create synonymous duplicate sections.",
+                "Order research evidence sections as selected research outputs or publications, then selected patents, then selected research projects; articles and patents must always appear before projects.",
+                "Use the compact bundled CV layout, bold Miao, H. in publication author lists, and describe the unfinished doctorate as Ph.D. Candidate.",
+                "The rendered CV must be exactly two well-filled A4 pages; a one-page CV, a sparse second page, or a CV over two pages is invalid.",
+                "Provide at least 36 distinct target-relevant entries so both pages carry substantive evidence.",
+                "Fill both pages with additional target-relevant verified evidence from the master profile, never with repetition, generic padding, invented claims, or unreadably compressed text."
             ],
             "limits": {"discovery":20,"deepVerification":8,"completePackages":5},
             "required": {
@@ -227,7 +237,7 @@ pub fn result_contract(job_type: &str) -> Value {
                 "sources":[{"title":"source","url":"https://...","checkedAt":"UTC ISO-8601","evidenceType":"primary"}],
                 "recommendedOpportunities":[opportunity_contract()]
             }
-        ,"note":"Use an empty recommendedOpportunities array when no verified referral exists."}),
+        ,"note":"Use stop only when the sender clearly rejects or declines further contact; ambiguous or delayed outcomes must use wait or clarify. Use an empty recommendedOpportunities array when no verified referral exists."}),
         "checklist_refresh" => json!({
             "file":"output/checklist.json",
             "schemaVersion":1,
@@ -344,7 +354,8 @@ fn import_follow_up_scan(paths: &AppPaths, job_id: &str, output: FollowUpScanOut
             bail!("跟进建议 {} 的动作无效", item.target_id)
         }
         let status: String = conn.query_row(
-            "SELECT status FROM contact_targets_v2 WHERE id=?1 AND archived_at IS NULL",
+            "SELECT CASE WHEN shelved_at IS NOT NULL THEN 'shelved' ELSE status END
+             FROM contact_targets_v2 WHERE id=?1 AND archived_at IS NULL",
             [&item.target_id],
             |row| row.get(0),
         ).with_context(|| format!("跟进建议引用了不存在的联系人 {}", item.target_id))?;
@@ -431,22 +442,35 @@ async fn import_search_output(
         }
     }
     candidates.sort_by(|a,b| b.0.total_cmp(&a.0));
-    candidates.truncate(5);
     if candidates.is_empty() {
         bail!("没有结果同时通过职业层级、来源、严格阈值和完整材料校验：{}", warnings.join("；"))
     }
     let mut imported = Vec::new();
     for (_, opportunity, contact) in candidates {
-        let target = upsert_complete_contact(paths, job_id, &opportunity, &contact)?;
-        if let Err(error) = typst::generate_cv(paths, &target.target_id).await {
-            warnings.push(format!("{}：Typst PDF 待手动生成（{error}）", contact.name));
+        if imported.len() >= 5 {
+            break;
         }
+        let validated_pages = match typst::validate_cv_data(paths, &contact.materials.cv_data).await {
+            Ok(page_count) => page_count,
+            Err(error) => {
+                warnings.push(format!("{}：目标定制 CV 未通过两页预检（{error:#}）", contact.name));
+                continue;
+            }
+        };
+        let target = upsert_complete_contact(paths, job_id, &opportunity, &contact)?;
+        let generated = typst::generate_cv(paths, &target.target_id).await
+            .with_context(|| format!("{}：已通过预检，但正式 CV 生成失败", contact.name))?;
         imported.push(json!({
             "targetId":target.target_id,
             "applicationId":target.application_id,
             "opportunityId":target.opportunity_id,
             "contact":contact.name,
+            "cvPages":generated.page_count,
+            "validatedPages":validated_pages,
         }));
+    }
+    if imported.is_empty() {
+        bail!("没有候选人的目标定制 CV 通过两页预检：{}", warnings.join("；"))
     }
     Ok(json!({"imported":imported,"warnings":warnings,"thresholdStrictlyGreaterThan":threshold}))
 }
@@ -467,6 +491,7 @@ async fn import_reply_output(
     if output.draft_reply_en.trim().len() < 20 || output.draft_reply_zh.trim().len() < 12 {
         bail!("回复 Agent 没有给出完整的双语审核草稿")
     }
+    let next_status = reply_decision_status(&output.decision)?;
     for source in &output.sources { validate_source(source)?; }
     let conn = db::connect(&paths.database)?;
     let application_id: String = conn.query_row(
@@ -474,8 +499,11 @@ async fn import_reply_output(
         [target_id], |row| row.get(0),
     )?;
     let analysis = format!(
-        "# 回复处理判断\n\n- 决策：{}\n- 建议动作：{}\n\n{}\n",
-        output.decision, output.recommended_action, output.summary_zh
+        "# 回复处理判断\n\n- 决策：{}\n- 工作流阶段：{}\n- 建议动作：{}\n\n{}\n",
+        output.decision,
+        if next_status == "shelved" { "搁置" } else { "跟进" },
+        output.recommended_action,
+        output.summary_zh
     );
     store_text_artifact(paths,&conn,target_id,&application_id,"reply_analysis","zh","reply-analysis.md",&analysis)?;
     store_text_artifact(paths,&conn,target_id,&application_id,"followup_email","en","followup-email-en.md",&output.draft_reply_en)?;
@@ -497,7 +525,16 @@ async fn import_reply_output(
             SearchOutput { schema_version: protocol_version(), opportunities: output.recommended_opportunities },
         ).await?
     };
-    Ok(json!({"targetId":target_id,"decision":output.decision,"recommendedAction":output.recommended_action,"referrals":referrals}))
+    db::update_target_status(&paths.database, target_id, next_status)?;
+    Ok(json!({"targetId":target_id,"decision":output.decision,"nextStatus":next_status,"recommendedAction":output.recommended_action,"referrals":referrals}))
+}
+
+fn reply_decision_status(decision: &str) -> Result<&'static str> {
+    match decision {
+        "stop" => Ok("shelved"),
+        "continue" | "investigate_referral" | "clarify" | "wait" => Ok("follow_up"),
+        _ => bail!("回复 Agent 返回了无效决策：{decision}"),
+    }
 }
 
 struct ImportedTarget {
@@ -817,6 +854,16 @@ mod tests{
     }
 
     #[test]
+    fn reply_decision_routes_explicit_stop_to_shelved() -> Result<()> {
+        assert_eq!(reply_decision_status("stop")?, "shelved");
+        for decision in ["continue", "investigate_referral", "clarify", "wait"] {
+            assert_eq!(reply_decision_status(decision)?, "follow_up");
+        }
+        assert!(reply_decision_status("negative-ish").is_err());
+        Ok(())
+    }
+
+    #[test]
     fn duplicate_generic_checklist_keys_are_normalized_without_data_loss() -> Result<()> {
         let items = vec![
             ChecklistOutput { item_type:"item".into(),required:true,status:"ready".into(),origin:"verified".into(),evidence:Some("one".into()),source_url:Some("https://example.edu/one".into()),note:None,sort_order:10 },
@@ -843,6 +890,7 @@ mod tests{
         let conn=db::connect(&paths.database)?;
         conn.execute_batch(include_str!("../../../postdoc-os/postdoc_os/schema.sql"))?;
         conn.execute_batch(include_str!("../migrations/0008_native_desktop.sql"))?;
+        conn.execute_batch(include_str!("../migrations/0009_reply_routing_and_submission_status.sql"))?;
         conn.execute("INSERT INTO native_jobs(id,job_type,status,provider_id,payload_json) VALUES('job-test','full_search','running','openai','{}')",[])?;
         drop(conn);
         let cv=json!({"schemaVersion":1,"name":"Hongbo Miao","tagline":"Marine AI","contact":"urbinohbmiao@gmail.com","affiliations":"HKU · HEU","sections":[{"title":"Research Profile","entries":[{"key":"Focus","body":"Verified underwater acoustics and marine robotics research."}]}]});

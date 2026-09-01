@@ -16,6 +16,7 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 const CV_TEMPLATE: &str = include_str!("../resources/templates/cv.typ");
+const MIN_TARGETED_CV_ENTRIES: usize = 36;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,11 +96,8 @@ pub fn install_cv_sources(
     application_id: &str,
     value: &serde_json::Value,
 ) -> Result<()> {
-    let proposed = cv_schema::normalize(value)
+    let data = cv_schema::normalize(value)
         .context("Agent 返回的 CV 结构化数据不符合模板")?;
-    let data = best_existing_cv(paths, Some(target_id))
-        .map(|baseline| cv_schema::merge_preserving_baseline(&baseline, &proposed))
-        .unwrap_or(proposed);
     let directory = target_material_dir(paths, target_id);
     fs::create_dir_all(&directory)?;
     let typ_path = directory.join("cv.typ");
@@ -124,6 +122,45 @@ pub fn install_cv_sources(
     Ok(())
 }
 
+/// Compile the exact target-specific selection before it can enter the contact
+/// pipeline. This keeps page-limit failures from creating a ready-to-contact
+/// record and proves the same normalized data that will later be installed.
+pub async fn validate_cv_data(paths: &AppPaths, value: &serde_json::Value) -> Result<usize> {
+    let data = cv_schema::normalize(value)
+        .context("Agent 返回的 CV 结构化数据不符合模板")?;
+    ensure_cv_content_density(&data)?;
+    let directory = paths.cache.join("cv-validation").join(Uuid::new_v4().simple().to_string());
+    fs::create_dir_all(&directory)?;
+    let result = async {
+        let source = directory.join("cv.typ");
+        let data_path = directory.join("cv-data.json");
+        let pdf_path = directory.join("cv.pdf");
+        fs::write(&source, CV_TEMPLATE)?;
+        fs::write(&data_path, serde_json::to_vec_pretty(&data)?)?;
+        let binary = locate_typst_binary(paths)?;
+        let output = Command::new(&binary)
+            .arg("compile")
+            .arg("--root")
+            .arg(&directory)
+            .arg(&source)
+            .arg(&pdf_path)
+            .output()
+            .await
+            .with_context(|| format!("无法启动内置 Typst：{}", binary.display()))?;
+        if !output.status.success() {
+            bail!("Typst 预检失败：{}", String::from_utf8_lossy(&output.stderr).trim())
+        }
+        let page_count = Document::load(&pdf_path)
+            .context("Typst 预检输出不是有效 PDF")?
+            .get_pages()
+            .len();
+        ensure_cv_page_count(page_count)?;
+        Ok(page_count)
+    }.await;
+    let _ = fs::remove_dir_all(&directory);
+    result
+}
+
 pub async fn generate_cv(paths: &AppPaths, target_id: &str) -> Result<CvGenerationResult> {
     let conn = db::connect(&paths.database)?;
     let (application_id, source_stored, data_stored): (String, String, String) = conn.query_row(
@@ -143,19 +180,19 @@ pub async fn generate_cv(paths: &AppPaths, target_id: &str) -> Result<CvGenerati
     }
     let value: serde_json::Value = serde_json::from_slice(&fs::read(&data_path)?)
         .context("CV 结构化数据不是有效 JSON")?;
-    let current_data = cv_schema::normalize(&value)
+    let normalized_data = cv_schema::normalize(&value)
         .context("CV 结构化数据无效，请先修复 cv-data.json")?;
-    let merged_data = best_existing_cv(paths, Some(target_id))
-        .map(|baseline| cv_schema::merge_preserving_baseline(&baseline, &current_data))
-        .unwrap_or_else(|| current_data.clone());
+    ensure_cv_content_density(&normalized_data)?;
     let revisions_dir = source_dir.join("revisions");
     fs::create_dir_all(&revisions_dir)?;
-    let old_entry_count = current_data.sections.iter().map(|section| section.entries.len()).sum::<usize>();
-    let new_entry_count = merged_data.sections.iter().map(|section| section.entries.len()).sum::<usize>();
-    let data_backup = if merged_data != current_data {
+    let original_data: CvData = serde_json::from_value(value.clone())
+        .unwrap_or_else(|_| normalized_data.clone());
+    let old_entry_count = original_data.sections.iter().map(|section| section.entries.len()).sum::<usize>();
+    let new_entry_count = normalized_data.sections.iter().map(|section| section.entries.len()).sum::<usize>();
+    let data_backup = if serde_json::to_value(&normalized_data)? != value {
         let backup = revisions_dir.join(format!("{}-cv-data.json", Utc::now().format("%Y%m%dT%H%M%SZ")));
         fs::copy(&data_path, &backup)?;
-        fs::write(&data_path, serde_json::to_vec_pretty(&merged_data)?)?;
+        fs::write(&data_path, serde_json::to_vec_pretty(&normalized_data)?)?;
         Some(backup)
     } else { None };
     let source_sha256 = format!("{:x}", Sha256::digest(fs::read(&data_path)?));
@@ -177,9 +214,9 @@ pub async fn generate_cv(paths: &AppPaths, target_id: &str) -> Result<CvGenerati
     }
     let document = Document::load(&temporary).context("Typst 输出不是有效 PDF")?;
     let page_count = document.get_pages().len();
-    if page_count == 0 || page_count > 4 {
+    if let Err(error) = ensure_cv_page_count(page_count) {
         let _ = fs::remove_file(&temporary);
-        bail!("CV 页数异常：{page_count} 页")
+        return Err(error)
     }
 
     let current_pdf: Option<String> = conn.query_row(
@@ -203,9 +240,9 @@ pub async fn generate_cv(paths: &AppPaths, target_id: &str) -> Result<CvGenerati
     let relative_backup = backup.as_ref().map(|value| display_path(&paths.data_root, value));
     let revision_id = format!("revision-native-{}", Uuid::new_v4().simple());
     let summary = if data_backup.is_some() {
-        format!("已恢复完整主 CV 基线（{old_entry_count} → {new_entry_count} 条），再由内置 Typst 生成 {page_count} 页 CV")
+        format!("已清理当前目标 CV 的重复章节或条目（{old_entry_count} → {new_entry_count} 条），再由内置 Typst 生成 {page_count} 页 CV")
     } else {
-        format!("由内置 Typst 生成 {page_count} 页 CV；结构化数据与目标联系人独立保存")
+        format!("由内置 Typst 生成 {page_count} 页目标定制 CV；结构化数据与目标联系人独立保存")
     };
     let mut diff = vec![DiffEntry {
         line: 1,
@@ -215,8 +252,8 @@ pub async fn generate_cv(paths: &AppPaths, target_id: &str) -> Result<CvGenerati
     if data_backup.is_some() {
         diff.push(DiffEntry {
             line: 1,
-            before: format!("不完整的定制 CV：{old_entry_count} 条"),
-            after: format!("完整主 CV + 目标定制：{new_entry_count} 条"),
+            before: format!("规范化前：{old_entry_count} 条"),
+            after: format!("去重后的目标定制 CV：{new_entry_count} 条"),
         });
     }
     let tx = conn.unchecked_transaction()?;
@@ -235,7 +272,7 @@ pub async fn generate_cv(paths: &AppPaths, target_id: &str) -> Result<CvGenerati
         tx.execute(
             "INSERT INTO artifact_revisions(
                 id,application_id,artifact_type,language,artifact_path,backup_path,editor,note
-             ) VALUES(?1,?2,'cv_data','und',?3,?4,'generator','Restored complete master CV baseline before Typst generation')",
+             ) VALUES(?1,?2,'cv_data','und',?3,?4,'generator','Normalized and deduplicated target-specific CV before Typst generation')",
             params![data_revision_id, application_id, relative_data, relative_data_backup],
         )?;
         tx.execute(
@@ -245,11 +282,11 @@ pub async fn generate_cv(paths: &AppPaths, target_id: &str) -> Result<CvGenerati
         tx.execute(
             "INSERT INTO revision_change_sets(
                 id,revision_id,summary,locations_json,diff_json,provider_id,model_id,reasoning
-             ) VALUES(?1,?2,?3,?4,?5,'local-validator','cv-baseline-guard-v1',NULL)",
+             ) VALUES(?1,?2,?3,?4,?5,'local-validator','cv-target-dedup-v1',NULL)",
             params![
                 format!("changes:{data_revision_id}"), data_revision_id,
-                format!("防止 Agent 的半份定制数据覆盖完整主 CV；已恢复 {new_entry_count} 条基线内容"),
-                json!(["CV 结构完整性", "完整主 CV 基线"]).to_string(),
+                format!("清理当前目标 CV 的重复章节或条目；保留 {new_entry_count} 条目标相关内容"),
+                json!(["CV 结构规范化", "目标内去重"]).to_string(),
                 serde_json::to_string(&vec![DiffEntry { line: 1, before: format!("{old_entry_count} 条"), after: format!("{new_entry_count} 条") }])?,
             ],
         )?;
@@ -302,24 +339,23 @@ pub async fn generate_cv(paths: &AppPaths, target_id: &str) -> Result<CvGenerati
     })
 }
 
-fn best_existing_cv(paths: &AppPaths, exclude_target: Option<&str>) -> Option<CvData> {
-    let conn = db::connect(&paths.database).ok()?;
-    let mut statement = conn.prepare(
-        "SELECT target_id,path FROM contact_target_artifacts
-         WHERE artifact_type='cv_data' AND language='und' ORDER BY updated_at DESC"
-    ).ok()?;
-    let rows = statement.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).ok()?;
-    let mut best: Option<(usize,CvData)> = None;
-    for row in rows.flatten() {
-        if exclude_target.is_some_and(|target| target == row.0) { continue }
-        let path = resolve_data_path(&paths.data_root, &row.1);
-        let bytes = match fs::read(path) { Ok(bytes) => bytes, Err(_) => continue };
-        let value: serde_json::Value = match serde_json::from_slice(&bytes) { Ok(value) => value, Err(_) => continue };
-        let data = match cv_schema::normalize(&value) { Ok(data) => data, Err(_) => continue };
-        let score = cv_schema::completeness_score(&data);
-        if best.as_ref().is_none_or(|(current,_)| score > *current) { best = Some((score,data)); }
+fn ensure_cv_page_count(page_count: usize) -> Result<()> {
+    if page_count != 2 {
+        bail!("CV 必须正好为 2 页且版面充实，当前为 {page_count} 页")
     }
-    best.map(|(_,data)| data)
+    Ok(())
+}
+
+fn ensure_cv_content_density(data: &CvData) -> Result<()> {
+    let entry_count = data.sections.iter()
+        .map(|section| section.entries.len())
+        .sum::<usize>();
+    if entry_count < MIN_TARGETED_CV_ENTRIES {
+        bail!(
+            "CV 两页内容不足：至少需要 {MIN_TARGETED_CV_ENTRIES} 条互不重复的目标相关内容，当前为 {entry_count} 条"
+        )
+    }
+    Ok(())
 }
 
 fn parse_curve_tex(source: &str) -> Result<CvData> {
@@ -472,6 +508,59 @@ mod tests {
         let pdf = Document::load(temp.path().join("cv.pdf"))?;
         assert!((1..=4).contains(&pdf.get_pages().len()));
         assert!(data.sections.len() >= 5);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn preflight_rejects_a_cv_longer_than_two_pages() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().to_path_buf();
+        let paths = AppPaths {
+            database: root.join("database/postdocos.sqlite3"),
+            generated: root.join("generated"),
+            profile: root.join("profile"),
+            workspaces: root.join("workspaces"),
+            codex_home: root.join("codex"),
+            backups: root.join("backups"),
+            cache: root.join("cache"),
+            logs: root.join("logs"),
+            runtime: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime"),
+            data_root: root,
+        };
+        let entries = (0..120).map(|index| json!({
+            "key": format!("Item {index}"),
+            "body": format!("Distinct verified research evidence number {index} with enough explanatory detail to consume a visible line in the rendered curriculum vitae."),
+        })).collect::<Vec<_>>();
+        let value = json!({
+            "schemaVersion":1,
+            "name":"Hongbo Miao",
+            "tagline":"Target-specific research CV",
+            "contact":"verified@example.com",
+            "affiliations":"HKU · HEU",
+            "sections":[{"title":"Selected Research Experience","entries":entries}]
+        });
+        let error = validate_cv_data(&paths, &value).await.unwrap_err();
+        assert!(format!("{error:#}").contains("正好为 2 页"));
+        Ok(())
+    }
+
+    #[test]
+    fn exact_two_page_and_content_density_guards_are_strict() -> Result<()> {
+        assert!(ensure_cv_page_count(2).is_ok());
+        assert!(ensure_cv_page_count(1).is_err());
+        assert!(ensure_cv_page_count(3).is_err());
+        let sparse = CvData {
+            schema_version: 1,
+            name: "Hongbo Miao".into(),
+            tagline: "Targeted CV".into(),
+            contact: "verified@example.com".into(),
+            affiliations: "HKU · HEU".into(),
+            sections: vec![CvSection {
+                title: "Research".into(),
+                entries: vec![CvEntry { key: "Focus".into(), body: "Verified research.".into() }],
+            }],
+        };
+        assert!(ensure_cv_content_density(&sparse).is_err());
         Ok(())
     }
 }

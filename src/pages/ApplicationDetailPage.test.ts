@@ -15,6 +15,18 @@ describe("application material formatting", () => {
     expect(parsed.body).toBe("Dear Professor,\n\nHello.");
   });
 
+  it("drops a legacy bare recipient line from the Gmail body", () => {
+    const parsed = parseEmailMarkdown("pi@example.edu\n\nSubject: Research fit\n\nDear Professor,\n\nHello.");
+    expect(parsed.subject).toBe("Research fit");
+    expect(parsed.body).toBe("Dear Professor,\n\nHello.");
+  });
+
+  it("accepts full-width separators in legacy email headers", () => {
+    const parsed = parseEmailMarkdown("To：pi@example.edu\nSubject：Research fit\n\nDear Professor,");
+    expect(parsed.subject).toBe("Research fit");
+    expect(parsed.body).toBe("Dear Professor,");
+  });
+
   it("splits Chinese letters into metadata and readable paragraphs", () => {
     const parsed = parseLetter("主题：博士后合作\n\n收件人：pi@example.edu\n\n教授您好：\n\n正文。", "zh");
     expect(parsed.subject).toBe("博士后合作");
