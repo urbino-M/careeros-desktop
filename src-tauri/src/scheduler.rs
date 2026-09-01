@@ -458,6 +458,7 @@ fn has_reusable_output(paths:&AppPaths, job_id:&str, job_type:&str) -> bool {
                 && fs::read_dir(&output).ok().into_iter().flatten().flatten()
                     .any(|entry| entry.path().is_file() && entry.file_name().to_string_lossy() != "change-set.json")
         }
+        "internship_search" => output.join("internship-search-results.json").is_file(),
         "full_run" | "full_search" | "research_pi" => output.join("search-results.json").is_file(),
         "reply_followup" => output.join("reply-followup.json").is_file(),
         "checklist_refresh" => output.join("checklist.json").is_file(),
@@ -481,6 +482,7 @@ fn resolve_model_snapshot(
     request: &EnqueueRequest,
 ) -> Result<(String, Option<String>, String, String)> {
     let default_type = match request.job_type.as_str() {
+        "internship_search" => "full_search",
         "full_run" | "full_search" => "full_search",
         "research_pi" => "research_pi",
         "revision_request" | "material_revision" => "material_revision",

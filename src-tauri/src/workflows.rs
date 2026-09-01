@@ -25,6 +25,45 @@ struct SearchOutput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct InternshipSearchOutput {
+    #[serde(default = "protocol_version")]
+    schema_version: u8,
+    #[serde(default)]
+    opportunities: Vec<FoundInternshipOpportunity>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FoundInternshipOpportunity {
+    opportunity_kind: String,
+    external_id: Option<String>,
+    source_url: String,
+    source_title: Option<String>,
+    title: String,
+    organization: String,
+    department: Option<String>,
+    country: Option<String>,
+    region: Option<String>,
+    location: Option<String>,
+    deadline: Option<String>,
+    summary: String,
+    #[serde(default)]
+    keywords: Vec<String>,
+    active: bool,
+    eligibility_status: String,
+    eligibility_summary: String,
+    fit_score: f64,
+    fit_analysis: String,
+    fit_analysis_zh: String,
+    verified_at: String,
+    #[serde(default)]
+    sources: Vec<SourceEvidence>,
+    #[serde(default)]
+    checklist: Vec<ChecklistOutput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FoundOpportunity {
     external_id: Option<String>,
     source_url: String,
@@ -200,6 +239,45 @@ fn opportunity_contract() -> Value {
 
 pub fn result_contract(job_type: &str) -> Value {
     match job_type {
+        "internship_search" => json!({
+            "file": "output/internship-search-results.json",
+            "schemaVersion": 1,
+            "rules": [
+                "Use exact camelCase keys shown below; do not emit snake_case alternatives.",
+                "Return current industry internships only; exclude postdoctoral, doctoral, faculty and full-time roles.",
+                "Use eligibilityStatus=uncertain when the supplied evidence cannot establish candidate eligibility.",
+                "Score against the requested search brief; do not use unverified candidate facts.",
+                "Do not create a CV, outreach email, Gmail draft or application submission."
+            ],
+            "limits": {"discovery": 20, "saved": 10},
+            "required": {
+                "schemaVersion": 1,
+                "opportunities": [{
+                    "opportunityKind": "industry_internship",
+                    "externalId": "optional stable source id",
+                    "sourceUrl": "verified official job URL",
+                    "sourceTitle": "official source title",
+                    "title": "internship title",
+                    "organization": "company or organization",
+                    "department": "optional team",
+                    "country": "optional country",
+                    "region": "optional region",
+                    "location": "optional exact or remote location",
+                    "deadline": "ISO date or null",
+                    "summary": "verified role summary",
+                    "keywords": ["keyword"],
+                    "active": true,
+                    "eligibilityStatus": "eligible|uncertain|ineligible",
+                    "eligibilitySummary": "evidence-based explanation",
+                    "fitScore": 82,
+                    "fitAnalysis": "complete reviewable Markdown",
+                    "fitAnalysisZh": "complete Chinese reviewable Markdown",
+                    "verifiedAt": "UTC ISO-8601",
+                    "sources": [{"title":"official source","url":"https://...","checkedAt":"UTC ISO-8601","evidenceType":"primary"}],
+                    "checklist": [{"itemType":"eligibility_confirmation","required":true,"status":"ready|review|missing","origin":"verified|inferred","evidence":"text","sourceUrl":"https://...","note":"optional","sortOrder":10}]
+                }]
+            }
+        }),
         "full_run" | "full_search" | "research_pi" => json!({
             "file": "output/search-results.json",
             "schemaVersion": 1,
@@ -273,6 +351,13 @@ pub async fn import_job_result(
     workspace: &Path,
 ) -> Result<Value> {
     match job.job_type.as_str() {
+        "internship_search" => {
+            let output = read_json::<InternshipSearchOutput>(
+                &workspace.join("output/internship-search-results.json"),
+            )?;
+            ensure_protocol_version(output.schema_version, "internship-search-results.json")?;
+            import_internship_search_output(paths, &job.id, payload, output)
+        }
         "full_run" | "full_search" | "research_pi" => {
             let output = read_json::<SearchOutput>(&workspace.join("output/search-results.json"))?;
             ensure_protocol_version(output.schema_version, "search-results.json")?;
@@ -408,6 +493,53 @@ pub fn rebuild_preferences(paths: &AppPaths) -> Result<Value> {
     Ok(json!({"observations":observations.len(),"path":live}))
 }
 
+fn import_internship_search_output(
+    paths: &AppPaths,
+    job_id: &str,
+    payload: &Value,
+    mut output: InternshipSearchOutput,
+) -> Result<Value> {
+    let threshold = payload.get("threshold").and_then(Value::as_f64).unwrap_or(70.0);
+    output.opportunities.truncate(20);
+    output.opportunities.sort_by(|left, right| right.fit_score.total_cmp(&left.fit_score));
+    let mut imported = Vec::new();
+    let mut warnings = Vec::new();
+    for opportunity in output.opportunities {
+        if imported.len() >= 10 {
+            break;
+        }
+        if opportunity.fit_score <= threshold {
+            continue;
+        }
+        if let Err(error) = validate_internship_opportunity(&opportunity) {
+            warnings.push(format!("{}：{error}", opportunity.title));
+            continue;
+        }
+        let target = upsert_internship_target(paths, job_id, &opportunity)?;
+        imported.push(json!({
+            "targetId": target.target_id,
+            "applicationId": target.application_id,
+            "opportunityId": target.opportunity_id,
+            "organization": opportunity.organization,
+            "title": opportunity.title,
+            "eligibilityStatus": opportunity.eligibility_status,
+            "fitScore": opportunity.fit_score,
+        }));
+    }
+    if imported.is_empty() {
+        bail!(
+            "没有 internship 同时通过职位类型、有效性、来源和严格匹配阈值：{}",
+            warnings.join("；")
+        )
+    }
+    Ok(json!({
+        "imported": imported,
+        "warnings": warnings,
+        "thresholdStrictlyGreaterThan": threshold,
+        "reviewOnly": true,
+    }))
+}
+
 async fn import_search_output(
     paths: &AppPaths,
     job_id: &str,
@@ -541,6 +673,149 @@ struct ImportedTarget {
     target_id: String,
     application_id: String,
     opportunity_id: String,
+}
+
+fn upsert_internship_target(
+    paths: &AppPaths,
+    job_id: &str,
+    value: &FoundInternshipOpportunity,
+) -> Result<ImportedTarget> {
+    validate_internship_opportunity(value)?;
+    let normalized_checklist = normalize_checklist_items(&value.checklist)?;
+    let identity = internship_opportunity_identity(value);
+    let mut conn = db::connect(&paths.database)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let opportunity_id: String = if let Some(id) = tx
+        .query_row(
+            "SELECT id FROM opportunities
+             WHERE identity_key=?1 OR lower(rtrim(COALESCE(source_url,''),'/'))=?2
+             LIMIT 1",
+            params![identity, canonical_url(&value.source_url)],
+            |row| row.get(0),
+        )
+        .optional()?
+    {
+        tx.execute(
+            "UPDATE opportunities
+             SET last_verified_at=?2,fit_score=MAX(COALESCE(fit_score,0),?3),
+                 status='open',opportunity_type='industry_internship',summary=?4,deadline=?5,
+                 updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+             WHERE id=?1",
+            params![id, value.verified_at, value.fit_score, value.summary, value.deadline],
+        )?;
+        id
+    } else {
+        let id = format!("opportunity-internship-{}", Uuid::new_v4().simple());
+        tx.execute(
+            "INSERT INTO opportunities(
+                id,identity_key,title,organization,department,country,region,opportunity_type,status,
+                deadline,source_url,source_title,discovered_at,last_verified_at,summary,keywords_json,
+                fit_score,priority,notes
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,'industry_internship','open',?8,?9,?10,?11,?11,?12,?13,?14,'review',?15)",
+            params![
+                id,
+                identity,
+                value.title,
+                value.organization,
+                value.department,
+                value.country,
+                value.region,
+                value.deadline,
+                value.source_url,
+                value.source_title,
+                value.verified_at,
+                value.summary,
+                serde_json::to_string(&value.keywords)?,
+                value.fit_score,
+                value.external_id,
+            ],
+        )?;
+        id
+    };
+    let existing: Option<(String, String)> = tx
+        .query_row(
+            "SELECT id,application_id FROM contact_targets_v2
+             WHERE opportunity_id=?1 AND archived_at IS NULL AND normalized_name='applicationportal'
+             LIMIT 1",
+            [&opportunity_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (target_id, application_id) = if let Some((target_id, application_id)) = existing {
+        tx.execute(
+            "UPDATE contact_targets_v2
+             SET fit_score=?2,source_url=?3,submission_status=CASE
+                    WHEN submission_status='not_set' THEN 'portal_pending' ELSE submission_status END,
+                 updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+             WHERE id=?1",
+            params![target_id, value.fit_score, value.source_url],
+        )?;
+        (target_id, application_id)
+    } else {
+        let application_id = format!("app-internship-{}", Uuid::new_v4().simple());
+        let target_id = format!("target-internship-{}", Uuid::new_v4().simple());
+        tx.execute(
+            "INSERT INTO applications(id,opportunity_id,pi_id,status,notes)
+             VALUES(?1,?2,NULL,'ready_for_review',?3)",
+            params![
+                application_id,
+                opportunity_id,
+                format!(
+                    "Internship discovery from native job {job_id}. Eligibility: {}. Location: {}",
+                    value.eligibility_summary,
+                    value.location.as_deref().unwrap_or("not specified")
+                ),
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO contact_targets_v2(
+                id,application_id,opportunity_id,pi_id,name,normalized_name,email,normalized_email,
+                organization,title,fit_score,priority,status,submission_status,source_url,identity_key
+             ) VALUES(?1,?2,?3,NULL,'Application portal','applicationportal',NULL,NULL,?4,?5,?6,100,
+                      'ready_to_contact','portal_pending',?7,?8)",
+            params![
+                target_id,
+                application_id,
+                opportunity_id,
+                value.organization,
+                value.title,
+                value.fit_score,
+                value.source_url,
+                format!("{opportunity_id}::applicationportal"),
+            ],
+        )?;
+        (target_id, application_id)
+    };
+    tx.commit()?;
+    let conn = db::connect(&paths.database)?;
+    store_text_artifact(
+        paths,
+        &conn,
+        &target_id,
+        &application_id,
+        "fit_analysis",
+        "en",
+        "fit-analysis.md",
+        &value.fit_analysis,
+    )?;
+    store_text_artifact(
+        paths,
+        &conn,
+        &target_id,
+        &application_id,
+        "fit_analysis",
+        "zh",
+        "fit-analysis-zh.md",
+        &value.fit_analysis_zh,
+    )?;
+    replace_checklist_with_conn(&conn, &target_id, &normalized_checklist)?;
+    record_sources(&conn, "opportunity", &opportunity_id, &value.sources)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO native_job_results(job_id,result_type,entity_id,target_id)
+         VALUES(?1,'contact_target',?2,?2)",
+        params![job_id, target_id],
+    )?;
+    Ok(ImportedTarget { target_id, application_id, opportunity_id })
 }
 
 fn upsert_complete_contact(
@@ -759,6 +1034,55 @@ fn validate_opportunity(value:&FoundOpportunity)->Result<()> {
     Ok(())
 }
 
+fn validate_internship_opportunity(value: &FoundInternshipOpportunity) -> Result<()> {
+    if value.opportunity_kind != "industry_internship" {
+        bail!("机会类型不是 industry_internship")
+    }
+    if !value.active {
+        bail!("官方来源未确认职位仍在开放")
+    }
+    if value.title.trim().is_empty() || value.organization.trim().is_empty() {
+        bail!("职位或公司为空")
+    }
+    if !is_http_url(&value.source_url) {
+        bail!("缺少有效的官方职位 URL")
+    }
+    if value.verified_at.trim().is_empty() {
+        bail!("缺少核验时间")
+    }
+    chrono::DateTime::parse_from_rfc3339(&value.verified_at)
+        .context("职位核验时间不是 ISO-8601")?;
+    if !matches!(
+        value.eligibility_status.as_str(),
+        "eligible" | "uncertain" | "ineligible"
+    ) {
+        bail!("eligibilityStatus 无效：{}", value.eligibility_status)
+    }
+    if value.eligibility_status == "ineligible" {
+        bail!("候选人已明确不符合硬性资格")
+    }
+    if !(0.0..=100.0).contains(&value.fit_score) {
+        bail!("匹配分必须在 0 到 100 之间")
+    }
+    if value.summary.trim().len() < 20 || value.eligibility_summary.trim().len() < 12 {
+        bail!("职位或资格说明不完整")
+    }
+    if value.fit_analysis.trim().len() < 40 || value.fit_analysis_zh.trim().len() < 20 {
+        bail!("双语匹配分析不完整")
+    }
+    normalize_checklist_items(&value.checklist)?;
+    if value.sources.is_empty() {
+        bail!("缺少官方来源证据")
+    }
+    if !value.sources.iter().any(|source| source.evidence_type == "primary") {
+        bail!("缺少官方主来源证据")
+    }
+    for source in &value.sources {
+        validate_source(source)?;
+    }
+    Ok(())
+}
+
 fn validate_contact(value:&FoundContact)->Result<()> {
     if value.name.trim().is_empty() { bail!("联系人姓名为空") }
     if let Some(email)=value.email.as_deref(){if !valid_email(email){bail!("联系人邮箱无效")}}
@@ -796,6 +1120,25 @@ fn opportunity_identity(value:&FoundOpportunity)->String {
     format!("fingerprint:{}:{}:{}",normalize_text(&value.organization),normalize_text(&value.title),value.deadline.as_deref().unwrap_or("unknown"))
 }
 
+fn internship_opportunity_identity(value: &FoundInternshipOpportunity) -> String {
+    if let Some(id) = value.external_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        return format!(
+            "internship-external:{}:{}",
+            normalize_text(&value.organization),
+            normalize_text(id)
+        )
+    }
+    if is_http_url(&value.source_url) {
+        return format!("internship-url:{}", canonical_url(&value.source_url))
+    }
+    format!(
+        "internship-fingerprint:{}:{}:{}",
+        normalize_text(&value.organization),
+        normalize_text(&value.title),
+        value.deadline.as_deref().unwrap_or("unknown")
+    )
+}
+
 fn canonical_url(value:&str)->String{
     if let Ok(mut url)=Url::parse(value){
         url.set_fragment(None);
@@ -830,6 +1173,15 @@ mod tests{
 
     #[test]
     fn protocol_contracts_are_versioned_and_exact() {
+        let internship = result_contract("internship_search");
+        assert_eq!(internship["required"]["schemaVersion"], 1);
+        assert_eq!(
+            internship["required"]["opportunities"][0]["eligibilityStatus"],
+            "eligible|uncertain|ineligible"
+        );
+        assert!(internship["rules"]
+            .as_array()
+            .is_some_and(|rules| rules.iter().any(|rule| rule.as_str().is_some_and(|text| text.contains("Do not create a CV")))));
         let search = result_contract("research_pi");
         assert_eq!(search["required"]["schemaVersion"], 1);
         assert_eq!(search["required"]["opportunities"][0]["contacts"][0]["materials"]["cvData"]["schemaVersion"], 1);
@@ -840,6 +1192,10 @@ mod tests{
 
     #[test]
     fn every_versioned_output_envelope_deserializes() -> Result<()> {
+        let internship: InternshipSearchOutput = serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "opportunities": []
+        }))?;
         let search:SearchOutput=serde_json::from_value(json!({"schemaVersion":1,"opportunities":[]}))?;
         let reply:ReplyOutput=serde_json::from_value(json!({
             "schemaVersion":1,"decision":"wait","summaryZh":"等待进一步消息并保留当前记录。",
@@ -849,8 +1205,53 @@ mod tests{
         let checklist:ChecklistResult=serde_json::from_value(json!({"schemaVersion":1,"items":[]}))?;
         let follow_up:FollowUpScanOutput=serde_json::from_value(json!({"schemaVersion":1,"items":[]}))?;
         let verification:VerificationOutput=serde_json::from_value(json!({"schemaVersion":1,"active":true,"summaryZh":"已核验。","checkedAt":"2026-08-31T00:00:00Z","sources":[]}))?;
-        assert_eq!((search.schema_version,reply.schema_version,checklist.schema_version,follow_up.schema_version,verification.schema_version),(1,1,1,1,1));
+        assert_eq!((internship.schema_version,search.schema_version,reply.schema_version,checklist.schema_version,follow_up.schema_version,verification.schema_version),(1,1,1,1,1,1));
         Ok(())
+    }
+
+    #[test]
+    fn internship_validation_rejects_non_internship_quality_gaps() {
+        let mut value = FoundInternshipOpportunity {
+            opportunity_kind: "industry_internship".into(),
+            external_id: Some("intern-1".into()),
+            source_url: "https://company.example/jobs/intern-1".into(),
+            source_title: Some("Official careers".into()),
+            title: "Machine Learning Intern".into(),
+            organization: "Example Company".into(),
+            department: None,
+            country: Some("Singapore".into()),
+            region: Some("Asia".into()),
+            location: Some("Singapore".into()),
+            deadline: None,
+            summary: "Verified machine learning internship working on production model evaluation.".into(),
+            keywords: vec!["machine learning".into()],
+            active: true,
+            eligibility_status: "uncertain".into(),
+            eligibility_summary: "Graduation-window eligibility requires candidate confirmation.".into(),
+            fit_score: 82.0,
+            fit_analysis: "Evidence-based fit analysis for review; no candidate facts are invented.".into(),
+            fit_analysis_zh: "基于已核验职位要求的匹配分析；没有虚构候选人经历。".into(),
+            verified_at: "2026-09-01T00:00:00Z".into(),
+            sources: vec![SourceEvidence {
+                title: "Official role".into(),
+                url: "https://company.example/jobs/intern-1".into(),
+                checked_at: "2026-09-01T00:00:00Z".into(),
+                evidence_type: "primary".into(),
+            }],
+            checklist: vec![ChecklistOutput {
+                item_type: "graduation_window".into(),
+                required: true,
+                status: "review".into(),
+                origin: "verified".into(),
+                evidence: Some("Official role specifies a graduation window.".into()),
+                source_url: Some("https://company.example/jobs/intern-1".into()),
+                note: None,
+                sort_order: 10,
+            }],
+        };
+        assert!(validate_internship_opportunity(&value).is_ok());
+        value.eligibility_status = "ineligible".into();
+        assert!(validate_internship_opportunity(&value).is_err());
     }
 
     #[test]

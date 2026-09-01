@@ -57,6 +57,7 @@ export interface TargetCard {
   deadline?: string;
   sourceUrl?: string;
   updatedAt: string;
+  careerTrack: "postdoc" | "internship";
 }
 
 export interface DashboardData {

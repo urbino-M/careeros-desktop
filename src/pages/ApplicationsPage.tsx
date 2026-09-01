@@ -68,7 +68,7 @@ export function ApplicationsPage({
       <header className="page-header">
         <div className="eyebrow">APPLICATION WORKSPACE</div>
         <h1>申请中心</h1>
-        <p>机会、PI、材料和联系进度都围绕独立联系目标组织；给一个人发信，不会改变另一个人的状态。</p>
+        <p>Postdoc 联系目标和 industry internship 机会保存在同一个可追溯工作区；投递与联系状态彼此独立。</p>
       </header>
 
       <div className="status-tabs" role="tablist" aria-label="申请状态">
@@ -88,7 +88,7 @@ export function ApplicationsPage({
 
       <div className="status-explainer">
         <Mail size={18} />
-        Gmail 草稿不会改变状态；回复 Agent 完成后才进入“跟进”，明确拒绝会进入“搁置”。投递标记只显示在卡片上，不影响分组。
+        Internship 搜索只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。
       </div>
 
       <div className="search-row">
@@ -96,7 +96,7 @@ export function ApplicationsPage({
           <Search size={18} />
           <input
             value={search}
-            placeholder="搜索 PI、机构、职位或研究主题…"
+            placeholder="搜索 PI、公司、机构、职位或研究主题…"
             onChange={(event) => setSearch(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") { setPage(0); setQuery(search); }
@@ -119,28 +119,30 @@ export function ApplicationsPage({
       )}
       {!error && visible.length > 0 && (
         <div className="target-grid">
-          {visible.map((target) => (
-            <article className="target-card" key={target.id}>
+          {visible.map((target) => {
+            const internship = target.careerTrack === "internship";
+            return <article className="target-card" key={target.id}>
               <div className="target-card-top">
                 <div className="score"><strong>{Math.round(target.fitScore ?? 0)}</strong><span>/ 100</span></div>
                 <div className="target-card-badges">
+                  {internship && <span className="career-track-badge">Internship</span>}
                   <SubmissionBadge status={target.submissionStatus} />
-                  <StatusBadge status={target.status} />
+                  {!internship && <StatusBadge status={target.status} />}
                 </div>
               </div>
               <h3>{target.organization}</h3>
               <p className="target-role">{target.title}</p>
               <dl>
-                <div><dt>PI / 联系目标</dt><dd>{target.name}</dd></div>
+                <div><dt>{internship ? "申请方式" : "PI / 联系目标"}</dt><dd>{target.name}</dd></div>
                 <div><dt>地区</dt><dd>{[target.region, target.country].filter(Boolean).join(" · ") || "待确认"}</dd></div>
                 {target.email && <div><dt>邮箱</dt><dd className="email-value">{target.email}</dd></div>}
                 <div><dt>截止</dt><dd>{target.deadline || "待确认"}</dd></div>
               </dl>
               <button className="card-action" onClick={() => onNavigate({ page: "application", targetId: target.id })}>
-                查看材料与联系记录 <ArrowRight size={17} />
+                {internship ? "查看机会与申请清单" : "查看材料与联系记录"} <ArrowRight size={17} />
               </button>
-            </article>
-          ))}
+            </article>;
+          })}
         </div>
       )}
 

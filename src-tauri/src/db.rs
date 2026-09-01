@@ -63,9 +63,9 @@ pub fn dashboard(path: &Path) -> Result<DashboardData> {
     let metrics = vec![
         DashboardMetric {
             key: "all".into(),
-            label: "联系目标".into(),
+            label: "申请记录".into(),
             value: total,
-            helper: "按 PI / 邮箱独立管理".into(),
+            helper: "Postdoc 联系与 Internship 投递".into(),
         },
         DashboardMetric {
             key: "high_fit".into(),
@@ -75,9 +75,9 @@ pub fn dashboard(path: &Path) -> Result<DashboardData> {
         },
         DashboardMetric {
             key: "ready_to_contact".into(),
-            label: "待联系".into(),
+            label: "待处理".into(),
             value: status_count("ready_to_contact")?,
-            helper: "尚未确认发送".into(),
+            helper: "待联系或待官网投递".into(),
         },
         DashboardMetric {
             key: "contacted".into(),
@@ -250,7 +250,8 @@ fn list_targets_with_conn(
         "SELECT t.id, t.application_id, t.opportunity_id, t.name, t.email,
                 t.organization, t.title, o.country, o.region, t.fit_score,
                 t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
-                t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at
+                t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at,
+                CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END
          FROM contact_targets_v2 t
          LEFT JOIN opportunities o ON o.id=t.opportunity_id
          WHERE t.archived_at IS NULL
@@ -279,7 +280,8 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
             "SELECT t.id, t.application_id, t.opportunity_id, t.name, t.email,
                     t.organization, t.title, o.country, o.region, t.fit_score,
                     t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
-                    t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at
+                    t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at,
+                    CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END
              FROM contact_targets_v2 t
              LEFT JOIN opportunities o ON o.id=t.opportunity_id
              WHERE t.id=?1 AND t.archived_at IS NULL",
@@ -759,6 +761,7 @@ fn target_from_row(row: &Row<'_>) -> rusqlite::Result<TargetCard> {
         deadline: row.get(13)?,
         source_url: row.get(14)?,
         updated_at: row.get(15)?,
+        career_track: row.get(16)?,
     })
 }
 

@@ -2,7 +2,7 @@ import { AlertTriangle, LoaderCircle } from "lucide-react";
 import type { ContactStatus, SubmissionStatus } from "../types";
 
 export const statusLabels: Record<ContactStatus, string> = {
-  ready_to_contact: "待联系",
+  ready_to_contact: "待处理",
   contacted: "已联系",
   replied: "已回复",
   follow_up: "跟进",
@@ -17,6 +17,7 @@ export const submissionStatusLabels: Record<SubmissionStatus, string> = {
 };
 
 export const jobLabels: Record<string, string> = {
+  internship_search: "Internship 机会检索",
   full_run: "完整检索与申请",
   full_search: "完整检索与申请",
   research_pi: "按姓名找机会",

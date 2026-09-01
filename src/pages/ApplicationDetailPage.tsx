@@ -68,6 +68,11 @@ export function ApplicationDetailPage({
   if (error) return <div className="page"><ErrorState message={error} retry={load} /></div>;
   if (!detail) return <div className="page"><LoadingState label="正在打开申请工作区" /></div>;
   const target = detail.target;
+  const internship = target.careerTrack === "internship";
+  const availableTabs = internship
+    ? (["fit", "checklist", "other"] as DetailTab[])
+    : (Object.keys(tabLabels) as DetailTab[]);
+  const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0];
 
   const changeStatus = async (status: string, question?: string) => {
     if (question && !window.confirm(question)) return;
@@ -98,13 +103,13 @@ export function ApplicationDetailPage({
 
       <div className="detail-layout">
         <aside className="opportunity-rail">
-          <div className="eyebrow">当前联系目标</div>
+          <div className="eyebrow">{internship ? "INTERNSHIP OPPORTUNITY" : "当前联系目标"}</div>
           <h1>{target.organization}</h1>
           <p className="rail-role">{target.title}</p>
-          <StatusBadge status={target.status} />
+          {!internship && <StatusBadge status={target.status} />}
           <dl className="rail-facts">
-            <div><dt>PI / 联系人</dt><dd>{target.name}</dd></div>
-            <div><dt>联系邮箱</dt><dd>{target.email || "待核验"}</dd></div>
+            <div><dt>{internship ? "申请方式" : "PI / 联系人"}</dt><dd>{target.name}</dd></div>
+            {!internship && <div><dt>联系邮箱</dt><dd>{target.email || "待核验"}</dd></div>}
             <div><dt>匹配评分</dt><dd>{Math.round(target.fitScore ?? 0)} / 100</dd></div>
             <div><dt>截止日期</dt><dd>{target.deadline || "待确认"}</dd></div>
             <div><dt>地区</dt><dd>{[target.region, target.country].filter(Boolean).join(" · ") || "待确认"}</dd></div>
@@ -114,7 +119,7 @@ export function ApplicationDetailPage({
               <ExternalLink size={16} /> 打开机会来源
             </button>
           )}
-          <div className="rail-status-actions">
+          {!internship && <div className="rail-status-actions">
             {target.status === "ready_to_contact" && (
               <button className="button primary wide" onClick={() => changeStatus("contacted", "只有你已实际发送邮件时才确认。是否标记当前联系人为“已联系”？")}>
                 <Send size={16} /> 确认已实际发送
@@ -135,7 +140,7 @@ export function ApplicationDetailPage({
                 <Bot size={16} /> 移回跟进
               </button>
             )}
-          </div>
+          </div>}
           <label className="rail-submission-control">
             <span>申请投递标记</span>
             <select value={target.submissionStatus} onChange={(event) => changeSubmissionStatus(event.target.value as SubmissionStatus)}>
@@ -143,33 +148,33 @@ export function ApplicationDetailPage({
                 <option value={value} key={value}>{label}</option>
               ))}
             </select>
-            <small>仅显示为卡片标签，不创建新的申请分类。</small>
+            <small>{internship ? "这里只记录投递进度；系统不会自动提交。" : "仅显示为卡片标签，不创建新的申请分类。"}</small>
           </label>
-          <p className="identity-note">ID: {target.id}<br />状态、材料和草稿都绑定此联系人。</p>
+          <p className="identity-note">ID: {target.id}<br />{internship ? "机会、清单和投递标记绑定此申请记录。" : "状态、材料和草稿都绑定此联系人。"}</p>
         </aside>
 
         <section className="material-workspace">
           <div className="workspace-heading">
-            <div><span className="section-index">01</span><h2>申请材料</h2></div>
+            <div><span className="section-index">01</span><h2>{internship ? "机会评估" : "申请材料"}</h2></div>
             <span>审核工作区</span>
           </div>
           <div className="material-tabs" role="tablist">
-            {(Object.keys(tabLabels) as DetailTab[]).map((key) => (
-              <button key={key} className={tab === key ? "selected" : ""} onClick={() => setTab(key)}>{tabLabels[key]}</button>
+            {availableTabs.map((key) => (
+              <button key={key} className={activeTab === key ? "selected" : ""} onClick={() => setTab(key)}>{tabLabels[key]}</button>
             ))}
           </div>
           {notice && <div className="inline-notice">{notice}</div>}
           <div className="material-body">
-            {tab === "cv" && <CvPanel detail={detail} />}
-            {tab === "cover_letter" && <CoverLetterPanel detail={detail} onChanged={load} />}
-            {tab === "checklist" && <ChecklistPanel detail={detail} locale={locale} onNotice={setNotice} />}
-            {tab === "email_en" && <ArtifactPanel detail={detail} type="email" language="en" onChanged={load} onNotice={setNotice} />}
-            {tab === "email_zh" && <ArtifactPanel detail={detail} type="email" language="zh" onChanged={load} onNotice={setNotice} />}
-            {tab === "fit" && <BilingualReportPanel detail={detail} type="fit_analysis" locale={locale} companion="fit" />}
-            {tab === "pi" && <BilingualReportPanel detail={detail} type="pi_profile" locale={locale} companion="pi" />}
-            {tab === "revision" && <RevisionPanel detail={detail} focusJobId={focusJobId} onChanged={load} onNotice={setNotice} />}
-            {tab === "reply" && <ReplyPanel detail={detail} onChanged={load} onNotice={setNotice} onNavigate={onNavigate} />}
-            {tab === "other" && <OtherPanel detail={detail} />}
+            {activeTab === "cv" && <CvPanel detail={detail} />}
+            {activeTab === "cover_letter" && <CoverLetterPanel detail={detail} onChanged={load} />}
+            {activeTab === "checklist" && <ChecklistPanel detail={detail} locale={locale} onNotice={setNotice} />}
+            {activeTab === "email_en" && <ArtifactPanel detail={detail} type="email" language="en" onChanged={load} onNotice={setNotice} />}
+            {activeTab === "email_zh" && <ArtifactPanel detail={detail} type="email" language="zh" onChanged={load} onNotice={setNotice} />}
+            {activeTab === "fit" && <BilingualReportPanel detail={detail} type="fit_analysis" locale={locale} companion="fit" />}
+            {activeTab === "pi" && <BilingualReportPanel detail={detail} type="pi_profile" locale={locale} companion="pi" />}
+            {activeTab === "revision" && <RevisionPanel detail={detail} focusJobId={focusJobId} onChanged={load} onNotice={setNotice} />}
+            {activeTab === "reply" && <ReplyPanel detail={detail} onChanged={load} onNotice={setNotice} onNavigate={onNavigate} />}
+            {activeTab === "other" && <OtherPanel detail={detail} />}
           </div>
         </section>
       </div>
@@ -425,6 +430,7 @@ function LanguageSwitcher({ language, onChange, available = ["zh", "en"] }: { la
 }
 
 function ChecklistPanel({ detail, locale, onNotice }: { detail: TargetDetail; locale: Locale; onNotice: (value: string) => void }) {
+  const internship = detail.target.careerTrack === "internship";
   const [busy, setBusy] = useState(false);
   const [model, setModel] = useState<ModelSelection>();
   const [language, setLanguage] = useState<MaterialLanguage>(locale === "zh" ? "zh" : "en");
@@ -449,8 +455,10 @@ function ChecklistPanel({ detail, locale, onNotice }: { detail: TargetDetail; lo
     <div className="content-section">
       <div className="content-title"><Check size={21} /><div><h3>{language === "zh" ? "申请清单" : "Application checklist"}</h3><p>{language === "zh" ? "清单标题和状态可切换中英文；来源证据始终保留原文。" : "Checklist labels and statuses are translated; source evidence is always preserved verbatim."}</p></div></div>
       <LanguageSwitcher language={language} onChange={setLanguage} />
-      <ModelControls taskType="maintenance" value={model} onChange={setModel} compact />
-      <button className="button secondary" disabled={busy} onClick={refresh}>{busy ? (language === "zh" ? "正在加入…" : "Adding…") : (language === "zh" ? "核验并刷新当前清单" : "Verify and refresh checklist")}</button>
+      {!internship && <>
+        <ModelControls taskType="maintenance" value={model} onChange={setModel} compact />
+        <button className="button secondary" disabled={busy} onClick={refresh}>{busy ? (language === "zh" ? "正在加入…" : "Adding…") : (language === "zh" ? "核验并刷新当前清单" : "Verify and refresh checklist")}</button>
+      </>}
       <div className="checklist">
         {detail.checklist.map((item) => (
           <article key={item.id} className={`check-item check-${item.status}`}>
@@ -459,7 +467,7 @@ function ChecklistPanel({ detail, locale, onNotice }: { detail: TargetDetail; lo
             <span>{item.required ? (language === "zh" ? "必需" : "Required") : (language === "zh" ? "可选" : "Optional")} · {checklistStatuses[item.status]?.[language] || item.status}</span>
           </article>
         ))}
-        {detail.checklist.length === 0 && <p className="muted-copy">{language === "zh" ? "当前尚无清单；可在 Agent 运行中心发起“刷新清单”。" : "No checklist yet. Run Refresh checklist from Agent Center."}</p>}
+        {detail.checklist.length === 0 && <p className="muted-copy">{internship ? (language === "zh" ? "当前机会尚无申请清单；请重新运行 Internship 检索。" : "No checklist is available; rerun Internship search.") : (language === "zh" ? "当前尚无清单；可在 Agent 运行中心发起“刷新清单”。" : "No checklist yet. Run Refresh checklist from Agent Center.")}</p>}
       </div>
     </div>
   );
@@ -506,6 +514,7 @@ function ArtifactPanel({
   const [editing, setEditing] = useState(false);
   const [draftText, setDraftText] = useState("");
   const [saving, setSaving] = useState(false);
+  const canVerify = Boolean(companion) && detail.target.careerTrack !== "internship";
   useEffect(() => {
     setText(""); setError("");
     if (artifact) api.readMaterial(artifact.path).then((value) => { setText(value); setDraftText(value); }).catch((value) => setError(errorMessage(value)));
@@ -514,7 +523,7 @@ function ArtifactPanel({
   if (error) return <ErrorState message={error} />;
   if (!text) return <LoadingState label="正在读取材料" />;
   const verify = async () => {
-    if (!companion) return;
+    if (!canVerify || !companion) return;
     setVerificationBusy(true); setVerificationNotice("");
     const pi = companion === "pi";
     try {
@@ -554,7 +563,7 @@ function ArtifactPanel({
   };
   return (
     <div className="artifact-stack">
-      {companion && <section className="verification-strip">
+      {canVerify && <section className="verification-strip">
         <ModelControls taskType="maintenance" value={verificationModel} onChange={setVerificationModel} compact />
         <button className="button secondary" disabled={verificationBusy} onClick={verify}>{verificationBusy ? "正在加入…" : companion === "pi" ? "重新核验当前 PI" : "重新核验当前机会"}</button>
         {verificationNotice && <span>{verificationNotice}</span>}

@@ -76,6 +76,7 @@ pub struct TargetCard {
     pub deadline: Option<String>,
     pub source_url: Option<String>,
     pub updated_at: String,
+    pub career_track: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -64,7 +64,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (route: AppRoute) =>
 
         <div className="panel priority-panel">
           <div className="section-heading">
-            <div><span className="section-index">02</span><h2>优先待联系工作区</h2></div>
+            <div><span className="section-index">02</span><h2>优先待处理工作区</h2></div>
             <button className="text-button" onClick={() => onNavigate({ page: "applications", status: "ready_to_contact" })}>
               查看全部 <ArrowRight size={15} />
             </button>

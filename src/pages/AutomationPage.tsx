@@ -2,6 +2,7 @@ import {
   Activity,
   ArrowLeft,
   Bot,
+  BriefcaseBusiness,
   Check,
   ChevronDown,
   CircleStop,
@@ -21,7 +22,7 @@ import { ModelControls, type ModelSelection } from "../components/ModelControls"
 import { ErrorState, LoadingState, StatusBadge, formatLocalTime, jobLabels } from "../components/Ui";
 import type { ApplicationTab, AppRoute, JobGroups, JobSummary } from "../types";
 
-type ComposerType = "full_search" | "research_pi" | "opportunity_health" | "follow_up_scan" | null;
+type ComposerType = "internship_search" | "full_search" | "research_pi" | "opportunity_health" | "follow_up_scan" | null;
 
 export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
   const [jobs, setJobs] = useState<JobGroups>();
@@ -59,6 +60,7 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
         <h1>Agent 运行中心</h1>
         <p>启动研究任务、查看实时进度，并处理需要你确认的结果。最多 5 个任务并行，第 6 个自动排队。</p>
         <div className="quick-actions">
+          <button className="button primary" onClick={() => setComposer("internship_search")}><BriefcaseBusiness size={17} /> 寻找 Internship</button>
           <button className="button primary" onClick={() => setComposer("full_search")}><Plus size={17} /> 新建完整检索</button>
           <button className="button secondary" onClick={() => setComposer("research_pi")}><UserSearch size={17} /> 按姓名找机会</button>
           <button className="button secondary" onClick={() => setComposer("opportunity_health")}><SearchCheck size={17} /> 检查机会</button>
@@ -147,6 +149,7 @@ function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () 
 
 function resultDestination(jobType: string): { tab: ApplicationTab; label: string } {
   switch (jobType) {
+    case "internship_search": return { tab: "fit", label: "查看 Internship 机会" };
     case "material_revision": return { tab: "revision", label: "查看修订差异" };
     case "checklist_refresh": return { tab: "checklist", label: "查看申请清单" };
     case "reply_followup":
@@ -170,6 +173,7 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const isPi = type === "research_pi";
+  const isInternship = type === "internship_search";
   const isHealth = type === "opportunity_health";
   const isScan = type === "follow_up_scan";
   const submit = async () => {
@@ -178,13 +182,15 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
     try {
       await api.enqueue({
         jobType: type,
-        targetType: isPi ? "person" : isHealth ? "verification" : isScan ? "contact_targets" : "search",
+        targetType: isPi ? "person" : isHealth ? "verification" : isScan ? "contact_targets" : isInternship ? "internship" : "search",
         targetId: undefined,
         providerId: model?.providerId,
         modelId: model?.modelId,
         reasoning: model?.reasoning,
-        payload: { query, ...(type === "full_search" ? { threshold } : {}) },
-        prompt: isPi
+        payload: { query, ...(["full_search", "internship_search"].includes(type) ? { threshold } : {}) },
+        prompt: isInternship
+          ? `Search for current industry internships matching this request: ${query}. Use official company career pages or official ATS records as primary evidence. Exclude postdoctoral, doctoral, faculty and regular full-time roles. Check hard eligibility requirements against available profile evidence; mark unknowns as uncertain. Return review-only structured opportunities and application checklists. Do not create a CV, contact anyone or submit an application.`
+          : isPi
           ? `Research this named PI or researcher for current postdoctoral opportunities: ${query}. Use primary sources, verify identity, email, lab direction and availability, deduplicate against existing opportunities, and return structured evidence. Do not contact anyone.`
           : isHealth
             ? `Verify whether these opportunity URLs or records remain active: ${query}. Use primary sources, record the check time and evidence, and return a review-only verification result. Do not archive records or change contact status.`
@@ -199,9 +205,9 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
   return (
     <div className="composer-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
       <section className="task-composer">
-        <div className="composer-heading"><div><span className="section-index">NEW</span><h2>{isPi ? "按姓名找机会" : isHealth ? "检查机会" : isScan ? "扫描跟进" : "新建完整检索"}</h2></div><button onClick={onClose}>关闭</button></div>
-        <label className="field"><span>{isPi ? "PI / 研究者姓名与线索" : isHealth ? "要核验的机会、URL 或范围" : isScan ? "补充要求（可选）" : "本次检索要求"}</span><textarea className="tall" autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isPi ? "例如：Li Cheng，香港，水下声学" : isHealth ? "粘贴机会 URL，或说明要检查的机构与职位。" : isScan ? "例如：优先检查超过 14 天没有回复的联系人。" : "例如：检索香港和欧洲近期的水下声学、海洋机器人博士后。"} /></label>
-        {type === "full_search" && <label className="field"><span>严格匹配阈值（只保留大于该分数）</span><input type="number" min={0} max={99} value={threshold} onChange={(event) => setThreshold(Math.min(99, Math.max(0, Number(event.target.value) || 0)))} /></label>}
+        <div className="composer-heading"><div><span className="section-index">NEW</span><h2>{isInternship ? "寻找 Internship" : isPi ? "按姓名找机会" : isHealth ? "检查机会" : isScan ? "扫描跟进" : "新建完整检索"}</h2></div><button onClick={onClose}>关闭</button></div>
+        <label className="field"><span>{isInternship ? "目标岗位、地点和硬性条件" : isPi ? "PI / 研究者姓名与线索" : isHealth ? "要核验的机会、URL 或范围" : isScan ? "补充要求（可选）" : "本次检索要求"}</span><textarea className="tall" autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isInternship ? "例如：2027 暑期，新加坡或远程，机器学习 / AI research internship；优先官方职位页。" : isPi ? "例如：Li Cheng，香港，水下声学" : isHealth ? "粘贴机会 URL，或说明要检查的机构与职位。" : isScan ? "例如：优先检查超过 14 天没有回复的联系人。" : "例如：检索香港和欧洲近期的水下声学、海洋机器人博士后。"} /></label>
+        {["full_search", "internship_search"].includes(type) && <label className="field"><span>严格匹配阈值（只保留大于该分数）</span><input type="number" min={0} max={99} value={threshold} onChange={(event) => setThreshold(Math.min(99, Math.max(0, Number(event.target.value) || 0)))} /></label>}
         <ModelControls taskType={isPi ? "research_pi" : isHealth || isScan ? "maintenance" : "full_search"} value={model} onChange={setModel} />
         <div className="composer-safety">任务会建立独立 Codex 线程；重试恢复原线程。任何邮件发送和申请提交仍需你手动确认。</div>
         {error && <div className="inline-notice error">{error}</div>}

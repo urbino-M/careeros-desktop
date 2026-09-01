@@ -85,24 +85,27 @@ impl AppPaths {
     }
 
     fn install_builtin_skills(&self) -> Result<()> {
-        let source = self
+        let skills = self
             .runtime
             .parent()
             .context("内置运行时目录无效")?
-            .join("skills/postdoc-application-agent");
-        if !source.is_dir() {
-            return Ok(())
-        }
-        let destination = self.codex_home.join("skills/postdoc-application-agent");
-        for entry in WalkDir::new(&source) {
-            let entry = entry?;
-            let relative = entry.path().strip_prefix(&source)?;
-            let target = destination.join(relative);
-            if entry.file_type().is_dir() {
-                fs::create_dir_all(&target)?;
-            } else {
-                if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
-                fs::copy(entry.path(), target)?;
+            .join("skills");
+        for name in ["postdoc-application-agent", "internship-application-agent"] {
+            let source = skills.join(name);
+            if !source.is_dir() {
+                continue;
+            }
+            let destination = self.codex_home.join("skills").join(name);
+            for entry in WalkDir::new(&source) {
+                let entry = entry?;
+                let relative = entry.path().strip_prefix(&source)?;
+                let target = destination.join(relative);
+                if entry.file_type().is_dir() {
+                    fs::create_dir_all(&target)?;
+                } else {
+                    if let Some(parent) = target.parent() { fs::create_dir_all(parent)?; }
+                    fs::copy(entry.path(), target)?;
+                }
             }
         }
         Ok(())
