@@ -24,6 +24,7 @@ const navItems: Array<{
 }> = [
   { page: "dashboard", label: "仪表盘", icon: Home, route: { page: "dashboard" } },
   { page: "automation", label: "Agent 运行中心", icon: Bot, route: { page: "automation" } },
+  { page: "automation", label: "Internship Hunter", icon: BriefcaseBusiness, route: { page: "automation", track: "internship" } },
   {
     page: "applications",
     label: "申请中心",
@@ -33,11 +34,14 @@ const navItems: Array<{
   { page: "settings", label: "设置", icon: Settings, route: { page: "settings" } },
 ];
 
-function isActive(route: AppRoute, page: AppRoute["page"]) {
-  if (page === "applications") {
+function isActive(route: AppRoute, target: AppRoute) {
+  if (target.page === "applications") {
     return route.page === "applications" || route.page === "application";
   }
-  return route.page === page;
+  if (target.page === "automation") {
+    return route.page === "automation" && route.track === target.track;
+  }
+  return route.page === target.page;
 }
 
 export function Shell({
@@ -68,12 +72,14 @@ export function Shell({
         <nav className="primary-nav" aria-label="主导航">
           <div className="nav-heading">工作台</div>
           {navItems.slice(0, 2).map((item) => (
-            <NavButton key={item.page} {...item} active={isActive(route, item.page)} onNavigate={onNavigate} />
+            <NavButton key={item.label} {...item} active={isActive(route, item.route)} onNavigate={onNavigate} />
           ))}
+          <div className="nav-heading">职业方向</div>
+          <NavButton {...navItems[2]} active={isActive(route, navItems[2].route)} onNavigate={onNavigate} />
           <div className="nav-heading">申请</div>
-          <NavButton {...navItems[2]} active={isActive(route, "applications")} onNavigate={onNavigate} />
+          <NavButton {...navItems[3]} active={isActive(route, navItems[3].route)} onNavigate={onNavigate} />
           <div className="nav-heading">系统</div>
-          <NavButton {...navItems[3]} active={isActive(route, "settings")} onNavigate={onNavigate} />
+          <NavButton {...navItems[4]} active={isActive(route, navItems[4].route)} onNavigate={onNavigate} />
         </nav>
 
         <div className="sidebar-footer">

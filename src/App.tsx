@@ -10,7 +10,7 @@ import type { ApplicationTab, AppRoute, Locale, StatusFilter } from "./types";
 function parseHash(): AppRoute {
   const hash = window.location.hash.replace(/^#\/?/, "");
   const [page, value, section, origin, job] = hash.split("/");
-  if (page === "automation") return { page: "automation" };
+  if (page === "automation") return { page: "automation", track: value === "internship" ? "internship" : undefined };
   if (page === "settings") return { page: "settings" };
   if (page === "application" && value) {
     const allowedTabs: ApplicationTab[] = ["cv", "cover_letter", "checklist", "email_en", "email_zh", "fit", "pi", "revision", "reply", "other"];
@@ -18,7 +18,7 @@ function parseHash(): AppRoute {
       page: "application",
       targetId: decodeURIComponent(value),
       tab: allowedTabs.includes(section as ApplicationTab) ? section as ApplicationTab : undefined,
-      returnPage: origin === "automation" ? "automation" : undefined,
+      returnPage: origin === "automation" ? "automation" : origin === "internship" ? "internship" : undefined,
       jobId: job ? decodeURIComponent(job) : undefined,
     };
   }
@@ -35,7 +35,7 @@ function parseHash(): AppRoute {
 function routeHash(route: AppRoute) {
   switch (route.page) {
     case "dashboard": return "#/dashboard";
-    case "automation": return "#/automation";
+    case "automation": return route.track === "internship" ? "#/automation/internship" : "#/automation";
     case "settings": return "#/settings";
     case "applications": return `#/applications/${route.status}`;
     case "application": return `#/application/${encodeURIComponent(route.targetId)}/${route.tab || "cv"}${route.returnPage ? `/${route.returnPage}` : route.jobId ? "/direct" : ""}${route.jobId ? `/${encodeURIComponent(route.jobId)}` : ""}`;
@@ -69,7 +69,7 @@ export default function App() {
   return (
     <Shell route={route} locale={locale} onLocale={changeLocale} onNavigate={navigate}>
       {route.page === "dashboard" && <DashboardPage onNavigate={navigate} />}
-      {route.page === "automation" && <AutomationPage onNavigate={navigate} />}
+      {route.page === "automation" && <AutomationPage internshipMode={route.track === "internship"} onNavigate={navigate} />}
       {route.page === "applications" && (
         <ApplicationsPage status={route.status} onNavigate={navigate} />
       )}

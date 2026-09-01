@@ -281,9 +281,9 @@ export type ApplicationTab =
 
 export type AppRoute =
   | { page: "dashboard" }
-  | { page: "automation" }
+  | { page: "automation"; track?: "internship" }
   | { page: "applications"; status: StatusFilter }
-  | { page: "application"; targetId: string; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
+  | { page: "application"; targetId: string; tab?: ApplicationTab; returnPage?: "automation" | "internship"; jobId?: string }
   | { page: "settings" };
 
 export type Locale = "zh" | "en";

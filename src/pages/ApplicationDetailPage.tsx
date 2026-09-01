@@ -49,7 +49,7 @@ export function ApplicationDetailPage({
 }: {
   targetId: string;
   initialTab?: ApplicationTab;
-  returnPage?: "automation";
+  returnPage?: "automation" | "internship";
   focusJobId?: string;
   locale: Locale;
   onNavigate: (route: AppRoute) => void;
@@ -97,8 +97,14 @@ export function ApplicationDetailPage({
 
   return (
     <div className="page application-detail-page">
-      <button className="back-button" onClick={() => onNavigate(returnPage === "automation" ? { page: "automation" } : { page: "applications", status: target.status })}>
-        <ArrowLeft size={17} /> {returnPage === "automation" ? "返回 Agent 运行中心" : "返回申请列表"}
+      <button className="back-button" onClick={() => onNavigate(
+        returnPage === "automation"
+          ? { page: "automation" }
+          : returnPage === "internship"
+            ? { page: "automation", track: "internship" }
+            : { page: "applications", status: target.status },
+      )}>
+        <ArrowLeft size={17} /> {returnPage === "automation" ? "返回 Agent 运行中心" : returnPage === "internship" ? "返回 Internship Hunter" : "返回申请列表"}
       </button>
 
       <div className="detail-layout">

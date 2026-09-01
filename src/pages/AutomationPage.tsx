@@ -24,13 +24,23 @@ import type { ApplicationTab, AppRoute, JobGroups, JobSummary } from "../types";
 
 type ComposerType = "internship_search" | "full_search" | "research_pi" | "opportunity_health" | "follow_up_scan" | null;
 
-export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
+export function AutomationPage({
+  internshipMode = false,
+  onNavigate,
+}: {
+  internshipMode?: boolean;
+  onNavigate: (route: AppRoute) => void;
+}) {
   const [jobs, setJobs] = useState<JobGroups>();
   const [error, setError] = useState("");
   const [historySize, setHistorySize] = useState(5);
   const [composer, setComposer] = useState<ComposerType>(null);
   const [notice, setNotice] = useState("");
   const load = () => api.jobs(historySize).then(setJobs).catch((value) => setError(errorMessage(value)));
+
+  useEffect(() => {
+    setComposer(internshipMode ? "internship_search" : null);
+  }, [internshipMode]);
 
   useEffect(() => {
     load();
@@ -40,15 +50,32 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
     return () => { window.clearInterval(timer); unlisten?.(); };
   }, [historySize]);
 
+  const visibleJobs = useMemo(() => {
+    if (!jobs || !internshipMode) return jobs;
+    const internshipOnly = (job: JobSummary) => job.jobType === "internship_search";
+    const needsReview = jobs.needsReview.filter(internshipOnly);
+    const recent = jobs.recent.filter(internshipOnly);
+    const recentTotal = new Set([...needsReview, ...recent].map((job) => job.id)).size;
+    return {
+      ...jobs,
+      running: jobs.running.filter(internshipOnly),
+      queued: jobs.queued.filter(internshipOnly),
+      needsReview,
+      needsReviewTotal: needsReview.length,
+      recent,
+      recentTotal,
+    };
+  }, [jobs, internshipMode]);
+
   const taskHistory = useMemo(() => {
-    if (!jobs) return [];
+    if (!visibleJobs) return [];
     const seen = new Set<string>();
-    return [...jobs.needsReview, ...jobs.recent].filter((job) => {
+    return [...visibleJobs.needsReview, ...visibleJobs.recent].filter((job) => {
       if (seen.has(job.id)) return false;
       seen.add(job.id);
       return true;
     }).slice(0, historySize);
-  }, [jobs, historySize]);
+  }, [visibleJobs, historySize]);
 
   return (
     <div className="page automation-page">
@@ -56,22 +83,29 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
         <ArrowLeft size={17} /> 返回仪表盘
       </button>
       <header className="page-header automation-header">
-        <div className="eyebrow">NATIVE AGENT CONTROL</div>
-        <h1>Agent 运行中心</h1>
-        <p>启动研究任务、查看实时进度，并处理需要你确认的结果。最多 5 个任务并行，第 6 个自动排队。</p>
+        <div className="eyebrow">{internshipMode ? "CAREER TRACK · INDUSTRY" : "NATIVE AGENT CONTROL"}</div>
+        <h1>{internshipMode ? "Internship Hunter" : "Agent 运行中心"}</h1>
+        <p>{internshipMode
+          ? "这是 PostdocOS 的 Internship 分支：核验官方职位来源与硬性资格，结果进入共享申请中心等待你审核。"
+          : "启动研究任务、查看实时进度，并处理需要你确认的结果。最多 5 个任务并行，第 6 个自动排队。"}</p>
         <div className="quick-actions">
-          <button className="button primary" onClick={() => setComposer("internship_search")}><BriefcaseBusiness size={17} /> 寻找 Internship</button>
-          <button className="button primary" onClick={() => setComposer("full_search")}><Plus size={17} /> 新建完整检索</button>
-          <button className="button secondary" onClick={() => setComposer("research_pi")}><UserSearch size={17} /> 按姓名找机会</button>
-          <button className="button secondary" onClick={() => setComposer("opportunity_health")}><SearchCheck size={17} /> 检查机会</button>
-          <button className="button secondary" onClick={() => onNavigate({ page: "applications", status: "all" })}><ListRestart size={17} /> 选择申请刷新清单</button>
-          <button className="button secondary" onClick={() => setComposer("follow_up_scan")}><Clock3 size={17} /> 扫描跟进</button>
-          <button className="button secondary" onClick={async () => {
-            try {
-              const id = await api.enqueue({ jobType: "preference_rebuild", targetType: "preferences", payload: { source: "recorded_revisions" } });
-              setNotice(`偏好学习已加入：${id}`); load();
-            } catch (value) { setNotice(errorMessage(value)); }
-          }}><Bot size={17} /> 更新偏好</button>
+          {internshipMode ? <>
+            <button className="button primary" onClick={() => setComposer("internship_search")}><BriefcaseBusiness size={17} /> 寻找 Internship</button>
+            <button className="button secondary" onClick={() => onNavigate({ page: "applications", status: "all" })}><ListRestart size={17} /> 查看申请中心</button>
+            <button className="button secondary" onClick={() => setComposer("opportunity_health")}><SearchCheck size={17} /> 检查机会</button>
+          </> : <>
+            <button className="button primary" onClick={() => setComposer("full_search")}><Plus size={17} /> 新建完整检索</button>
+            <button className="button secondary" onClick={() => setComposer("research_pi")}><UserSearch size={17} /> 按姓名找机会</button>
+            <button className="button secondary" onClick={() => setComposer("opportunity_health")}><SearchCheck size={17} /> 检查机会</button>
+            <button className="button secondary" onClick={() => onNavigate({ page: "applications", status: "all" })}><ListRestart size={17} /> 选择申请刷新清单</button>
+            <button className="button secondary" onClick={() => setComposer("follow_up_scan")}><Clock3 size={17} /> 扫描跟进</button>
+            <button className="button secondary" onClick={async () => {
+              try {
+                const id = await api.enqueue({ jobType: "preference_rebuild", targetType: "preferences", payload: { source: "recorded_revisions" } });
+                setNotice(`偏好学习已加入：${id}`); load();
+              } catch (value) { setNotice(errorMessage(value)); }
+            }}><Bot size={17} /> 更新偏好</button>
+          </>}
         </div>
       </header>
 
@@ -81,26 +115,26 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
 
       {error && <ErrorState message={error} retry={load} />}
       {!error && !jobs && <LoadingState label="正在读取任务调度器" />}
-      {jobs && (
+      {visibleJobs && (
         <>
           <div className="worker-strip">
             <span><i className="pulse-dot" /> Worker 在线</span>
-            <span>并发 {jobs.running.length} / {jobs.capacity}</span>
-            <span>排队 {jobs.queued.length}</span>
-            <span>待审核 {jobs.needsReviewTotal}</span>
+            <span>并发 {visibleJobs.running.length} / {visibleJobs.capacity}</span>
+            <span>排队 {visibleJobs.queued.length}</span>
+            <span>待审核 {visibleJobs.needsReviewTotal}</span>
           </div>
 
-          <JobSection title={`当前运行 · ${jobs.running.length}`} icon={Activity} open>
-            {jobs.running.length ? jobs.running.map((job) => <JobCard job={job} key={job.id} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="当前没有任务在执行；调度器会自动领取队列中的下一项。" />}
+          <JobSection title={`当前运行 · ${visibleJobs.running.length}`} icon={Activity} open>
+            {visibleJobs.running.length ? visibleJobs.running.map((job) => <JobCard job={job} key={job.id} internshipMode={internshipMode} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="当前没有任务在执行；调度器会自动领取队列中的下一项。" />}
           </JobSection>
 
-          <JobSection title={`等待队列 · ${jobs.queued.length}`} icon={Clock3}>
-            {jobs.queued.length ? jobs.queued.map((job, index) => <QueueRow job={job} index={index} key={job.id} onReload={load} />) : <CompactEmpty text="队列为空。" />}
+          <JobSection title={`等待队列 · ${visibleJobs.queued.length}`} icon={Clock3}>
+            {visibleJobs.queued.length ? visibleJobs.queued.map((job, index) => <QueueRow job={job} index={index} key={job.id} onReload={load} />) : <CompactEmpty text="队列为空。" />}
           </JobSection>
 
-          <JobSection title={`任务记录 · ${jobs.recentTotal}（待处理 ${jobs.needsReviewTotal}）`} icon={History} open>
-            {taskHistory.length ? taskHistory.map((job) => <JobCard job={job} key={job.id} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="尚无任务记录。" />}
-            {jobs.recentTotal > historySize && <button className="load-more" onClick={() => setHistorySize((value) => value + 5)}>再展开 5 条</button>}
+          <JobSection title={`任务记录 · ${visibleJobs.recentTotal}（待处理 ${visibleJobs.needsReviewTotal}）`} icon={History} open>
+            {taskHistory.length ? taskHistory.map((job) => <JobCard job={job} key={job.id} internshipMode={internshipMode} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="尚无任务记录。" />}
+            {visibleJobs.recentTotal > historySize && <button className="load-more" onClick={() => setHistorySize((value) => value + 5)}>再展开 5 条</button>}
           </JobSection>
         </>
       )}
@@ -117,7 +151,7 @@ function JobSection({ title, icon: Icon, open = false, children }: { title: stri
   );
 }
 
-function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () => void; onNavigate: (route: AppRoute) => void }) {
+function JobCard({ job, internshipMode = false, onReload, onNavigate }: { job: JobSummary; internshipMode?: boolean; onReload: () => void; onNavigate: (route: AppRoute) => void }) {
   const failed = job.status === "failed";
   const isNative = job.providerId !== "legacy";
   const exactTarget = job.targetId?.startsWith("target") ? job.targetId : undefined;
@@ -132,7 +166,7 @@ function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () 
       <div className="job-meta"><span>{formatLocalTime(job.createdAt)}</span><span>{job.id}</span>{job.modelId && <span>{job.providerId} · {job.accountId || "默认账号"} · {job.modelId} · {job.reasoning}</span>}{job.threadId && <span>会话 {job.threadId}</span>}</div>
       <div className="job-actions">
         {resultTargets.map((targetId, index) => (
-          <button className="button ghost" key={targetId} onClick={() => onNavigate({ page: "application", targetId, tab: destination.tab, returnPage: "automation", jobId: job.id })}>
+          <button className="button ghost" key={targetId} onClick={() => onNavigate({ page: "application", targetId, tab: destination.tab, returnPage: internshipMode ? "internship" : "automation", jobId: job.id })}>
             {resultTargets.length > 1 ? `${destination.label} ${index + 1}` : destination.label}
           </button>
         ))}
