@@ -1,29 +1,32 @@
 import { ArrowRight, FlaskConical, MapPinned } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api";
-import { ErrorState, LoadingState, StatusBadge } from "../components/Ui";
-import type { AppRoute, DashboardData, StatusFilter } from "../types";
+import { ErrorState, LoadingState, StatusBadge, SubmissionBadge } from "../components/Ui";
+import type { ApplicationFilter, AppRoute, CareerSystem, DashboardData } from "../types";
 
-export function DashboardPage({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
+export function DashboardPage({ careerSystem, onNavigate }: { careerSystem: CareerSystem; onNavigate: (route: AppRoute) => void }) {
   const [data, setData] = useState<DashboardData>();
   const [error, setError] = useState("");
   const load = () => {
     setError("");
-    api.dashboard().then(setData).catch((value) => setError(errorMessage(value)));
+    api.dashboard(careerSystem).then(setData).catch((value) => setError(errorMessage(value)));
   };
-  useEffect(load, []);
+  useEffect(() => { setData(undefined); load(); }, [careerSystem]);
 
   if (error) return <Page><ErrorState message={error} retry={load} /></Page>;
   if (!data) return <Page><LoadingState /></Page>;
+  const internship = careerSystem === "internship";
   const maxRegion = Math.max(1, ...data.regions.map((item) => item.count));
 
   return (
     <Page>
       <section className="hero-panel">
         <div className="hero-rings" />
-        <div className="eyebrow">2027 申请季 · 本机工作区</div>
-        <h1>更安静、更严谨地找到<br />真正合适的实验室。</h1>
-        <p>从研究检索与证据匹配，到材料、联系目标和回复处理，保存在同一份可追溯的本地数据中。</p>
+        <div className="eyebrow">{internship ? "2027 INTERNSHIP SEASON" : "2027 申请季"} · 本机工作区</div>
+        <h1>{internship ? <>把散落的 Internship 机会，<br />变成可执行的申请清单。</> : <>更安静、更严谨地找到<br />真正合适的实验室。</>}</h1>
+        <p>{internship
+          ? "从官方职位检索、硬性资格核验和匹配评分，到申请清单与投递跟踪，集中在独立的 InternOS 工作区。"
+          : "从研究检索与证据匹配，到材料、联系目标和回复处理，保存在同一份可追溯的本地数据中。"}</p>
         <div className="hero-meta"><span className="pulse-dot" /> 数据已迁入本机 SQLite · 外部操作始终需要确认</div>
       </section>
 
@@ -34,7 +37,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (route: AppRoute) =>
             key={metric.key}
             onClick={() => {
               const status = metric.key === "high_fit" ? "all" : metric.key;
-              onNavigate({ page: "applications", status: status as StatusFilter });
+              onNavigate({ page: "applications", status: status as ApplicationFilter });
             }}
           >
             <span className="metric-label">{metric.label}</span>
@@ -65,7 +68,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (route: AppRoute) =>
         <div className="panel priority-panel">
           <div className="section-heading">
             <div><span className="section-index">02</span><h2>优先待处理工作区</h2></div>
-            <button className="text-button" onClick={() => onNavigate({ page: "applications", status: "ready_to_contact" })}>
+            <button className="text-button" onClick={() => onNavigate({ page: "applications", status: internship ? "portal_pending" : "ready_to_contact" })}>
               查看全部 <ArrowRight size={15} />
             </button>
           </div>
@@ -78,7 +81,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (route: AppRoute) =>
                   <p>{target.title}</p>
                   <span>{target.name}{target.country ? ` · ${target.country}` : ""}</span>
                 </div>
-                <StatusBadge status={target.status} />
+                {internship ? <SubmissionBadge status={target.submissionStatus} /> : <StatusBadge status={target.status} />}
                 <ArrowRight size={18} />
               </button>
             ))}
@@ -88,7 +91,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (route: AppRoute) =>
 
       <button className="dashboard-agent-cta" onClick={() => onNavigate({ page: "automation" })}>
         <FlaskConical size={21} />
-        <span><strong>开始新的研究任务</strong><small>完整检索、按姓名核验或材料修订</small></span>
+        <span><strong>{internship ? "开始新的 Internship 搜索" : "开始新的研究任务"}</strong><small>{internship ? "描述岗位、地点与硬性条件，只核验官方职位来源" : "完整检索、按姓名核验或材料修订"}</small></span>
         <ArrowRight size={18} />
       </button>
     </Page>

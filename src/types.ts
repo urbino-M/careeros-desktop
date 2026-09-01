@@ -12,6 +12,8 @@ export type SubmissionStatus =
   | "not_required";
 
 export type StatusFilter = ContactStatus | "all";
+export type CareerSystem = "postdoc" | "internship";
+export type ApplicationFilter = StatusFilter | SubmissionStatus;
 
 export interface MigrationReport {
   imported: boolean;
@@ -281,9 +283,9 @@ export type ApplicationTab =
 
 export type AppRoute =
   | { page: "dashboard" }
-  | { page: "automation"; track?: "internship" }
-  | { page: "applications"; status: StatusFilter }
-  | { page: "application"; targetId: string; tab?: ApplicationTab; returnPage?: "automation" | "internship"; jobId?: string }
+  | { page: "automation" }
+  | { page: "applications"; status: ApplicationFilter }
+  | { page: "application"; targetId: string; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
   | { page: "settings" };
 
 export type Locale = "zh" | "en";

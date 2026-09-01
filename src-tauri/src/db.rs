@@ -21,28 +21,58 @@ pub fn connect(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-pub fn dashboard(path: &Path) -> Result<DashboardData> {
+pub fn dashboard(path: &Path, career_track: &str) -> Result<DashboardData> {
+    validate_career_track(career_track)?;
     let conn = connect(path)?;
     let status_count = |status: &str| -> Result<i64> {
         let sql = if status == "shelved" {
-            "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL AND shelved_at IS NOT NULL"
+            "SELECT COUNT(*)
+             FROM contact_targets_v2 t
+             LEFT JOIN opportunities o ON o.id=t.opportunity_id
+             WHERE t.archived_at IS NULL AND t.shelved_at IS NOT NULL
+               AND (
+                    (?1='internship' AND o.opportunity_type='industry_internship')
+                    OR (?1='postdoc' AND COALESCE(o.opportunity_type,'')<>'industry_internship')
+               )"
         } else {
-            "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL AND shelved_at IS NULL AND status=?1"
+            "SELECT COUNT(*)
+             FROM contact_targets_v2 t
+             LEFT JOIN opportunities o ON o.id=t.opportunity_id
+             WHERE t.archived_at IS NULL AND t.shelved_at IS NULL
+               AND t.status=?2
+               AND (
+                    (?1='internship' AND o.opportunity_type='industry_internship')
+                    OR (?1='postdoc' AND COALESCE(o.opportunity_type,'')<>'industry_internship')
+               )"
         };
         Ok(if status == "shelved" {
-            conn.query_row(sql, [], |row| row.get(0))?
+            conn.query_row(sql, [career_track], |row| row.get(0))?
         } else {
-            conn.query_row(sql, [status], |row| row.get(0))?
+            conn.query_row(sql, params![career_track, status], |row| row.get(0))?
         })
     };
     let total: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL",
-        [],
+        "SELECT COUNT(*)
+         FROM contact_targets_v2 t
+         LEFT JOIN opportunities o ON o.id=t.opportunity_id
+         WHERE t.archived_at IS NULL
+           AND (
+                (?1='internship' AND o.opportunity_type='industry_internship')
+                OR (?1='postdoc' AND COALESCE(o.opportunity_type,'')<>'industry_internship')
+           )",
+        [career_track],
         |row| row.get(0),
     )?;
     let high_fit: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM contact_targets_v2 WHERE archived_at IS NULL AND shelved_at IS NULL AND fit_score >= 85",
-        [],
+        "SELECT COUNT(*)
+         FROM contact_targets_v2 t
+         LEFT JOIN opportunities o ON o.id=t.opportunity_id
+         WHERE t.archived_at IS NULL AND t.shelved_at IS NULL AND t.fit_score >= 85
+           AND (
+                (?1='internship' AND o.opportunity_type='industry_internship')
+                OR (?1='postdoc' AND COALESCE(o.opportunity_type,'')<>'industry_internship')
+           )",
+        [career_track],
         |row| row.get(0),
     )?;
     let replied = status_count("replied")?;
@@ -52,68 +82,65 @@ pub fn dashboard(path: &Path) -> Result<DashboardData> {
             COUNT(DISTINCT CASE WHEN j.status='needs_review' THEN j.target_id END)
          FROM native_jobs j
          LEFT JOIN contact_targets_v2 t ON t.id=j.target_id
-         WHERE j.job_type='reply_followup' AND t.shelved_at IS NULL",
-        [],
+         LEFT JOIN opportunities o ON o.id=t.opportunity_id
+         WHERE j.job_type='reply_followup' AND t.shelved_at IS NULL
+           AND (
+                (?1='internship' AND o.opportunity_type='industry_internship')
+                OR (?1='postdoc' AND COALESCE(o.opportunity_type,'')<>'industry_internship')
+           )",
+        [career_track],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let follow_up_helper = format!(
         "{} 封新回复 · {} 处理中 · {} 待审核",
         replied, follow_up_running, follow_up_review
     );
-    let metrics = vec![
-        DashboardMetric {
-            key: "all".into(),
-            label: "申请记录".into(),
-            value: total,
-            helper: "Postdoc 联系与 Internship 投递".into(),
-        },
-        DashboardMetric {
-            key: "high_fit".into(),
-            label: "高匹配".into(),
-            value: high_fit,
-            helper: "评分 ≥ 85".into(),
-        },
-        DashboardMetric {
-            key: "ready_to_contact".into(),
-            label: "待处理".into(),
-            value: status_count("ready_to_contact")?,
-            helper: "待联系或待官网投递".into(),
-        },
-        DashboardMetric {
-            key: "contacted".into(),
-            label: "已联系".into(),
-            value: status_count("contacted")?,
-            helper: "已确认发送".into(),
-        },
-        DashboardMetric {
-            key: "replied".into(),
-            label: "已回复".into(),
-            value: replied,
-            helper: "等待判断下一步".into(),
-        },
-        DashboardMetric {
-            key: "follow_up".into(),
-            label: "跟进".into(),
-            value: status_count("follow_up")?,
-            helper: follow_up_helper,
-        },
-        DashboardMetric {
-            key: "shelved".into(),
-            label: "搁置".into(),
-            value: status_count("shelved")?,
-            helper: "明确拒绝或无需继续".into(),
-        },
-    ];
+    let metrics = if career_track == "internship" {
+        let submission_count = |submission_status: &str| -> Result<i64> {
+            Ok(conn.query_row(
+                "SELECT COUNT(*)
+                 FROM contact_targets_v2 t
+                 LEFT JOIN opportunities o ON o.id=t.opportunity_id
+                 WHERE t.archived_at IS NULL AND t.submission_status=?2
+                   AND ?1='internship'
+                   AND o.opportunity_type='industry_internship'",
+                params![career_track, submission_status],
+                |row| row.get(0),
+            )?)
+        };
+        vec![
+            DashboardMetric { key: "all".into(), label: "申请机会".into(), value: total, helper: "只显示行业 Internship".into() },
+            DashboardMetric { key: "high_fit".into(), label: "高匹配".into(), value: high_fit, helper: "评分 ≥ 85".into() },
+            DashboardMetric { key: "portal_pending".into(), label: "待投递".into(), value: submission_count("portal_pending")?, helper: "已核验，等待官网投递".into() },
+            DashboardMetric { key: "submitted".into(), label: "已投递".into(), value: submission_count("submitted")?, helper: "等待面试或后续通知".into() },
+            DashboardMetric { key: "not_set".into(), label: "未开始".into(), value: submission_count("not_set")?, helper: "还没有记录投递动作".into() },
+            DashboardMetric { key: "not_required".into(), label: "无需投递".into(), value: submission_count("not_required")?, helper: "仅保存机会与资格核验".into() },
+        ]
+    } else {
+        vec![
+            DashboardMetric { key: "all".into(), label: "联系目标".into(), value: total, helper: "按 PI / 邮箱独立管理".into() },
+            DashboardMetric { key: "high_fit".into(), label: "高匹配".into(), value: high_fit, helper: "评分 ≥ 85".into() },
+            DashboardMetric { key: "ready_to_contact".into(), label: "待联系".into(), value: status_count("ready_to_contact")?, helper: "尚未确认发送".into() },
+            DashboardMetric { key: "contacted".into(), label: "已联系".into(), value: status_count("contacted")?, helper: "已确认发送".into() },
+            DashboardMetric { key: "replied".into(), label: "已回复".into(), value: replied, helper: "等待判断下一步".into() },
+            DashboardMetric { key: "follow_up".into(), label: "跟进".into(), value: status_count("follow_up")?, helper: follow_up_helper },
+            DashboardMetric { key: "shelved".into(), label: "搁置".into(), value: status_count("shelved")?, helper: "明确拒绝或无需继续".into() },
+        ]
+    };
 
     let mut region_statement = conn.prepare(
         "SELECT NULLIF(TRIM(o.region),''), NULLIF(TRIM(o.country),''), COUNT(*)
          FROM contact_targets_v2 t
          LEFT JOIN opportunities o ON o.id=t.opportunity_id
          WHERE t.archived_at IS NULL
+           AND (
+                (?1='internship' AND o.opportunity_type='industry_internship')
+                OR (?1='postdoc' AND COALESCE(o.opportunity_type,'')<>'industry_internship')
+           )
          GROUP BY NULLIF(TRIM(o.region),''), NULLIF(TRIM(o.country),'')",
-    )?;
+        )?;
     let raw_regions = region_statement
-        .query_map([], |row| {
+        .query_map([career_track], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?,
                 row.get::<_, Option<String>>(1)?,
@@ -141,7 +168,9 @@ pub fn dashboard(path: &Path) -> Result<DashboardData> {
 
     let priority_targets = list_targets_with_conn(
         &conn,
-        Some("ready_to_contact"),
+        career_track,
+        if career_track == "postdoc" { Some("ready_to_contact") } else { None },
+        if career_track == "internship" { Some("portal_pending") } else { None },
         None,
         0,
         4,
@@ -220,25 +249,35 @@ fn is_european_country(country: &str) -> bool {
 
 pub fn list_targets(
     path: &Path,
+    career_track: &str,
     status: Option<&str>,
+    submission_status: Option<&str>,
     search: Option<&str>,
     offset: usize,
     limit: usize,
 ) -> Result<Vec<TargetCard>> {
+    validate_career_track(career_track)?;
     validate_status_filter(status)?;
+    validate_submission_status_filter(submission_status)?;
     let conn = connect(path)?;
-    list_targets_with_conn(&conn, status, search, offset, limit.clamp(1, 100), false)
+    list_targets_with_conn(&conn, career_track, status, submission_status, search, offset, limit.clamp(1, 100), false)
 }
 
 fn list_targets_with_conn(
     conn: &Connection,
+    career_track: &str,
     status: Option<&str>,
+    submission_status: Option<&str>,
     search: Option<&str>,
     offset: usize,
     limit: usize,
     high_fit_first: bool,
 ) -> Result<Vec<TargetCard>> {
+    validate_career_track(career_track)?;
+    validate_status_filter(status)?;
+    validate_submission_status_filter(submission_status)?;
     let status = status.filter(|value| *value != "all");
+    let submission_status = submission_status.filter(|value| *value != "all");
     let search = search.map(str::trim).filter(|value| !value.is_empty());
     let pattern = search.map(|value| format!("%{}%", value.to_lowercase()));
     let order = if high_fit_first {
@@ -256,18 +295,23 @@ fn list_targets_with_conn(
          LEFT JOIN opportunities o ON o.id=t.opportunity_id
          WHERE t.archived_at IS NULL
            AND (
-                ?1 IS NULL
-                OR (?1='shelved' AND t.shelved_at IS NOT NULL)
-                OR (?1<>'shelved' AND t.shelved_at IS NULL AND t.status=?1)
+                (?1='internship' AND o.opportunity_type='industry_internship')
+                OR (?1='postdoc' AND COALESCE(o.opportunity_type,'')<>'industry_internship')
            )
-           AND (?2 IS NULL OR lower(t.name) LIKE ?2 OR lower(t.organization) LIKE ?2
-                OR lower(t.title) LIKE ?2 OR lower(COALESCE(t.email,'')) LIKE ?2)
+           AND (
+                ?2 IS NULL
+                OR (?2='shelved' AND t.shelved_at IS NOT NULL)
+                OR (?2<>'shelved' AND t.shelved_at IS NULL AND t.status=?2)
+           )
+           AND (?3 IS NULL OR t.submission_status=?3)
+           AND (?4 IS NULL OR lower(t.name) LIKE ?4 OR lower(t.organization) LIKE ?4
+                OR lower(t.title) LIKE ?4 OR lower(COALESCE(t.email,'')) LIKE ?4)
          ORDER BY {order}
-         LIMIT ?3 OFFSET ?4"
+         LIMIT ?5 OFFSET ?6"
     );
     let mut statement = conn.prepare(&sql)?;
     let rows = statement.query_map(
-        params![status, pattern, limit as i64, offset as i64],
+        params![career_track, status, submission_status, pattern, limit as i64, offset as i64],
         target_from_row,
     )?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -829,6 +873,22 @@ fn validate_status_filter(status: Option<&str>) -> Result<()> {
             "ready_to_contact" | "contacted" | "replied" | "follow_up" | "shelved" | "all"
         ) {
             bail!("未知申请状态：{value}")
+        }
+    }
+    Ok(())
+}
+
+fn validate_career_track(value: &str) -> Result<()> {
+    if !matches!(value, "postdoc" | "internship") {
+        bail!("未知职业系统：{value}")
+    }
+    Ok(())
+}
+
+fn validate_submission_status_filter(status: Option<&str>) -> Result<()> {
+    if let Some(value) = status {
+        if !matches!(value, "not_set" | "portal_pending" | "submitted" | "not_required" | "all") {
+            bail!("未知投递状态：{value}")
         }
     }
     Ok(())

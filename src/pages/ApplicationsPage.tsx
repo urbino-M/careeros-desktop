@@ -2,9 +2,9 @@ import { ArrowLeft, ArrowRight, Filter, Mail, Search, SlidersHorizontal } from "
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api";
 import { EmptyState, ErrorState, LoadingState, StatusBadge, SubmissionBadge, statusLabels } from "../components/Ui";
-import type { AppRoute, DashboardData, StatusFilter, TargetCard } from "../types";
+import type { ApplicationFilter, AppRoute, CareerSystem, DashboardData, TargetCard } from "../types";
 
-const filters: StatusFilter[] = [
+const postdocFilters: ApplicationFilter[] = [
   "ready_to_contact",
   "contacted",
   "replied",
@@ -13,16 +13,30 @@ const filters: StatusFilter[] = [
   "all",
 ];
 
-const filterLabels: Record<StatusFilter, string> = {
+const internshipFilters: ApplicationFilter[] = [
+  "portal_pending",
+  "submitted",
+  "not_set",
+  "not_required",
+  "all",
+];
+
+const filterLabels: Record<ApplicationFilter, string> = {
   ...statusLabels,
+  not_set: "未开始",
+  portal_pending: "待投递",
+  submitted: "已投递",
+  not_required: "无需投递",
   all: "全部",
 };
 
 export function ApplicationsPage({
+  careerSystem,
   status,
   onNavigate,
 }: {
-  status: StatusFilter;
+  careerSystem: CareerSystem;
+  status: ApplicationFilter;
   onNavigate: (route: AppRoute) => void;
 }) {
   const [targets, setTargets] = useState<TargetCard[]>();
@@ -32,12 +46,15 @@ export function ApplicationsPage({
   const [page, setPage] = useState(0);
   const [error, setError] = useState("");
   const pageSize = 10;
+  const internship = careerSystem === "internship";
+  const filters = internship ? internshipFilters : postdocFilters;
+  const activeStatus = filters.includes(status) ? status : filters[0];
 
   const load = () => {
     setError("");
     Promise.all([
-      api.targets(status, query, page * pageSize, pageSize + 1),
-      api.dashboard(),
+      api.targets(careerSystem, activeStatus, query, page * pageSize, pageSize + 1),
+      api.dashboard(careerSystem),
     ])
       .then(([targetData, dashboardData]) => {
         setTargets(targetData);
@@ -49,8 +66,8 @@ export function ApplicationsPage({
   useEffect(() => {
     setPage(0);
     setTargets(undefined);
-  }, [status]);
-  useEffect(load, [status, query, page]);
+  }, [careerSystem, activeStatus]);
+  useEffect(load, [careerSystem, activeStatus, query, page]);
 
   const counts = useMemo(() => {
     const result: Record<string, number> = {};
@@ -67,16 +84,18 @@ export function ApplicationsPage({
       </button>
       <header className="page-header">
         <div className="eyebrow">APPLICATION WORKSPACE</div>
-        <h1>申请中心</h1>
-        <p>Postdoc 联系目标和 industry internship 机会保存在同一个可追溯工作区；投递与联系状态彼此独立。</p>
+        <h1>{internship ? "Internship 申请" : "Postdoc 申请"}</h1>
+        <p>{internship
+          ? "只显示行业实习机会，并按官网投递进度管理；不会混入 PI 联系记录。"
+          : "只显示 Postdoc 机会，并按 PI 联系、回复和跟进状态管理；不会混入行业职位。"}</p>
       </header>
 
-      <div className="status-tabs" role="tablist" aria-label="申请状态">
+      <div className={`status-tabs ${internship ? "internship-tabs" : ""}`} role="tablist" aria-label="申请状态">
         {filters.map((filter) => (
           <button
             role="tab"
-            aria-selected={status === filter}
-            className={status === filter ? "selected" : ""}
+            aria-selected={activeStatus === filter}
+            className={activeStatus === filter ? "selected" : ""}
             key={filter}
             onClick={() => onNavigate({ page: "applications", status: filter })}
           >
@@ -88,7 +107,9 @@ export function ApplicationsPage({
 
       <div className="status-explainer">
         <Mail size={18} />
-        Internship 搜索只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。
+        {internship
+          ? "InternOS 只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。"
+          : "PostdocOS 将每位 PI 作为独立联系目标；状态变化不会影响其他联系人。"}
       </div>
 
       <div className="search-row">
@@ -96,7 +117,7 @@ export function ApplicationsPage({
           <Search size={18} />
           <input
             value={search}
-            placeholder="搜索 PI、公司、机构、职位或研究主题…"
+            placeholder={internship ? "搜索公司、职位、地点或技能方向…" : "搜索 PI、机构、职位或研究主题…"}
             onChange={(event) => setSearch(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") { setPage(0); setQuery(search); }
@@ -108,7 +129,7 @@ export function ApplicationsPage({
       </div>
 
       <div className="list-heading">
-        <div><span className="section-index">01</span><h2>选择机会 / 申请</h2></div>
+        <div><span className="section-index">01</span><h2>{internship ? "选择 Internship 机会" : "选择 Postdoc 申请"}</h2></div>
         <span><Filter size={14} /> 按匹配分从高到低</span>
       </div>
 
@@ -125,9 +146,7 @@ export function ApplicationsPage({
               <div className="target-card-top">
                 <div className="score"><strong>{Math.round(target.fitScore ?? 0)}</strong><span>/ 100</span></div>
                 <div className="target-card-badges">
-                  {internship && <span className="career-track-badge">Internship</span>}
-                  <SubmissionBadge status={target.submissionStatus} />
-                  {!internship && <StatusBadge status={target.status} />}
+                  {internship ? <SubmissionBadge status={target.submissionStatus} /> : <StatusBadge status={target.status} />}
                 </div>
               </div>
               <h3>{target.organization}</h3>

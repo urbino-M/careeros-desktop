@@ -1,4 +1,13 @@
-# Internship Hunter Handoff
+# InternOS / Internship Hunter Handoff
+
+## Product shape
+
+InternOS is a parallel career workspace inside the PostdocOS desktop app. The
+user selects `PostdocOS` or `InternOS` in the sidebar; the selected system
+controls the brand, dashboard, navigation, task history, and application
+filters. The two systems share the local SQLite database, Agent scheduler,
+model settings, and safety boundaries, but they do not mix opportunity records
+or workflow-specific status views.
 
 ## Scope
 
@@ -20,10 +29,11 @@ the repository-wide ownership map.
 
 | Area | Primary files | Responsibility |
 |---|---|---|
+| System switcher | `src/App.tsx`; `src/components/Shell.tsx` | Persisted PostdocOS / InternOS selection and system-scoped navigation |
 | Entry point | `src/pages/AutomationPage.tsx` | Search request, threshold, and review navigation |
 | Runtime contract | `src-tauri/resources/skills/internship-application-agent/SKILL.md`; `src-tauri/src/materials.rs` | Evidence rules and workspace contract |
 | Domain import | `src-tauri/src/workflows.rs` | Result schema, validation, deduplication, and import |
-| Presentation | `src/pages/ApplicationsPage.tsx`; `src/pages/ApplicationDetailPage.tsx` | Internship-aware opportunity and checklist views |
+| Presentation | `src/pages/DashboardPage.tsx`; `src/pages/ApplicationsPage.tsx`; `src/pages/ApplicationDetailPage.tsx` | System-scoped dashboard, application filters, opportunity and checklist views |
 
 ## Runtime Flow
 
@@ -47,6 +57,8 @@ is the track discriminator. No schema migration is introduced.
 - Job type: `internship_search`.
 - Output: `output/internship-search-results.json`, schema version 1.
 - UI track: `TargetCard.careerTrack`, derived from `opportunity_type`.
+- Backend list/dashboard filters: `careerTrack=postdoc|internship`; Internship
+  status tabs use `submission_status`, while Postdoc tabs use contact status.
 - Imported artifacts: bilingual `fit_analysis`; no CV or email artifacts.
 
 ## Safety Rules
@@ -85,7 +97,9 @@ is the track discriminator. No schema migration is introduced.
 The first slice uses a synthetic `Application portal` contact target so existing
 job-result routing and application views remain usable. Track-specific pipeline
 storage should replace this compatibility seam before interview/offer stages are
-added.
+added. The current system selector is intentionally small and local; account-level
+preferences and separate onboarding can be added without changing the shared
+storage boundary.
 
 ## Out of Scope
 

@@ -20,17 +20,18 @@ import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "../api";
 import { ModelControls, type ModelSelection } from "../components/ModelControls";
 import { ErrorState, LoadingState, StatusBadge, formatLocalTime, jobLabels } from "../components/Ui";
-import type { ApplicationTab, AppRoute, JobGroups, JobSummary } from "../types";
+import type { ApplicationTab, AppRoute, CareerSystem, JobGroups, JobSummary } from "../types";
 
 type ComposerType = "internship_search" | "full_search" | "research_pi" | "opportunity_health" | "follow_up_scan" | null;
 
 export function AutomationPage({
-  internshipMode = false,
+  careerSystem,
   onNavigate,
 }: {
-  internshipMode?: boolean;
+  careerSystem: CareerSystem;
   onNavigate: (route: AppRoute) => void;
 }) {
+  const internshipMode = careerSystem === "internship";
   const [jobs, setJobs] = useState<JobGroups>();
   const [error, setError] = useState("");
   const [historySize, setHistorySize] = useState(5);
@@ -40,7 +41,7 @@ export function AutomationPage({
 
   useEffect(() => {
     setComposer(internshipMode ? "internship_search" : null);
-  }, [internshipMode]);
+  }, [careerSystem]);
 
   useEffect(() => {
     load();
@@ -51,15 +52,17 @@ export function AutomationPage({
   }, [historySize]);
 
   const visibleJobs = useMemo(() => {
-    if (!jobs || !internshipMode) return jobs;
-    const internshipOnly = (job: JobSummary) => job.jobType === "internship_search";
-    const needsReview = jobs.needsReview.filter(internshipOnly);
-    const recent = jobs.recent.filter(internshipOnly);
+    if (!jobs) return jobs;
+    const belongsToSystem = (job: JobSummary) => internshipMode
+      ? job.jobType === "internship_search"
+      : job.jobType !== "internship_search";
+    const needsReview = jobs.needsReview.filter(belongsToSystem);
+    const recent = jobs.recent.filter(belongsToSystem);
     const recentTotal = new Set([...needsReview, ...recent].map((job) => job.id)).size;
     return {
       ...jobs,
-      running: jobs.running.filter(internshipOnly),
-      queued: jobs.queued.filter(internshipOnly),
+      running: jobs.running.filter(belongsToSystem),
+      queued: jobs.queued.filter(belongsToSystem),
       needsReview,
       needsReviewTotal: needsReview.length,
       recent,
@@ -86,7 +89,7 @@ export function AutomationPage({
         <div className="eyebrow">{internshipMode ? "CAREER TRACK · INDUSTRY" : "NATIVE AGENT CONTROL"}</div>
         <h1>{internshipMode ? "Internship Hunter" : "Agent 运行中心"}</h1>
         <p>{internshipMode
-          ? "这是 PostdocOS 的 Internship 分支：核验官方职位来源与硬性资格，结果进入共享申请中心等待你审核。"
+          ? "InternOS 独立管理行业实习：核验官方职位来源与硬性资格，结果只进入 Internship 申请工作区。"
           : "启动研究任务、查看实时进度，并处理需要你确认的结果。最多 5 个任务并行，第 6 个自动排队。"}</p>
         <div className="quick-actions">
           {internshipMode ? <>
@@ -125,7 +128,7 @@ export function AutomationPage({
           </div>
 
           <JobSection title={`当前运行 · ${visibleJobs.running.length}`} icon={Activity} open>
-            {visibleJobs.running.length ? visibleJobs.running.map((job) => <JobCard job={job} key={job.id} internshipMode={internshipMode} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="当前没有任务在执行；调度器会自动领取队列中的下一项。" />}
+            {visibleJobs.running.length ? visibleJobs.running.map((job) => <JobCard job={job} key={job.id} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="当前没有任务在执行；调度器会自动领取队列中的下一项。" />}
           </JobSection>
 
           <JobSection title={`等待队列 · ${visibleJobs.queued.length}`} icon={Clock3}>
@@ -133,7 +136,7 @@ export function AutomationPage({
           </JobSection>
 
           <JobSection title={`任务记录 · ${visibleJobs.recentTotal}（待处理 ${visibleJobs.needsReviewTotal}）`} icon={History} open>
-            {taskHistory.length ? taskHistory.map((job) => <JobCard job={job} key={job.id} internshipMode={internshipMode} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="尚无任务记录。" />}
+            {taskHistory.length ? taskHistory.map((job) => <JobCard job={job} key={job.id} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="尚无任务记录。" />}
             {visibleJobs.recentTotal > historySize && <button className="load-more" onClick={() => setHistorySize((value) => value + 5)}>再展开 5 条</button>}
           </JobSection>
         </>
@@ -151,7 +154,7 @@ function JobSection({ title, icon: Icon, open = false, children }: { title: stri
   );
 }
 
-function JobCard({ job, internshipMode = false, onReload, onNavigate }: { job: JobSummary; internshipMode?: boolean; onReload: () => void; onNavigate: (route: AppRoute) => void }) {
+function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () => void; onNavigate: (route: AppRoute) => void }) {
   const failed = job.status === "failed";
   const isNative = job.providerId !== "legacy";
   const exactTarget = job.targetId?.startsWith("target") ? job.targetId : undefined;
@@ -166,7 +169,7 @@ function JobCard({ job, internshipMode = false, onReload, onNavigate }: { job: J
       <div className="job-meta"><span>{formatLocalTime(job.createdAt)}</span><span>{job.id}</span>{job.modelId && <span>{job.providerId} · {job.accountId || "默认账号"} · {job.modelId} · {job.reasoning}</span>}{job.threadId && <span>会话 {job.threadId}</span>}</div>
       <div className="job-actions">
         {resultTargets.map((targetId, index) => (
-          <button className="button ghost" key={targetId} onClick={() => onNavigate({ page: "application", targetId, tab: destination.tab, returnPage: internshipMode ? "internship" : "automation", jobId: job.id })}>
+          <button className="button ghost" key={targetId} onClick={() => onNavigate({ page: "application", targetId, tab: destination.tab, returnPage: "automation", jobId: job.id })}>
             {resultTargets.length > 1 ? `${destination.label} ${index + 1}` : destination.label}
           </button>
         ))}

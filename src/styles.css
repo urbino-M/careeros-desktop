@@ -82,6 +82,11 @@ body::before {
 .brand-mark { width: 45px; height: 45px; display: grid; place-items: center; border: 1px solid var(--line-bright); color: var(--accent-strong); font-family: var(--serif); font-size: 29px; background: radial-gradient(circle at 35% 30%, rgba(72,205,208,.22), transparent 55%); }
 .brand-kicker { color: var(--accent); font-size: 10px; letter-spacing: .18em; font-weight: 700; }
 .brand-name { font: 700 25px/1.1 "Avenir Next", sans-serif; margin-top: 3px; }
+.workspace-switcher { display: grid; gap: 8px; margin: 15px 8px 0; }
+.workspace-switcher > span { color: var(--muted-2); font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+.workspace-switcher > div { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: rgba(3,20,27,.55); }
+.workspace-switcher button { padding: 8px 5px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; }
+.workspace-switcher button.selected { color: var(--accent-strong); background: var(--accent-dim); box-shadow: inset 0 0 0 1px rgba(72,205,208,.34); }
 .primary-nav { padding-top: 24px; }
 .nav-heading { margin: 16px 9px 7px; color: var(--muted-2); font-size: 11px; font-weight: 700; letter-spacing: .14em; }
 .nav-button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 11px 13px; border: 0; border-radius: 7px; background: transparent; color: #b2c2c3; cursor: pointer; text-align: left; transition: 140ms ease; }
@@ -158,6 +163,7 @@ body::before {
 .button.danger, .danger { color: var(--red); }
 
 .status-tabs { display: grid; grid-template-columns: repeat(6, 1fr); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.status-tabs.internship-tabs { grid-template-columns: repeat(5, 1fr); }
 .status-tabs button { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; border: 0; border-right: 1px solid var(--line); background: rgba(6,27,35,.7); cursor: pointer; }
 .status-tabs button:last-child { border-right: 0; }
 .status-tabs button span { min-width: 21px; padding: 2px 6px; border-radius: 10px; background: rgba(118,156,160,.13); font-size: 10px; color: var(--muted); }
@@ -202,7 +208,6 @@ body::before {
 .status-queued { color: #c6b9f5; background: rgba(152,127,222,.1); }
 .status-cancelled { color: var(--muted); }
 .submission-badge { display: inline-flex; width: fit-content; padding: 4px 8px; border-radius: 999px; border: 1px solid currentColor; font-size: 9px; font-weight: 700; letter-spacing: .04em; white-space: nowrap; }
-.career-track-badge { display: inline-flex; width: fit-content; padding: 4px 8px; border-radius: 999px; color: #80d8ff; border: 1px solid rgba(128,216,255,.55); background: rgba(55,154,210,.12); font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
 .submission-not_set { color: var(--muted-2); background: rgba(118,156,160,.08); }
 .submission-portal_pending { color: var(--amber); background: rgba(242,173,64,.1); }
 .submission-submitted { color: var(--green); background: rgba(78,212,141,.1); }
@@ -486,7 +491,7 @@ body::before {
   .brand-lockup > div:last-child, .nav-button span, .nav-heading, .sidebar-footer { display: none; }
   .nav-button { justify-content: center; }
   .page { width: calc(100% - 34px); }
-  .status-tabs { grid-template-columns: repeat(3, 1fr); }
+  .status-tabs, .status-tabs.internship-tabs { grid-template-columns: repeat(3, 1fr); }
   .target-grid, .settings-card-grid, .provider-grid { grid-template-columns: 1fr; }
   .detail-layout { grid-template-columns: 1fr; }
   .opportunity-rail { position: static; border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 24px; }

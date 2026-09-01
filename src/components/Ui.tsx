@@ -10,7 +10,7 @@ export const statusLabels: Record<ContactStatus, string> = {
 };
 
 export const submissionStatusLabels: Record<SubmissionStatus, string> = {
-  not_set: "投递未标记",
+  not_set: "未开始",
   portal_pending: "官网待投递",
   submitted: "已投递",
   not_required: "无需投递",
