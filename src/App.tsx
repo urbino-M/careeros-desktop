@@ -69,10 +69,10 @@ export default function App() {
     localStorage.setItem("postdocos-locale", next);
   };
 
-  const changeCareerSystem = (next: CareerSystem) => {
+  const changeCareerSystem = (next: CareerSystem, destination: AppRoute = { page: "dashboard" }) => {
     setCareerSystem(next);
     localStorage.setItem("postdocos-career-system", next);
-    navigate({ page: "dashboard" });
+    navigate(destination);
   };
 
   return (

@@ -12,7 +12,7 @@ interface ShellProps {
   route: AppRoute;
   careerSystem: CareerSystem;
   locale: Locale;
-  onCareerSystem: (system: CareerSystem) => void;
+  onCareerSystem: (system: CareerSystem, destination?: AppRoute) => void;
   onLocale: (locale: Locale) => void;
   onNavigate: (route: AppRoute) => void;
   children: React.ReactNode;
@@ -38,12 +38,16 @@ export function Shell({
   const navItems: Array<{ label: string; icon: typeof Home; route: AppRoute }> = [
     { label: "仪表盘", icon: Home, route: { page: "dashboard" } },
     { label: internship ? "机会搜索" : "Agent 运行中心", icon: Bot, route: { page: "automation" } },
-    {
-      label: internship ? "Internship 申请" : "Postdoc 申请",
-      icon: BriefcaseBusiness,
-      route: { page: "applications", status: internship ? "all" : "ready_to_contact" },
-    },
     { label: "设置", icon: Settings, route: { page: "settings" } },
+  ];
+  const applicationItems: Array<{
+    label: string;
+    system: CareerSystem;
+    icon: typeof Home;
+    route: Extract<AppRoute, { page: "applications" }>;
+  }> = [
+    { label: "Postdoc 申请", system: "postdoc", icon: BriefcaseBusiness, route: { page: "applications", status: "ready_to_contact" } },
+    { label: "Internship 申请", system: "internship", icon: BriefcaseBusiness, route: { page: "applications", status: "all" } },
   ];
   const startDragging = (event: React.MouseEvent<HTMLElement>) => {
     if (event.button === 0) void getCurrentWindow().startDragging();
@@ -77,9 +81,18 @@ export function Shell({
             <NavButton key={item.label} {...item} active={isActive(route, item.route)} onNavigate={onNavigate} />
           ))}
           <div className="nav-heading">申请</div>
-          <NavButton {...navItems[2]} active={isActive(route, navItems[2].route)} onNavigate={onNavigate} />
+          {applicationItems.map((item) => (
+            <NavButton
+              key={item.label}
+              label={item.label}
+              icon={item.icon}
+              route={item.route}
+              active={careerSystem === item.system && isActive(route, item.route)}
+              onNavigate={(destination) => onCareerSystem(item.system, destination)}
+            />
+          ))}
           <div className="nav-heading">系统</div>
-          <NavButton {...navItems[3]} active={isActive(route, navItems[3].route)} onNavigate={onNavigate} />
+          <NavButton {...navItems[2]} active={isActive(route, navItems[2].route)} onNavigate={onNavigate} />
         </nav>
 
         <div className="sidebar-footer">
