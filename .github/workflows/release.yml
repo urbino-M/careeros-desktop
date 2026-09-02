@@ -346,9 +346,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mac_dmg="$(find release-assets/macos -type f -name '*.dmg' -print -quit)"
+          mac_bundle="$(find release-assets/macos -type f -name '*.app.tar.gz' -print -quit)"
+          windows_bundle="$(find release-assets/windows -type f -name '*-setup.exe' -print -quit)"
+          [[ -n "$mac_dmg" && -n "$mac_bundle" && -f "$mac_bundle.sig" ]]
+          [[ -n "$windows_bundle" && -f "$windows_bundle.sig" ]]
+          cp "$mac_dmg" "$mac_bundle" "$mac_bundle.sig" "$windows_bundle" "$windows_bundle.sig" release-assets/
           cp LICENSE THIRD_PARTY_NOTICES.md release-assets/
           cd release-assets
-          sha256sum macos/*.dmg macos/*.app.tar.gz windows/*.exe | sed -E 's#  (macos|windows)/#  #' > SHA256SUMS.txt
+          sha256sum *.dmg *.app.tar.gz *.exe > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create or update release
@@ -357,7 +363,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          assets=(release-assets/macos/*.dmg release-assets/macos/*.app.tar.gz release-assets/macos/*.app.tar.gz.sig release-assets/windows/*.exe release-assets/windows/*.exe.sig release-assets/SHA256SUMS.txt release-assets/LICENSE release-assets/THIRD_PARTY_NOTICES.md)
+          assets=(release-assets/*.dmg release-assets/*.app.tar.gz release-assets/*.app.tar.gz.sig release-assets/*.exe release-assets/*.exe.sig release-assets/SHA256SUMS.txt release-assets/LICENSE release-assets/THIRD_PARTY_NOTICES.md)
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else
@@ -375,8 +381,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mac_bundle="$(find release-assets/macos -maxdepth 1 -name '*.app.tar.gz' -type f -print -quit)"
-          windows_bundle="$(find release-assets/windows -maxdepth 1 -name '*-setup.exe' -type f -print -quit)"
+          mac_bundle="$(find release-assets -maxdepth 1 -name '*.app.tar.gz' -type f -print -quit)"
+          windows_bundle="$(find release-assets -maxdepth 1 -name '*-setup.exe' -type f -print -quit)"
           [[ -n "$mac_bundle" && -f "$mac_bundle.sig" ]]
           [[ -n "$windows_bundle" && -f "$windows_bundle.sig" ]]
           release_notes="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')"
