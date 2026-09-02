@@ -4,9 +4,9 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  // GitHub Pages serves this repository below /postdoc-os-desktop/.
-  // Local development keeps the existing root-relative URLs.
-  base: process.env.GITHUB_ACTIONS ? "/postdoc-os-desktop/" : "/",
+  // Keep downloaded Action artifacts self-contained; Pages can override this
+  // with VITE_BASE when the repository owner enables it later.
+  base: process.env.VITE_BASE || (process.env.GITHUB_ACTIONS ? "/postdoc-os-desktop/" : "/"),
   clearScreen: false,
   server: {
     port: 1420,
