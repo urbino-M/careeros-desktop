@@ -144,6 +144,7 @@ pub fn prepare_codex_provider(
     provider.insert("env_key".into(), toml::Value::String(env_key.clone()));
     provider.insert("wire_api".into(), toml::Value::String("responses".into()));
     provider.insert("requires_openai_auth".into(), toml::Value::Boolean(false));
+    provider.insert("supports_websockets".into(), toml::Value::Boolean(false));
     let mut providers = toml::Table::new();
     providers.insert(config.id.clone(), toml::Value::Table(provider));
     root.insert("model_providers".into(), toml::Value::Table(providers));
@@ -162,6 +163,7 @@ pub fn prepare_codex_provider(
             format!("model_providers.{}.env_key={}", config.id, quote(&env_key)),
             format!("model_providers.{}.wire_api={}", config.id, quote("responses")),
             format!("model_providers.{}.requires_openai_auth=false", config.id),
+            format!("model_providers.{}.supports_websockets=false", config.id),
         ],
         env_key,
         secret_reference: config.secret_reference.clone(),
@@ -493,8 +495,10 @@ mod tests {
         let profile = fs::read_to_string(temp.path().join("providers/deepseek-config.toml"))?;
         assert!(profile.contains("env_key"));
         assert!(profile.contains("POSTDOCOS_DEEPSEEK_API_KEY"));
+        assert!(profile.contains("supports_websockets = false"));
         assert!(!profile.contains("sk-test-secret"));
         assert!(prepared.config_overrides.iter().any(|value| value == "model_provider=\"deepseek\""));
+        assert!(prepared.config_overrides.iter().any(|value| value == "model_providers.deepseek.supports_websockets=false"));
         assert!(prepared.config_overrides.iter().all(|value| !value.contains("sk-test-secret")));
         let _: toml::Table = toml::from_str(&profile)?;
         let catalog: Value = serde_json::from_str(&fs::read_to_string(temp.path().join("providers/deepseek-models.json"))?)?;
