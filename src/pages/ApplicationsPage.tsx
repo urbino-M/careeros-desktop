@@ -1,9 +1,9 @@
 import { ArrowLeft, ArrowRight, Filter, Mail, Search, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api";
-import { InternshipPlanningPanel } from "../components/InternshipPlanningPanel";
+import { InternshipPlanningPanel, InternshipPlanningSummary } from "../components/InternshipPlanningPanel";
 import { EmptyState, ErrorState, LoadingState, StatusBadge, SubmissionBadge, statusLabels } from "../components/Ui";
-import type { ApplicationFilter, AppRoute, CareerSystem, DashboardData, TargetCard } from "../types";
+import type { ApplicationFilter, AppRoute, ApplicationView, CareerSystem, DashboardData, TargetCard } from "../types";
 
 const postdocFilters: ApplicationFilter[] = [
   "ready_to_contact",
@@ -34,10 +34,12 @@ const filterLabels: Record<ApplicationFilter, string> = {
 export function ApplicationsPage({
   careerSystem,
   status,
+  view,
   onNavigate,
 }: {
   careerSystem: CareerSystem;
   status: ApplicationFilter;
+  view?: ApplicationView;
   onNavigate: (route: AppRoute) => void;
 }) {
   const [targets, setTargets] = useState<TargetCard[]>();
@@ -48,6 +50,7 @@ export function ApplicationsPage({
   const [error, setError] = useState("");
   const pageSize = 10;
   const internship = careerSystem === "internship";
+  const strategy = internship && view === "strategy";
   const filters = internship ? internshipFilters : postdocFilters;
   const activeStatus = filters.includes(status) ? status : filters[0];
 
@@ -67,8 +70,10 @@ export function ApplicationsPage({
   useEffect(() => {
     setPage(0);
     setTargets(undefined);
-  }, [careerSystem, activeStatus]);
-  useEffect(load, [careerSystem, activeStatus, query, page]);
+  }, [careerSystem, activeStatus, strategy]);
+  useEffect(() => {
+    if (!strategy) load();
+  }, [careerSystem, activeStatus, query, page, strategy]);
 
   const counts = useMemo(() => {
     const result: Record<string, number> = {};
@@ -91,89 +96,116 @@ export function ApplicationsPage({
           : "只显示 Postdoc 机会，并按 PI 联系、回复和跟进状态管理；不会混入行业职位。"}</p>
       </header>
 
-      <div className={`status-tabs ${internship ? "internship-tabs" : ""}`} role="tablist" aria-label="申请状态">
-        {filters.map((filter) => (
+      {internship && (
+        <div className="application-view-tabs" role="tablist" aria-label="Internship 工作区">
           <button
             role="tab"
-            aria-selected={activeStatus === filter}
-            className={activeStatus === filter ? "selected" : ""}
-            key={filter}
-            onClick={() => onNavigate({ page: "applications", careerSystem, status: filter })}
+            aria-selected={!strategy}
+            className={!strategy ? "selected" : ""}
+            onClick={() => onNavigate({ page: "applications", careerSystem: "internship", status: "all" })}
           >
-            {filterLabels[filter]}
-            <span>{filter === "all" ? counts.all ?? 0 : counts[filter] ?? 0}</span>
+            机会列表
           </button>
-        ))}
-      </div>
-
-      <div className="status-explainer">
-        <Mail size={18} />
-        {internship
-          ? "PostdocOS 的 Internship 轨道只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。"
-          : "PostdocOS 将每位 PI 作为独立联系目标；状态变化不会影响其他联系人。"}
-      </div>
-
-      {internship && <InternshipPlanningPanel onNavigate={onNavigate} />}
-
-      <div className="search-row">
-        <label className="search-box">
-          <Search size={18} />
-          <input
-            value={search}
-            placeholder={internship ? "搜索公司、职位、地点或技能方向…" : "搜索 PI、机构、职位或研究主题…"}
-            onChange={(event) => setSearch(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") { setPage(0); setQuery(search); }
-            }}
-          />
-          {search !== query && <button onClick={() => { setPage(0); setQuery(search); }}>搜索</button>}
-        </label>
-        <button className="button secondary"><SlidersHorizontal size={17} /> 筛选</button>
-      </div>
-
-      <div className="list-heading">
-        <div><span className="section-index">01</span><h2>{internship ? "选择 Internship 机会" : "选择 Postdoc 申请"}</h2></div>
-        <span><Filter size={14} /> 按匹配分从高到低</span>
-      </div>
-
-      {error && <ErrorState message={error} retry={load} />}
-      {!error && !targets && <LoadingState label="正在整理独立联系目标" />}
-      {!error && targets && visible.length === 0 && (
-        <EmptyState title="这个分组还没有记录" body="状态变化后会自动出现在对应分组；隐藏墓碑不会进入任何工作列表。" />
+          <button
+            role="tab"
+            aria-selected={strategy}
+            className={strategy ? "selected" : ""}
+            onClick={() => onNavigate({ page: "applications", careerSystem: "internship", status: "all", view: "strategy" })}
+          >
+            求职策略
+          </button>
+        </div>
       )}
-      {!error && visible.length > 0 && (
-        <div className="target-grid">
-          {visible.map((target) => {
-            const internship = target.careerTrack === "internship";
-            return <article className="target-card" key={target.id}>
-              <div className="target-card-top">
-                <div className="score"><strong>{Math.round(target.fitScore ?? 0)}</strong><span>/ 100</span></div>
-                <div className="target-card-badges">
-                  {internship ? <SubmissionBadge status={target.submissionStatus} /> : <StatusBadge status={target.status} />}
-                </div>
-              </div>
-              <h3>{target.organization}</h3>
-              <p className="target-role">{target.title}</p>
-              <dl>
-                <div><dt>{internship ? "申请方式" : "PI / 联系目标"}</dt><dd>{target.name}</dd></div>
-                <div><dt>地区</dt><dd>{[target.region, target.country].filter(Boolean).join(" · ") || "待确认"}</dd></div>
-                {target.email && <div><dt>邮箱</dt><dd className="email-value">{target.email}</dd></div>}
-                <div><dt>截止</dt><dd>{target.deadline || "待确认"}</dd></div>
-              </dl>
-              <button className="card-action" onClick={() => onNavigate({ page: "application", targetId: target.id, careerSystem })}>
-                {internship ? "查看机会与申请清单" : "查看材料与联系记录"} <ArrowRight size={17} />
+
+      {strategy ? (
+        <InternshipPlanningPanel onNavigate={onNavigate} />
+      ) : (
+        <>
+          {internship && <InternshipPlanningSummary onNavigate={onNavigate} />}
+
+          <div className={`status-tabs ${internship ? "internship-tabs" : ""}`} role="tablist" aria-label="申请状态">
+            {filters.map((filter) => (
+              <button
+                role="tab"
+                aria-selected={activeStatus === filter}
+                className={activeStatus === filter ? "selected" : ""}
+                key={filter}
+                onClick={() => onNavigate({ page: "applications", careerSystem, status: filter })}
+              >
+                {filterLabels[filter]}
+                <span>{filter === "all" ? counts.all ?? 0 : counts[filter] ?? 0}</span>
               </button>
-            </article>;
-          })}
-        </div>
-      )}
+            ))}
+          </div>
 
-      {(page > 0 || hasNext) && (
-        <div className="pagination">
-          <button disabled={page === 0} onClick={() => setPage((value) => value - 1)}>上一页</button>
-          <span>第 {page + 1} 页</span>
-          <button disabled={!hasNext} onClick={() => setPage((value) => value + 1)}>下一页</button>
-        </div>
+          <div className="status-explainer">
+            <Mail size={18} />
+            {internship
+              ? "PostdocOS 的 Internship 轨道只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。"
+              : "PostdocOS 将每位 PI 作为独立联系目标；状态变化不会影响其他联系人。"}
+          </div>
+
+          <div className="search-row">
+            <label className="search-box">
+              <Search size={18} />
+              <input
+                value={search}
+                placeholder={internship ? "搜索公司、职位、地点或技能方向…" : "搜索 PI、机构、职位或研究主题…"}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") { setPage(0); setQuery(search); }
+                }}
+              />
+              {search !== query && <button onClick={() => { setPage(0); setQuery(search); }}>搜索</button>}
+            </label>
+            <button className="button secondary"><SlidersHorizontal size={17} /> 筛选</button>
+          </div>
+
+          <div className="list-heading">
+            <div><span className="section-index">01</span><h2>{internship ? "选择 Internship 机会" : "选择 Postdoc 申请"}</h2></div>
+            <span><Filter size={14} /> 按匹配分从高到低</span>
+          </div>
+
+          {error && <ErrorState message={error} retry={load} />}
+          {!error && !targets && <LoadingState label="正在整理独立联系目标" />}
+          {!error && targets && visible.length === 0 && (
+            <EmptyState title="这个分组还没有记录" body="状态变化后会自动出现在对应分组；隐藏墓碑不会进入任何工作列表。" />
+          )}
+          {!error && visible.length > 0 && (
+            <div className="target-grid">
+              {visible.map((target) => {
+                const internship = target.careerTrack === "internship";
+                return <article className="target-card" key={target.id}>
+                  <div className="target-card-top">
+                    <div className="score"><strong>{Math.round(target.fitScore ?? 0)}</strong><span>/ 100</span></div>
+                    <div className="target-card-badges">
+                      {internship ? <SubmissionBadge status={target.submissionStatus} /> : <StatusBadge status={target.status} />}
+                    </div>
+                  </div>
+                  <h3>{target.organization}</h3>
+                  <p className="target-role">{target.title}</p>
+                  <dl>
+                    <div><dt>{internship ? "申请方式" : "PI / 联系目标"}</dt><dd>{target.name}</dd></div>
+                    <div><dt>地区</dt><dd>{[target.region, target.country].filter(Boolean).join(" · ") || "待确认"}</dd></div>
+                    {target.email && <div><dt>邮箱</dt><dd className="email-value">{target.email}</dd></div>}
+                    <div><dt>截止</dt><dd>{target.deadline || "待确认"}</dd></div>
+                  </dl>
+                  <button className="card-action" onClick={() => onNavigate({ page: "application", targetId: target.id, careerSystem })}>
+                    {internship ? "查看机会与申请清单" : "查看材料与联系记录"} <ArrowRight size={17} />
+                  </button>
+                </article>;
+              })}
+            </div>
+          )}
+
+          {(page > 0 || hasNext) && (
+            <div className="pagination">
+              <button disabled={page === 0} onClick={() => setPage((value) => value - 1)}>上一页</button>
+              <span>第 {page + 1} 页</span>
+              <button disabled={!hasNext} onClick={() => setPage((value) => value + 1)}>下一页</button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

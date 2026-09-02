@@ -35,13 +35,32 @@ const improvementTracks = [
   { index: "03", title: "Distributed Systems", state: "待补证", detail: "围绕故障恢复、队列或多机推理做一个可合并贡献。" },
 ];
 
+export function InternshipPlanningSummary({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
+  return (
+    <section className="internship-context-strip" aria-label="当前 Internship 求职主线">
+      <div className="internship-context-title">
+        <Radar size={19} />
+        <div><span>当前求职主线</span><strong>AI Infra</strong></div>
+      </div>
+      <div className="internship-context-facts">
+        <span><MapPin size={14} /> 香港现场</span>
+        <span><Wifi size={14} /> Remote from Hong Kong</span>
+        <span><Clock3 size={14} /> 时间与时长不限</span>
+      </div>
+      <button className="text-button" onClick={() => onNavigate({ page: "applications", careerSystem: "internship", status: "all", view: "strategy" })}>
+        查看求职策略 <ArrowRight size={15} />
+      </button>
+    </section>
+  );
+}
+
 export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
   return (
-    <section className="internship-planning" aria-label="Internship 求职规划">
+    <section className="internship-planning" aria-label="Internship 求职策略">
       <header className="internship-planning-header">
         <div>
-          <div className="eyebrow">PERSONAL AI INFRA TRACK</div>
-          <h2>从“找到机会”到“补齐证据”</h2>
+          <div className="eyebrow">CURRENT TRACK · AI INFRA</div>
+          <h2>求职策略</h2>
           <p>先用多来源检索保证机会覆盖，再把岗位要求映射到你的主简历和下一项工程贡献。</p>
         </div>
         <div className="internship-constraints">

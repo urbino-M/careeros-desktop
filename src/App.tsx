@@ -52,13 +52,15 @@ function parseHash(): AppRoute {
     const prefixed = isCareerSystem(value);
     const careerSystem: CareerSystem = prefixed ? value : "postdoc";
     const candidateStatus = prefixed ? section : value;
+    const view = careerSystem === "internship" && candidateStatus === "strategy" ? "strategy" : undefined;
     const fallbackStatus: ApplicationFilter = careerSystem === "internship" ? "all" : "ready_to_contact";
     return {
       page: "applications",
       careerSystem,
-      status: applicationStatuses.includes(candidateStatus as ApplicationFilter)
+      status: view === "strategy" ? "all" : applicationStatuses.includes(candidateStatus as ApplicationFilter)
         ? candidateStatus as ApplicationFilter
         : fallbackStatus,
+      view,
     };
   }
   return { page: "dashboard" };
@@ -69,7 +71,9 @@ function routeHash(route: AppRoute) {
     case "dashboard": return "#/dashboard";
     case "automation": return "#/automation";
     case "settings": return "#/settings";
-    case "applications": return `#/applications/${route.careerSystem}/${route.status}`;
+    case "applications": return route.view === "strategy"
+      ? `#/applications/${route.careerSystem}/strategy`
+      : `#/applications/${route.careerSystem}/${route.status}`;
     case "application": {
       const parts = ["#/application", encodeURIComponent(route.targetId), route.tab || "cv", route.careerSystem];
       if (route.returnPage) parts.push(route.returnPage);
@@ -109,7 +113,7 @@ export default function App() {
       {route.page === "dashboard" && <DashboardPage onNavigate={navigate} />}
       {route.page === "automation" && <AutomationPage onNavigate={navigate} />}
       {route.page === "applications" && (
-        <ApplicationsPage careerSystem={route.careerSystem} status={route.status} onNavigate={navigate} />
+        <ApplicationsPage careerSystem={route.careerSystem} status={route.status} view={route.view} onNavigate={navigate} />
       )}
       {route.page === "application" && (
         <ApplicationDetailPage targetId={route.targetId} initialTab={route.tab} returnPage={route.returnPage} focusJobId={route.jobId} locale={locale} onNavigate={navigate} />

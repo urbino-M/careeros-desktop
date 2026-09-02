@@ -281,10 +281,12 @@ export type ApplicationTab =
   | "reply"
   | "other";
 
+export type ApplicationView = "opportunities" | "strategy";
+
 export type AppRoute =
   | { page: "dashboard" }
   | { page: "automation" }
-  | { page: "applications"; careerSystem: CareerSystem; status: ApplicationFilter }
+  | { page: "applications"; careerSystem: CareerSystem; status: ApplicationFilter; view?: ApplicationView }
   | { page: "application"; targetId: string; careerSystem: CareerSystem; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
   | { page: "settings" };
 

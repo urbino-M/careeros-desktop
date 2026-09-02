@@ -184,9 +184,21 @@ body::before {
 .status-tabs button:last-child { border-right: 0; }
 .status-tabs button span { min-width: 21px; padding: 2px 6px; border-radius: 10px; background: rgba(118,156,160,.13); font-size: 10px; color: var(--muted); }
 .status-tabs button.selected { color: var(--accent); background: var(--accent-dim); box-shadow: inset 0 -2px var(--accent); }
+.application-view-tabs { display: inline-flex; gap: 3px; margin: -8px 0 18px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: rgba(6,27,35,.72); }
+.application-view-tabs button { padding: 8px 16px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; cursor: pointer; font-size: 12px; }
+.application-view-tabs button:hover { color: var(--text); background: rgba(72,205,208,.08); }
+.application-view-tabs button.selected { color: var(--accent-strong); background: var(--accent-dim); box-shadow: inset 0 0 0 1px rgba(72,205,208,.28); }
 .status-explainer, .info-card { display: flex; gap: 10px; align-items: flex-start; margin: 14px 0 22px; padding: 14px 16px; color: #85c6fa; background: rgba(47,122,184,.17); border: 1px solid rgba(76,166,255,.14); line-height: 1.55; font-size: 12px; }
 .info-card { color: #a9cdcc; background: rgba(35,99,108,.13); border-color: var(--line); }
 .info-card.blue { color: #8ccaff; background: rgba(46,127,195,.16); }
+.internship-context-strip { display: grid; grid-template-columns: minmax(150px, .7fr) minmax(0, 1.6fr) auto; gap: 18px; align-items: center; margin: -2px 0 20px; padding: 13px 16px; border: 1px solid rgba(72,205,208,.25); background: rgba(9,43,51,.66); }
+.internship-context-title { display: flex; align-items: center; gap: 9px; color: var(--accent-strong); }
+.internship-context-title > div { display: grid; gap: 3px; }
+.internship-context-title span { color: var(--muted-2); font-size: 10px; }
+.internship-context-title strong { color: var(--text); font-size: 15px; }
+.internship-context-facts { display: flex; flex-wrap: wrap; gap: 7px; }
+.internship-context-facts span { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; color: #bdd0cf; border: 1px solid rgba(72,205,208,.16); background: rgba(72,205,208,.05); font-size: 10px; }
+.internship-context-strip > .text-button { white-space: nowrap; }
 .internship-planning { margin: -2px 0 30px; border: 1px solid rgba(72,205,208,.34); background: linear-gradient(135deg, rgba(10,46,56,.94), rgba(6,27,35,.88)); box-shadow: 0 18px 44px rgba(0,0,0,.14); }
 .internship-planning-header { display: grid; grid-template-columns: 1.3fr .7fr; gap: 28px; align-items: start; padding: 24px 26px 20px; border-bottom: 1px solid var(--line); }
 .internship-planning-header h2 { margin: 8px 0 7px; font: 600 29px/1.15 var(--serif); }
@@ -534,6 +546,8 @@ body::before {
   .career-overview-grid { grid-template-columns: 1fr; }
   .internship-planning-header { grid-template-columns: 1fr; }
   .internship-constraints { justify-items: start; grid-template-columns: repeat(3, max-content); }
+  .internship-context-strip { grid-template-columns: 1fr auto; }
+  .internship-context-facts { grid-column: 1 / -1; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .detail-layout { grid-template-columns: 230px minmax(0,1fr); gap: 20px; }
   .model-controls { grid-template-columns: 1fr; }
@@ -551,6 +565,11 @@ body::before {
   .career-overview-metrics { grid-template-columns: repeat(3, 1fr); }
   .internship-planning-grid { grid-template-columns: 1fr; }
   .internship-constraints { grid-template-columns: 1fr; }
+  .application-view-tabs { display: grid; grid-template-columns: repeat(2, 1fr); width: 100%; }
+  .application-view-tabs button { text-align: center; }
+  .internship-context-strip { grid-template-columns: 1fr; gap: 12px; }
+  .internship-context-facts { grid-column: auto; }
+  .internship-context-strip > .text-button { justify-self: start; }
   .status-tabs, .status-tabs.internship-tabs { grid-template-columns: repeat(3, 1fr); }
   .target-grid, .settings-card-grid, .provider-grid { grid-template-columns: 1fr; }
   .detail-layout { grid-template-columns: 1fr; }
