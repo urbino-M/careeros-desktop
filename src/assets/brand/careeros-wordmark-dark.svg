@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 320" role="img" aria-labelledby="title">
+  <title id="title">CareerOS</title>
+  <defs>
+    <linearGradient id="ring" x1="35" y1="25" x2="245" y2="290" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#74dfd9"/><stop offset="0.52" stop-color="#2ab6c0"/><stop offset="1" stop-color="#0b8296"/>
+    </linearGradient>
+    <linearGradient id="plane" x1="90" y1="164" x2="255" y2="94" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f4fbf9"/><stop offset="1" stop-color="#a9ece6"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="169" y1="179" x2="215" y2="226" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2bb7bf"/><stop offset="1" stop-color="#087287"/>
+    </linearGradient>
+    <mask id="open-c" maskUnits="userSpaceOnUse"><rect width="320" height="320" fill="white"/><path d="m160 160 148-94v188Z" fill="black"/></mask>
+  </defs>
+  <circle cx="160" cy="160" r="107" fill="none" stroke="url(#ring)" stroke-width="47" mask="url(#open-c)"/>
+  <path d="m100 161 156-55-81 71Z" fill="url(#plane)"/>
+  <path d="m175 177 81-71-62 116Z" fill="url(#fold)"/>
+  <text x="336" y="220" font-family="Avenir Next, Montserrat, sans-serif" font-size="190" font-weight="700" letter-spacing="-7"><tspan fill="#f4f8f7">Career</tspan><tspan fill="#37bdc4">OS</tspan></text>
+</svg>

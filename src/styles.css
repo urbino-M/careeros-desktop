@@ -78,10 +78,11 @@ body::before {
   box-shadow: 14px 0 40px rgba(0, 0, 0, .18);
 }
 .traffic-spacer { height: 48px; flex: none; cursor: grab; }
-.brand-lockup { display: flex; align-items: center; gap: 13px; padding: 14px 8px 25px; border-bottom: 1px solid var(--line); }
-.brand-mark { width: 45px; height: 45px; display: grid; place-items: center; border: 1px solid var(--line-bright); color: var(--accent-strong); font-family: var(--serif); font-size: 29px; background: radial-gradient(circle at 35% 30%, rgba(72,205,208,.22), transparent 55%); }
+.brand-lockup { display: flex; align-items: center; gap: 12px; padding: 11px 6px 23px; border-bottom: 1px solid var(--line); }
+.careeros-mark { display: block; width: 52px; height: 52px; flex: none; object-fit: contain; filter: drop-shadow(0 7px 13px rgba(0,0,0,.2)); }
 .brand-kicker { color: var(--accent); font-size: 10px; letter-spacing: .18em; font-weight: 700; }
-.brand-name { font: 700 25px/1.1 "Avenir Next", sans-serif; margin-top: 3px; }
+.brand-name { font: 700 25px/1.05 "Avenir Next", sans-serif; margin-top: 4px; letter-spacing: -.04em; }
+.brand-name em { color: var(--accent-strong); font-style: normal; }
 .primary-nav { padding-top: 24px; }
 .nav-heading { margin: 16px 9px 7px; color: var(--muted-2); font-size: 11px; font-weight: 700; letter-spacing: .14em; }
 .nav-button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 11px 13px; border: 0; border-radius: 7px; background: transparent; color: #b2c2c3; cursor: pointer; text-align: left; transition: 140ms ease; }
@@ -570,7 +571,7 @@ body::before {
 .onboarding-root { position: relative; display: grid; grid-template-columns: 280px minmax(0,1fr); height: 100vh; overflow: hidden; background: radial-gradient(circle at 78% 16%, rgba(37,125,137,.17), transparent 32%), var(--bg); }
 .onboarding-drag { position: fixed; z-index: 10; top: 0; left: 78px; right: 0; height: 42px; display: flex; align-items: center; justify-content: center; color: rgba(151,186,187,.42); font: 700 8px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .18em; cursor: grab; user-select: none; }
 .onboarding-rail { position: relative; z-index: 2; display: grid; grid-template-columns: 46px 1fr; align-content: start; gap: 22px 14px; padding: 62px 28px 30px; border-right: 1px solid var(--line); background: linear-gradient(180deg, rgba(7,38,48,.99), rgba(4,26,34,.98)); }
-.onboarding-rail .brand-mark { width: 46px; height: 46px; }
+.onboarding-rail .careeros-mark { width: 48px; height: 48px; margin-left: -1px; }
 .onboarding-rail > div:nth-child(2) { display: grid; align-content: center; gap: 3px; }
 .onboarding-rail > div:nth-child(2) span { color: var(--muted); font-size: 10px; letter-spacing: .1em; }
 .onboarding-rail > div:nth-child(2) strong { font: 600 20px var(--serif); }

@@ -67,6 +67,12 @@ impl AppPaths {
             std::fs::create_dir_all(path)
                 .with_context(|| format!("无法创建目录 {}", path.display()))?;
         }
+        crate::secrets::ensure_storage(&self.data_root)?;
+        crate::secrets::ensure_private_directory(&self.codex_home)?;
+        let codex_auth = self.codex_home.join("auth.json");
+        if codex_auth.exists() {
+            crate::secrets::ensure_private_file(&codex_auth)?;
+        }
         self.ensure_codex_config()?;
         self.install_builtin_skills()?;
         Ok(())
@@ -81,7 +87,7 @@ impl AppPaths {
         };
         table.insert(
             "cli_auth_credentials_store".into(),
-            toml::Value::String("keyring".into()),
+            toml::Value::String("file".into()),
         );
         fs::write(path, toml::to_string_pretty(&table)?)?;
         Ok(())

@@ -64,7 +64,7 @@ pub async fn discover_responses_provider(
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(45))
-        .user_agent(format!("PostdocOS/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("CareerOS/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     let response = client
@@ -340,7 +340,7 @@ fn model_catalog_entry(model: &ProviderRuntimeModel, index: usize, context_windo
         "reasoning_summary_format": "experimental",
         "default_reasoning_summary": "none",
         "display_name": model.display_name,
-        "description": "Responses-compatible model connected through PostdocOS.",
+        "description": "Responses-compatible model connected through CareerOS.",
         "default_reasoning_level": default_reasoning,
         "supported_reasoning_levels": reasoning,
         "shell_type": "shell_command",

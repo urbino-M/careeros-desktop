@@ -330,7 +330,7 @@ impl Scheduler {
         while !self.shutdown.load(Ordering::SeqCst) {
             if last_lease_reap.elapsed() >= LEASE_REAP_INTERVAL {
                 if let Err(error) = reclaim_expired_jobs(&self.db_path, &self.worker_id) {
-                    eprintln!("PostdocOS scheduler lease recovery failed: {error:#}");
+                    eprintln!("CareerOS scheduler lease recovery failed: {error:#}");
                 }
                 last_lease_reap = tokio::time::Instant::now();
             }
@@ -342,7 +342,7 @@ impl Scheduler {
                 let next = match claim_next_job(&self.db_path, &self.worker_id) {
                     Ok(value) => value,
                     Err(error) => {
-                        eprintln!("PostdocOS scheduler claim failed: {error:#}");
+                        eprintln!("CareerOS scheduler claim failed: {error:#}");
                         drop(permit);
                         break;
                     }
@@ -425,7 +425,7 @@ impl Scheduler {
             ),
         };
         if let Err(error) = finish_result {
-            eprintln!("PostdocOS scheduler finish failed: {error:#}");
+            eprintln!("CareerOS scheduler finish failed: {error:#}");
         }
         self.emit_changed();
     }

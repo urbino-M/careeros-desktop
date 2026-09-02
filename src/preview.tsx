@@ -143,6 +143,23 @@ function payloadValue(payload: unknown, key: string) {
 
 mockWindows("main");
 mockIPC((command, payload) => {
+  if (command === "get_onboarding_profile") {
+    return {
+      schemaVersion: 1,
+      completed: true,
+      currentStep: 5,
+      fullName: "",
+      publicationName: "",
+      careerStage: "not_specified",
+      discipline: "not_specified",
+      currentSituation: "",
+      targetRoles: "",
+      targetRegions: "",
+      goals: "",
+      constraints: "",
+      preferredLanguage: "bilingual",
+    };
+  }
   if (command === "get_dashboard") {
     return dashboards[payloadValue(payload, "careerTrack") === "internship" ? "internship" : "postdoc"];
   }
@@ -160,10 +177,9 @@ mockIPC((command, payload) => {
     return { imported: true, applications: 20, opportunities: 20, legacyJobs: 4, revisions: 7, gmailDrafts: 0, activeTargets: 20, hiddenTombstones: 0 };
   }
   if (command === "get_gmail_status") {
-    return { configured: false, connected: false, expectedEmail: "urbinohbmiao@gmail.com", connectionOk: false, oauthStatus: "idle" };
+    return { configured: false, connected: false, connectionOk: false, oauthStatus: "idle" };
   }
   if (command === "get_codex_account") return {};
-  if (command === "has_openai_api_key") return false;
   if (command === "get_cv_approval") return false;
   if (command === "list_gmail_drafts") return [];
   return null;

@@ -1,12 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#123c47"/>
-      <stop offset="1" stop-color="#061820"/>
+    <linearGradient id="background" x1="120" y1="80" x2="890" y2="950" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0b3c49"/><stop offset="0.5" stop-color="#071f2a"/><stop offset="1" stop-color="#031118"/>
     </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(318 225) rotate(46) scale(660)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2a8d98" stop-opacity=".22"/><stop offset="1" stop-color="#2a8d98" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="240" y1="190" x2="720" y2="820" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#74dfd9"/><stop offset="0.52" stop-color="#2ab6c0"/><stop offset="1" stop-color="#0b8296"/>
+    </linearGradient>
+    <linearGradient id="plane-top" x1="350" y1="520" x2="790" y2="330" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f4fbf9"/><stop offset="1" stop-color="#a9ece6"/>
+    </linearGradient>
+    <linearGradient id="plane-fold" x1="560" y1="560" x2="700" y2="710" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2bb7bf"/><stop offset="1" stop-color="#087287"/>
+    </linearGradient>
+    <mask id="open-c" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="white"/><path d="M512 512 946 238v548Z" fill="black"/>
+    </mask>
   </defs>
-  <rect width="512" height="512" rx="112" fill="url(#g)"/>
-  <circle cx="256" cy="256" r="164" fill="none" stroke="#45d2d3" stroke-width="18" opacity=".25"/>
-  <path d="M142 340V156h124c78 0 120 37 120 96 0 61-43 98-119 98h-54v-57h50c36 0 53-13 53-40 0-26-18-39-53-39h-50v126z" fill="#eaf7f5"/>
-  <circle cx="376" cy="340" r="24" fill="#45d2d3"/>
+  <rect x="40" y="40" width="944" height="944" rx="218" fill="url(#background)"/>
+  <rect x="40" y="40" width="944" height="944" rx="218" fill="url(#glow)"/>
+  <circle cx="512" cy="512" r="305" fill="none" stroke="url(#ring)" stroke-width="134" mask="url(#open-c)"/>
+  <path d="m350 514 430-164-220 210Z" fill="url(#plane-top)"/>
+  <path d="m560 560 220-210-160 350Z" fill="url(#plane-fold)"/>
 </svg>

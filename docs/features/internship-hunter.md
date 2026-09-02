@@ -2,8 +2,8 @@
 
 ## Product shape
 
-Internship Hunter is a second application track inside the unified PostdocOS
-desktop workspace. The sidebar keeps one PostdocOS identity and shared entries
+Internship Hunter is a second application track inside the unified CareerOS
+desktop workspace. The sidebar keeps one CareerOS identity and shared entries
 for the dashboard, Agent 运行中心, settings, and scheduler. Under `申请`,
 `Postdoc 申请` and `Internship 申请` are separate list entry points, so their
 opportunity records and workflow-specific status views remain distinct without
@@ -29,7 +29,7 @@ the repository-wide ownership map.
 
 | Area | Primary files | Responsibility |
 |---|---|---|
-| Unified shell and application routing | `src/App.tsx`; `src/components/Shell.tsx` | Shared PostdocOS navigation plus explicit Postdoc / Internship application routes |
+| Unified shell and application routing | `src/App.tsx`; `src/components/Shell.tsx` | Shared CareerOS navigation plus explicit Postdoc / Internship application routes |
 | Entry point | `src/pages/AutomationPage.tsx` | Search request, threshold, and review navigation |
 | Runtime contract | `src-tauri/resources/skills/internship-application-agent/SKILL.md`; `src-tauri/src/materials.rs` | Evidence rules and workspace contract |
 | Domain import | `src-tauri/src/workflows.rs` | Result schema, validation, deduplication, and import |
@@ -64,7 +64,7 @@ is the track discriminator. No schema migration is introduced.
 ## Safety Rules
 
 - Official employer or official ATS evidence is required.
-- The original PostdocOS candidate profile is not copied into internship search
+- The original CareerOS candidate profile is not copied into internship search
   workspaces; candidate-specific scoring waits for Internship Hunter onboarding.
 - Unknown candidate eligibility remains `uncertain`; it is never promoted by
   inference.

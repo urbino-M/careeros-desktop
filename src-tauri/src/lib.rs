@@ -193,7 +193,7 @@ async fn connect_responses_provider(
         };
         if let Err(rollback_error) = rollback {
             return Err(format!(
-                "保存模型服务失败：{error:#}；Keychain 回滚也失败：{rollback_error:#}"
+                "保存模型服务失败：{error:#}；凭据文件回滚也失败：{rollback_error:#}"
             ));
         }
         return Err(display_error(error));
@@ -464,7 +464,7 @@ pub fn run() {
             list_gmail_drafts,
         ])
         .build(tauri::generate_context!())
-        .expect("PostdocOS 启动失败");
+        .expect("CareerOS 启动失败");
     app.run(|app_handle, event| {
         if matches!(
             event,

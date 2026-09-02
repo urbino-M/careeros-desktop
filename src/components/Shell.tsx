@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppRoute, CareerSystem, Locale } from "../types";
+import { CareerOSMark } from "./CareerOSBrand";
 
 interface ShellProps {
   route: AppRoute;
@@ -50,15 +51,15 @@ export function Shell({
   return (
     <div className="app-shell">
       <div className="window-titlebar" data-tauri-drag-region onMouseDown={startDragging}>
-        <span data-tauri-drag-region>POSTDOCOS · LOCAL WORKSPACE</span>
+        <span data-tauri-drag-region>CAREEROS · LOCAL WORKSPACE</span>
       </div>
       <aside className="sidebar">
         <div className="traffic-spacer" data-tauri-drag-region onMouseDown={startDragging} />
         <div className="brand-lockup">
-          <div className="brand-mark">P</div>
+          <CareerOSMark />
           <div>
             <div className="brand-kicker">研究与职业机会决策系统</div>
-            <div className="brand-name">PostdocOS</div>
+            <div className="brand-name"><span>Career</span><em>OS</em></div>
           </div>
         </div>
 

@@ -164,7 +164,7 @@ impl GmailManager {
         if let Some(error) = query.get("error") { bail!("Google 拒绝授权：{error}") }
         let code = query.get("code").context("OAuth 回调缺少授权码")?;
 
-        let page = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<!doctype html><meta charset=utf-8><title>PostdocOS</title><style>body{font-family:-apple-system;padding:48px;background:#06171f;color:#ebf4f2}strong{color:#48cdd0}</style><h1>Gmail 已授权</h1><p>PostdocOS 正在核验账号。你可以关闭这个页面并返回应用。</p>";
+        let page = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<!doctype html><meta charset=utf-8><title>CareerOS</title><style>body{font-family:-apple-system;padding:48px;background:#06171f;color:#ebf4f2}strong{color:#48cdd0}</style><h1>Gmail 已授权</h1><p>CareerOS 正在核验账号。你可以关闭这个页面并返回应用。</p>";
         stream.write_all(page.as_bytes()).await?;
         stream.shutdown().await?;
 
@@ -329,7 +329,7 @@ impl GmailManager {
 
     async fn valid_access_token(&self) -> Result<String> {
         let raw = secrets::get_secret(TOKEN_SECRET_REF)?.context("请先连接 Gmail")?;
-        let mut token: OAuthToken = serde_json::from_str(&raw).context("Keychain 中的 Gmail 凭据无效")?;
+        let mut token: OAuthToken = serde_json::from_str(&raw).context("CareerOS 凭据文件中的 Gmail 凭据无效")?;
         let valid_until = token.expires_at.as_deref().and_then(|value| DateTime::parse_from_rfc3339(value).ok()).map(|value| value.with_timezone(&Utc));
         if valid_until.map(|value| value > Utc::now() + ChronoDuration::seconds(60)).unwrap_or(false) && !token.access_token.is_empty() {
             return Ok(token.access_token);

@@ -7,6 +7,7 @@ import {
 import { useState } from "react";
 import { api, errorMessage } from "../api";
 import type { OnboardingProfile } from "../types";
+import { CareerOSMark } from "../components/CareerOSBrand";
 
 const stages = [
   ["undergraduate", "本科 / 本科毕业"], ["masters", "硕士阶段"], ["doctoral", "博士阶段"],
@@ -98,9 +99,9 @@ export function OnboardingPage({ initial, onComplete }: { initial: OnboardingPro
   };
 
   return <div className="onboarding-root">
-    <div className="onboarding-drag" data-tauri-drag-region>POSTDOCOS · START HERE</div>
+    <div className="onboarding-drag" data-tauri-drag-region>CAREEROS · START HERE</div>
     <aside className="onboarding-rail">
-      <div className="brand-mark">P</div>
+      <CareerOSMark />
       <div><span>开始使用</span><strong>{String(step + 1).padStart(2, "0")} / 05</strong></div>
       <ol>{stepCopy.map(([title], index) => <li className={index === step ? "active" : index < step ? "done" : ""} key={title}><i>{index < step ? <Check size={13} /> : index + 1}</i><span>{title}</span></li>)}</ol>
       <p>所有资料保存在本机；外部操作始终需要确认。</p>
@@ -128,7 +129,7 @@ export function OnboardingPage({ initial, onComplete }: { initial: OnboardingPro
       </section>}
       {step === 3 && <section className="onboarding-panel auth-grid">
         <article><Bot size={24} /><h3>ChatGPT / Codex</h3><p>通过系统浏览器授权，不在应用内输入 ChatGPT 密码。</p><button className="button primary" disabled={busy || chatGptConnected} onClick={() => void connectChatGpt()}>{chatGptConnected ? "已连接" : "连接 ChatGPT"}</button></article>
-        <article><KeyRound size={24} /><h3>模型 URL + API Key</h3><p>适用于兼容 OpenAI Responses 的中转站或模型服务；密钥只进入系统凭据库。</p><input value={providerUrl} onChange={(event) => setProviderUrl(event.target.value)} placeholder="https://provider.example/v1" /><input type="password" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="API Key" /><button className="button secondary" disabled={busy || providerConnected || !providerUrl.trim() || providerKey.trim().length < 8} onClick={() => void connectProvider()}>{providerConnected ? "已连接" : "验证并连接"}</button></article>
+        <article><KeyRound size={24} /><h3>模型 URL + API Key</h3><p>适用于兼容 OpenAI Responses 的中转站或模型服务；密钥保存在当前用户的 CareerOS 私有凭据文件中。</p><input value={providerUrl} onChange={(event) => setProviderUrl(event.target.value)} placeholder="https://provider.example/v1" /><input type="password" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="API Key" /><button className="button secondary" disabled={busy || providerConnected || !providerUrl.trim() || providerKey.trim().length < 8} onClick={() => void connectProvider()}>{providerConnected ? "已连接" : "验证并连接"}</button></article>
         <article><Mail size={24} /><h3>Gmail 草稿（可选）</h3><p>先按 Google 官方步骤创建“桌面应用”OAuth 客户端并下载 JSON。</p><button className="button ghost" onClick={() => openUrl("https://developers.google.com/workspace/gmail/api/quickstart/nodejs")}><ExternalLink size={15} /> 打开官方教程</button><button className="button secondary" disabled={busy || gmailConfigured} onClick={() => void importGmailJson()}>{gmailConfigured ? "JSON 已导入" : "选择客户端 JSON"}</button></article>
       </section>}
       {step === 4 && <section className="onboarding-panel feature-tour">

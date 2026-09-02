@@ -6,7 +6,7 @@ This subsystem connects OpenAI Responses-compatible model services to the bundle
 
 ## Architecture
 
-Settings calls the typed Tauri boundary, `providers.rs` validates the remote Responses contract, `db.rs` stores non-secret connection/model metadata, and `secrets.rs` stores the key in the platform credential store (macOS Keychain or Windows Credential Manager). At execution time `codex.rs` generates an app-local configuration snapshot/catalog, passes those values as App Server `-c` overrides, and starts one client per provider/account. Scheduler jobs retain their provider/account/model snapshot. See Source Ownership in `docs/ARCHITECTURE.md`.
+Settings calls the typed Tauri boundary, `providers.rs` validates the remote Responses contract, `db.rs` stores non-secret connection/model metadata, and `secrets.rs` stores the key in a current-user CareerOS credentials file. At execution time `codex.rs` generates an app-local configuration snapshot/catalog, passes those values as App Server `-c` overrides, and starts one client per provider/account. Scheduler jobs retain their provider/account/model snapshot. See Source Ownership in `docs/ARCHITECTURE.md`.
 
 ## Source Ownership
 
@@ -14,7 +14,7 @@ Settings calls the typed Tauri boundary, `providers.rs` validates the remote Res
 |---|---|---|
 | Entry point | `src/pages/SettingsPage.tsx`; `src/api.ts`; provider commands in `src-tauri/src/lib.rs` | Collect URL/key, show validation state, cross the Tauri boundary |
 | Domain/service | `src-tauri/src/providers.rs`; `src-tauri/src/codex.rs`; provider call sites in `src-tauri/src/scheduler.rs` | Validate Responses compatibility, generate Codex config/catalog and `-c` overrides, select the correct App Server client |
-| Persistence/integration | `src-tauri/src/db.rs`; `src-tauri/src/secrets.rs`; `src-tauri/migrations/0010_responses_model_providers.sql` | Store provider/model metadata and Keychain references; never store secret values |
+| Persistence/integration | `src-tauri/src/db.rs`; `src-tauri/src/secrets.rs`; `src-tauri/migrations/0010_responses_model_providers.sql` | Store provider/model metadata and opaque credential references separately from secret values |
 
 ## Runtime Flow
 
@@ -22,13 +22,14 @@ Settings calls the typed Tauri boundary, `providers.rs` validates the remote Res
 2. The backend requires HTTPS except for loopback HTTP, calls `GET /models`, and performs a minimal `POST /responses` probe.
 3. The key is saved under `model-provider:<provider-id>:api-key`; SQLite stores only its reference, normalized URL, validation result, models, and capabilities.
 4. A job snapshots provider/account/model. `CodexManager` loads that snapshot, writes a non-secret config snapshot/catalog below the app-specific Codex home, passes the config as App Server `-c` overrides, injects the key through `env_key`, and starts or reuses the matching client.
-5. Disconnect disables the provider, resets affected task defaults to OpenAI, removes the Keychain secret, and invalidates the cached client.
+5. Disconnect disables the provider, resets affected task defaults to OpenAI, removes the file-backed secret, and invalidates the cached client.
 
 ## Persistent Data
 
 - SQLite: `model_providers`, `provider_accounts`, `provider_models`, `task_model_defaults`, and provider/account/model columns on `native_jobs`.
 - Generated files: `$POSTDOCOS_DATA_DIR/codex/providers/<id>-config.toml` and `<id>-models.json`; both are non-secret and may be regenerated.
-- Keychain: service `com.postdocos.desktop`, reference `model-provider:<id>:api-key`.
+- Credentials file: `<data-root>/credentials/secrets.json`; the directory is `0700` and file is `0600` on Unix, while Windows receives an explicit current-user-only ACL. Writes use same-directory temporary files and atomic replacement. Reference: `model-provider:<id>:api-key`.
+- Codex OAuth: `<data-root>/codex/auth.json`, selected through `cli_auth_credentials_store = "file"`.
 - Provider IDs are `deepseek` for the official DeepSeek host and deterministic `relay-<url-hash>` IDs for other URLs.
 
 ## Contracts
@@ -51,7 +52,7 @@ Settings calls the typed Tauri boundary, `providers.rs` validates the remote Res
 
 1. Inspect the provider card's validation message and normalized Base URL.
 2. Confirm the provider, enabled account, model, and task default rows in SQLite.
-3. Confirm the Keychain reference exists without printing its value.
+3. Confirm the credentials-file reference exists without printing its value.
 4. Inspect the generated config snapshot/catalog and verify `env_key`, provider ID, model slug, and App Server overrides agree.
 5. Confirm the job snapshot and cached client key use the same provider/account.
 6. Expand to Codex App Server stderr only after the stored contracts agree.
@@ -76,7 +77,7 @@ Settings calls the typed Tauri boundary, `providers.rs` validates the remote Res
 ## Known Coupling
 
 - Scheduler owns immutable execution snapshots; Codex owns turning the snapshot into a client/profile.
-- DB owns durable provider metadata; Keychain owns secret bytes.
+- DB owns durable provider metadata; the current-user credentials file owns secret bytes.
 - Generated model catalogs mirror remote discovery but add conservative Codex metadata; provider-specific capabilities belong in `providers.rs`.
 
 ## Out of Scope

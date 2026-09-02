@@ -88,6 +88,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
@@ -136,7 +142,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
-          path: src-tauri/target/release/bundle/dmg/PostdocOS_${{ needs.metadata.outputs.version }}_aarch64.dmg
+          path: src-tauri/target/release/bundle/dmg/CareerOS_${{ needs.metadata.outputs.version }}_aarch64.dmg
           if-no-files-found: error
           retention-days: 7
 
@@ -157,6 +163,12 @@ jobs:
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -225,13 +237,13 @@ jobs:
           Write-Host "Installer: $($installer.FullName)"
           Write-Host "SHA256: $((Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant())"
 
-          $installRoot = Join-Path $env:LOCALAPPDATA "PostdocOS"
+          $installRoot = Join-Path $env:LOCALAPPDATA "CareerOS"
           $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
           if ($install.ExitCode -ne 0) {
             throw "NSIS silent install failed with exit code $($install.ExitCode)"
           }
 
-          $appExe = Join-Path $installRoot "postdocos.exe"
+          $appExe = Join-Path $installRoot "CareerOS.exe"
           $codexExe = Join-Path $installRoot "resources/runtime/codex.exe"
           $typstExe = Join-Path $installRoot "resources/runtime/typst.exe"
           $cvTemplate = Join-Path $installRoot "resources/templates/cv.typ"
@@ -252,7 +264,7 @@ jobs:
           try {
             Start-Sleep -Seconds 10
             if ($app.HasExited) {
-              throw "Freshly installed PostdocOS exited during startup with code $($app.ExitCode)"
+              throw "Freshly installed CareerOS exited during startup with code $($app.ExitCode)"
             }
             $database = Join-Path $dataDir "database/postdocos.sqlite3"
             if (-not (Test-Path -LiteralPath $database -PathType Leaf)) {
@@ -317,6 +329,6 @@ jobs:
             gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
               --verify-tag \
               --generate-notes \
-              --title "PostdocOS $GITHUB_REF_NAME" \
+              --title "CareerOS $GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY"
           fi

@@ -1,9 +1,9 @@
 ---
 name: postdoc-application-agent
-description: Evidence-based opportunity search, contact research, material drafting, revision, and reply follow-up for PostdocOS.
+description: Evidence-based opportunity search, contact research, material drafting, revision, and reply follow-up for CareerOS.
 ---
 
-# PostdocOS native research contract
+# CareerOS native research contract
 
 Always read `POSTDOCOS_TASK.json` first, then every available file in `profile/`.
 The JSON contract is authoritative for paths, limits, and output shape. Write only

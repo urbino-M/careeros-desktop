@@ -1,4 +1,4 @@
-# PostdocOS Desktop Architecture
+# CareerOS Desktop Architecture
 
 ## Purpose
 
@@ -6,7 +6,7 @@ This document is the repository map for planning changes. Use Source Ownership t
 
 ## System at a Glance
 
-PostdocOS Desktop is a Tauri 2 application with a React/TypeScript frontend and a Rust backend. It stores native application state in SQLite and task/material files under the resolved application data directory. Codex and Typst executables, document templates, and the runtime application-agent skill are bundled as resources.
+CareerOS Desktop is a Tauri 2 application with a React/TypeScript frontend and a Rust backend. It stores native application state in SQLite and task/material files under the resolved application data directory. Codex and Typst executables, document templates, and the runtime application-agent skill are bundled as resources.
 
 ```text
 React page/component
@@ -20,7 +20,7 @@ owning Rust subsystem
     ├─ materials.rs / generated files and revisions
     ├─ scheduler.rs → materials.rs/workspace → codex.rs → materials.rs/workflows.rs
     ├─ typst.rs or cover_letter.rs → bundled Typst/templates → PDF
-    └─ gmail.rs / secrets.rs → Gmail draft API and Keychain
+    └─ gmail.rs / secrets.rs → Gmail draft API and private credentials file
 ```
 
 Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/migrates data, constructs Codex, scheduler, and Gmail managers, starts the scheduler, stores them in `AppState`, and registers the Tauri commands. When no native database exists, startup imports a discovered legacy database or creates an empty database from the versioned legacy-foundation schema before applying native migrations.
@@ -53,7 +53,7 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 
 ### Gmail Draft
 
-1. Settings connect an OAuth desktop client through `SettingsPage.tsx` and `gmail.rs`; secrets are stored through `secrets.rs`/Keychain.
+1. Settings connect an OAuth desktop client through `SettingsPage.tsx` and `gmail.rs`; secrets are stored through `secrets.rs` in the current-user CareerOS credentials file.
 2. `ApplicationDetailPage.tsx` parses the reviewed outreach email and requests a draft.
 3. `gmail.rs` requires an approved current CV hash, builds the MIME attachment, creates a Gmail draft, and records it locally.
 4. This path does not send mail and does not automatically change contact status.
@@ -92,7 +92,7 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 | SQLite | `src-tauri/src/db.rs`; `src-tauri/src/migration.rs`; `src-tauri/migrations/*.sql` (latest: `0011_scheduler_leases.sql`) | Connections, queries, status/artifact/job persistence, legacy import, native schema, backups, and compatibility | Do not introduce schema changes for a UI-only need or rewrite an already-applied migration; schema evolution must be explicit, versioned, and migration-safe. |
 | Typst / PDF | `src-tauri/src/typst.rs`; rendering portions of `src-tauri/src/cover_letter.rs`; `src-tauri/resources/templates/*.typ`; bundled Typst under `src-tauri/resources/runtime/` | Locate bundled Typst, render document sources, enforce output/page rules, and persist PDF artifacts | Does not own UI preview visibility, job lifecycle, or email transport. Content semantics remain with CV/Cover Letter owners. |
 | Codex integration | `src-tauri/src/codex.rs`; `src-tauri/src/providers.rs`; Codex call sites in `src-tauri/src/scheduler.rs`; `src-tauri/src/paths.rs` | Bundled App Server process, login/account/model calls, task run/resume/interrupt, provider capabilities, and app-specific Codex home | The runtime skill owns application-agent behavior, not developer workflow; presentation and material rendering do not belong here. |
-| Gmail | `src-tauri/src/gmail.rs`; `src-tauri/src/secrets.rs`; Gmail settings/draft panels in `src/pages/SettingsPage.tsx` and `src/pages/ApplicationDetailPage.tsx` | OAuth setup, Keychain-backed credentials, CV approval hashes, MIME construction, remote draft creation, and draft records | Draft-only integration: no send interface and no automatic contact-status transition. It does not own outreach content generation. |
+| Gmail | `src-tauri/src/gmail.rs`; `src-tauri/src/secrets.rs`; Gmail settings/draft panels in `src/pages/SettingsPage.tsx` and `src/pages/ApplicationDetailPage.tsx` | OAuth setup, file-backed credentials, CV approval hashes, MIME construction, remote draft creation, and draft records | Draft-only integration: no send interface and no automatic contact-status transition. It does not own outreach content generation. |
 | Paths and migration startup | `src-tauri/src/paths.rs`; `src-tauri/src/migration.rs`; startup in `src-tauri/src/lib.rs` | Application Support/cache/log/runtime paths, built-in skill installation, legacy discovery/import, and startup migration | Do not touch for ordinary feature work; changes can affect all persisted user data and packaged runtime resources. |
 
 # Change Routing
@@ -148,9 +148,10 @@ Use the shape of the change to keep inspection targeted:
 - `profile/`: candidate source-of-truth files used in agent workspaces;
 - `workspaces/`: isolated Codex task inputs/outputs and resumable results;
 - `codex/`: app-specific Codex home and installed runtime skill;
-- `codex/providers/<provider-id>-config.toml` and `codex/providers/<provider-id>-models.json`: generated non-secret Codex configuration snapshots/catalogs; App Server receives the same values through `-c` overrides because version 0.144.3 does not accept `--profile` for `app-server`; API keys stay in Keychain and are exposed to only that provider's child process through its configured environment variable;
+- `codex/providers/<provider-id>-config.toml` and `codex/providers/<provider-id>-models.json`: generated non-secret Codex configuration snapshots/catalogs; App Server receives the same values through `-c` overrides because version 0.144.3 does not accept `--profile` for `app-server`; API keys stay in the private credentials file and are exposed to only that provider's child process through its configured environment variable;
 - `backups/`: migration and artifact backups;
-- System credential store: macOS Keychain or Windows Credential Manager, referenced through `secrets.rs`.
+- `credentials/secrets.json`: provider and Gmail secrets, stored outside SQLite using atomic replacement; the parent is `0700` and file is `0600` on Unix, while Windows receives an explicit current-user-only ACL. `secrets.rs` owns access.
+- `codex/auth.json`: Codex OAuth credentials when file storage is enabled; it remains under the app-specific Codex home.
 
 Compatibility rules:
 

@@ -76,7 +76,7 @@ impl CodexManager {
             )?;
             let prepared = providers::prepare_codex_provider(&self.paths.codex_home, &config)?;
             let secret = secrets::get_secret(&prepared.secret_reference)?
-                .context("该模型服务的 API Key 不在系统凭据库中，请重新连接")?;
+                .context("该模型服务的 API Key 不在 CareerOS 凭据文件中，请重新连接")?;
             Arc::new(
                 CodexClient::start(
                     &self.paths,
@@ -411,7 +411,7 @@ impl CodexClient {
         self.request(
             "initialize",
             json!({
-                "clientInfo": {"name":"PostdocOS","title":"PostdocOS","version":env!("CARGO_PKG_VERSION")},
+                "clientInfo": {"name":"CareerOS","title":"CareerOS","version":env!("CARGO_PKG_VERSION")},
                 "capabilities": {"experimentalApi": true}
             }),
         )

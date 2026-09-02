@@ -2,8 +2,9 @@
 set -euo pipefail
 
 MODE="${1:-dev}"
-APP_NAME="PostdocOS"
-PROCESS_NAME="postdocos"
+APP_NAME="CareerOS"
+PROCESS_NAME="CareerOS"
+LEGACY_APP_NAME="PostdocOS"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_VERSION="$(node -e 'const fs = require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).version)' "$ROOT_DIR/src-tauri/tauri.conf.json")"
 APP_BUNDLE="$ROOT_DIR/src-tauri/target/release/bundle/macos/$APP_NAME.app"
@@ -19,7 +20,9 @@ esac
 DMG_PATH="$ROOT_DIR/src-tauri/target/release/bundle/dmg/${APP_NAME}_${APP_VERSION}_${DMG_ARCH}.dmg"
 INSTALLED_APP_BUNDLE="/Applications/$APP_NAME.app"
 INSTALLED_APP_BINARY="$INSTALLED_APP_BUNDLE/Contents/MacOS/$PROCESS_NAME"
+LEGACY_INSTALLED_APP_BUNDLE="/Applications/$LEGACY_APP_NAME.app"
 INSTALL_BACKUP_BUNDLE=""
+INSTALL_RESTORE_DESTINATION=""
 FAILED_INSTALL_BUNDLE=""
 
 stop_app() {
@@ -137,13 +140,19 @@ install_unsigned_app() {
   mkdir -p "$backup_root"
   if [[ -d "$INSTALLED_APP_BUNDLE" ]]; then
     mv "$INSTALLED_APP_BUNDLE" "$INSTALL_BACKUP_BUNDLE"
+    INSTALL_RESTORE_DESTINATION="$INSTALLED_APP_BUNDLE"
+  elif [[ -d "$LEGACY_INSTALLED_APP_BUNDLE" ]]; then
+    INSTALL_BACKUP_BUNDLE="$backup_root/${LEGACY_APP_NAME}-${stamp}.app"
+    mv "$LEGACY_INSTALLED_APP_BUNDLE" "$INSTALL_BACKUP_BUNDLE"
+    INSTALL_RESTORE_DESTINATION="$LEGACY_INSTALLED_APP_BUNDLE"
   else
     INSTALL_BACKUP_BUNDLE=""
+    INSTALL_RESTORE_DESTINATION=""
   fi
 
   if ! mv "$staged_bundle" "$INSTALLED_APP_BUNDLE"; then
     if [[ -n "$INSTALL_BACKUP_BUNDLE" && -d "$INSTALL_BACKUP_BUNDLE" ]]; then
-      mv "$INSTALL_BACKUP_BUNDLE" "$INSTALLED_APP_BUNDLE"
+      mv "$INSTALL_BACKUP_BUNDLE" "$INSTALL_RESTORE_DESTINATION"
     fi
     echo "Installation failed; the previous app was restored." >&2
     exit 1
@@ -157,7 +166,7 @@ restore_previous_install() {
     mv "$INSTALLED_APP_BUNDLE" "$FAILED_INSTALL_BUNDLE"
   fi
   if [[ -n "$INSTALL_BACKUP_BUNDLE" && -d "$INSTALL_BACKUP_BUNDLE" ]]; then
-    mv "$INSTALL_BACKUP_BUNDLE" "$INSTALLED_APP_BUNDLE"
+    mv "$INSTALL_BACKUP_BUNDLE" "$INSTALL_RESTORE_DESTINATION"
     echo "Fresh install failed to launch; the previous app was restored." >&2
   fi
 }
@@ -215,7 +224,7 @@ case "$MODE" in
   --telemetry|telemetry)
     stop_app
     npm run desktop:dev &
-    /usr/bin/log stream --info --style compact --predicate 'subsystem == "com.postdocos.desktop" OR process == "postdocos"'
+    /usr/bin/log stream --info --style compact --predicate 'subsystem == "com.postdocos.desktop" OR process == "CareerOS"'
     ;;
   --debug|debug)
     stop_app

@@ -2,7 +2,7 @@
 
 This project includes or may distribute third-party software components. Those
 components remain subject to their respective licenses. The MIT License in the
-repository root covers only the original source code of PostdocOS; it does not
+repository root covers only the original source code of CareerOS; it does not
 relicense any component identified below.
 
 ## OpenAI Codex CLI
@@ -14,7 +14,7 @@ Upstream project: [openai/codex](https://github.com/openai/codex)
 Distribution: Each production Tauri bundle includes the Codex CLI binary for
 its target platform under `src-tauri/resources/runtime/`. Release automation
 downloads the pinned official upstream asset and verifies its SHA256 before
-packaging. PostdocOS invokes it as a separate process through the Codex App
+packaging. CareerOS invokes it as a separate process through the Codex App
 Server protocol. An explicit
 `POSTDOCOS_CODEX_BIN` override can select another user-provided binary; if the
 bundled runtime is unavailable, the development/runtime lookup also checks the
@@ -65,7 +65,7 @@ License files:
 - `licenses/openai-codex-LICENSE.txt`
 - `licenses/openai-codex-NOTICE.txt`
 
-OpenAI Codex CLI is not licensed under the PostdocOS MIT License.
+OpenAI Codex CLI is not licensed under the CareerOS MIT License.
 
 ## Typst CLI
 
@@ -76,7 +76,7 @@ Upstream project: [typst/typst](https://github.com/typst/typst)
 Distribution: Each production Tauri bundle includes the Typst CLI binary for
 its target platform under `src-tauri/resources/runtime/`. Release automation
 downloads the pinned official upstream archive and verifies both its archive
-and extracted executable SHA256 before packaging. PostdocOS invokes Typst as a
+and extracted executable SHA256 before packaging. CareerOS invokes Typst as a
 separate process to render application materials.
 
 ### Apple Silicon build record
@@ -122,14 +122,14 @@ License files:
 - `licenses/typst-LICENSE.txt`
 - `licenses/typst-NOTICE.txt`
 
-Typst CLI is not licensed under the PostdocOS MIT License. Its upstream NOTICE
+Typst CLI is not licensed under the CareerOS MIT License. Its upstream NOTICE
 contains additional third-party attributions that remain applicable.
 
 ## Package-managed dependencies
 
-PostdocOS also depends on Rust crates and frontend packages identified by
+CareerOS also depends on Rust crates and frontend packages identified by
 `src-tauri/Cargo.lock` and `pnpm-lock.yaml`. These dependencies retain their own
-licenses and are not relicensed by PostdocOS. The direct dependencies resolved
+licenses and are not relicensed by CareerOS. The direct dependencies resolved
 for this repository use permissive MIT, Apache-2.0, ISC, or Unlicense terms.
 The resolved Apple Silicon Rust normal/build dependency graph and installed
 frontend package metadata showed no GPL, AGPL, LGPL, SSPL, or BUSL license in

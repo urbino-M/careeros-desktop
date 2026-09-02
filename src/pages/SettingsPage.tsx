@@ -42,7 +42,7 @@ export function SettingsPage({ onRestartOnboarding }: { onRestartOnboarding: () 
       <header className="page-header">
         <div className="eyebrow">LOCAL-FIRST CONTROL</div>
         <h1>设置</h1>
-        <p>账号凭据只进入系统凭据库（macOS Keychain / Windows Credential Manager）；数据库、材料和 Codex 状态保存在系统标准应用目录。</p>
+        <p>账号凭据保存在当前用户的 CareerOS 私有凭据文件中；数据库、材料和 Codex 状态保存在系统标准应用目录。</p>
         <button className="button ghost settings-onboarding-button" onClick={() => void onRestartOnboarding().catch((value) => setNotice(errorMessage(value)))}>重新打开开始使用引导</button>
       </header>
       {notice && <div className="inline-notice">{notice}</div>}
@@ -136,7 +136,7 @@ function GmailSettingsCard({ onNotice }: { onNotice: (value: string) => void }) 
     try {
       const result = await api.startGmailOAuth();
       await openUrl(result.authorizationUrl);
-      onNotice("已在系统浏览器打开 Google 授权页。完成后直接回到 PostdocOS。");
+      onNotice("已在系统浏览器打开 Google 授权页。完成后直接回到 CareerOS。");
       refresh();
     } catch (value) { onNotice(errorMessage(value)); }
     finally { setBusy(false); }
@@ -147,7 +147,7 @@ function GmailSettingsCard({ onNotice }: { onNotice: (value: string) => void }) 
         <div className="settings-icon"><Mail size={22} /></div>
         <div>
           <h3>系统浏览器 OAuth 与远端草稿核验</h3>
-          <p>只申请 Gmail Compose 权限；凭据进入 Keychain。PostdocOS 没有发送接口，创建后还会用 draft ID 从 Gmail 重新读取确认。</p>
+          <p>只申请 Gmail Compose 权限；凭据保存在当前用户的 CareerOS 私有文件中。CareerOS 没有发送接口，创建后还会用 draft ID 从 Gmail 重新读取确认。</p>
           {status ? (
             <span className={status.connectionOk ? "connected-label" : "gmail-state"}>
               {status.connectionOk ? <><CheckCircle2 size={15} /> 已连接 {status.accountEmail}</> : status.oauthStatus === "pending" ? "等待浏览器授权…" : status.oauthMessage || (status.configured ? "客户端已配置，尚未连接" : "尚未配置")}
@@ -190,7 +190,6 @@ function CodexAccountCard({ onNotice }: { onNotice: (value: string) => void }) {
     catch (value) { onNotice(errorMessage(value)); }
     finally { setChecking(false); }
   };
-  useEffect(() => { void check(false); }, []);
   const connect = async () => {
     setChecking(true);
     try {
@@ -200,7 +199,7 @@ function CodexAccountCard({ onNotice }: { onNotice: (value: string) => void }) {
       if (!url || !loginId) throw new Error("Codex 没有返回完整的授权地址，请重试");
       await openUrl(url);
       setWaiting(true);
-      onNotice("等待浏览器完成 ChatGPT 授权；成功后 PostdocOS 会自动识别并回到应用。");
+      onNotice("等待浏览器完成 ChatGPT 授权；成功后 CareerOS 会自动识别并回到应用。");
       void api.waitForChatGptLogin(loginId)
         .then((account) => {
           setStatus(account);
@@ -218,10 +217,11 @@ function CodexAccountCard({ onNotice }: { onNotice: (value: string) => void }) {
       <div className="settings-icon"><Bot size={23} /></div>
       <div className="account-copy">
         <h3>ChatGPT / Codex OAuth</h3>
-        <p>使用系统浏览器登录；不在 PostdocOS 中输入 ChatGPT 密码。</p>
+        <p>使用系统浏览器登录；不在 CareerOS 中输入 ChatGPT 密码。</p>
         {waiting && <span className="gmail-state">等待浏览器授权…</span>}
         {!waiting && connected && <span className="connected-label"><CheckCircle2 size={15} /> 已连接{accountEmail ? ` ${accountEmail}` : ""}</span>}
         {!waiting && status && !connected && <span className="gmail-state">尚未连接</span>}
+        {!waiting && !status && <span className="gmail-state">按需检查，不会在进入设置时启动 Codex</span>}
         {status && <details className="technical-details"><summary>账号技术详情</summary><pre>{JSON.stringify(status, null, 2)}</pre></details>}
       </div>
       <div className="account-actions"><button className="button primary" disabled={checking || waiting} onClick={connect}><ExternalLink size={16} /> {waiting ? "等待授权" : "连接 ChatGPT"}</button><button className="button ghost" disabled={checking} onClick={() => void check()}>{checking ? "检查中…" : "检查状态"}</button></div>
@@ -249,7 +249,7 @@ function ProviderConnectionSettings({ providers, onChanged }: { providers: Provi
     setBusy(true);
     try {
       await api.disconnectResponsesProvider(provider.id);
-      onChanged(`${provider.displayName} 已断开，API Key 已从 Keychain 删除。`);
+      onChanged(`${provider.displayName} 已断开，API Key 已从 CareerOS 凭据文件删除。`);
     } catch (value) {
       onChanged(errorMessage(value));
     } finally {
@@ -260,12 +260,12 @@ function ProviderConnectionSettings({ providers, onChanged }: { providers: Provi
     <div className="provider-settings-stack">
       <article className="provider-connect-card">
         <div className="provider-connect-heading">
-          <div><h3>用 URL + API Key 接入</h3><p>自动读取 <code>/models</code> 并做一次最小 <code>/responses</code> 兼容性探测。密钥只进入系统凭据库。</p></div>
+          <div><h3>用 URL + API Key 接入</h3><p>自动读取 <code>/models</code> 并做一次最小 <code>/responses</code> 兼容性探测。密钥保存在当前用户的 CareerOS 私有凭据文件中。</p></div>
           <button className="button ghost" disabled={busy} onClick={() => setBaseUrl("https://api.deepseek.com")}>使用 DeepSeek 官方地址</button>
         </div>
         <div className="provider-connect-fields">
           <label><span>Base URL</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://relay.example/v1" /></label>
-          <label><span>API Key</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="只保存到 Keychain" /></label>
+          <label><span>API Key</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="只保存到 CareerOS 私有凭据文件" /></label>
           <button className="button primary" disabled={busy || !baseUrl.trim() || apiKey.trim().length < 8} onClick={connect}><PlugZap size={16} /> {busy ? "正在验证…" : "验证并连接"}</button>
         </div>
         <div className="settings-footnote">当前直连只接受 OpenAI Responses 兼容服务。若地址只有 Chat Completions，连接时会明确拦截；本次探测会产生极少量模型 token。</div>

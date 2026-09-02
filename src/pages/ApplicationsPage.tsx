@@ -141,7 +141,7 @@ export function ApplicationsPage({
           <div className="status-explainer">
             <Mail size={18} />
             {internship
-              ? "PostdocOS 的 Internship 轨道只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。"
+              ? "CareerOS 的 Internship 轨道只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。"
               : "Gmail 草稿不会改变状态；回复 Agent 完成后才进入“跟进”，明确拒绝会进入“搁置”。每位 PI 都是独立联系目标。"}
           </div>
 

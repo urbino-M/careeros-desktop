@@ -47,7 +47,7 @@ jobs:
       - name: Upload branch preview artifact
         uses: actions/upload-artifact@v4
         with:
-          name: postdocos-branch-preview
+          name: careeros-branch-preview
           path: dist
           if-no-files-found: error
           retention-days: 14

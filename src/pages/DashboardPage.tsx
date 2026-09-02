@@ -35,7 +35,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (route: AppRoute) =>
         <div className="hero-rings" />
         <div className="eyebrow">2027 申请季 · 本机工作区</div>
         <h1>把研究与行业机会，<br />变成可执行的申请清单。</h1>
-        <p>PostdocOS 统一管理 Postdoc 与 Internship 两条申请轨道。检索、证据、申请状态和 Agent 任务集中在同一个可追溯的本地工作区中。</p>
+        <p>CareerOS 统一管理 Postdoc 与 Internship 两条申请轨道。检索、证据、申请状态和 Agent 任务集中在同一个可追溯的本地工作区中。</p>
         <div className="hero-meta"><span className="pulse-dot" /> 数据已迁入本机 SQLite · 外部操作始终需要确认</div>
       </section>
 

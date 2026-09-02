@@ -1049,7 +1049,7 @@ pub fn read_artifact(paths: &AppPaths, artifact_path: &str) -> Result<String> {
         .canonicalize()
         .with_context(|| format!("材料文件不存在：{}", resolved.display()))?;
     if !canonical.starts_with(canonical_root) {
-        bail!("材料路径不在 PostdocOS 数据目录内")
+        bail!("材料路径不在 CareerOS 数据目录内")
     }
     let extension = canonical.extension().and_then(|value| value.to_str()).unwrap_or("");
     if !matches!(extension, "md" | "txt" | "json" | "tex" | "typ") {
@@ -1065,7 +1065,7 @@ pub fn read_pdf_preview(paths: &AppPaths, artifact_path: &str) -> Result<Vec<u8>
         .canonicalize()
         .with_context(|| format!("PDF 文件不存在：{}", resolved.display()))?;
     if !canonical.starts_with(canonical_root) {
-        bail!("PDF 路径不在 PostdocOS 数据目录内")
+        bail!("PDF 路径不在 CareerOS 数据目录内")
     }
     if canonical.extension().and_then(|value| value.to_str()) != Some("pdf") {
         bail!("该材料不是 PDF 文件")
