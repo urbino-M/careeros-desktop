@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.postdocos.desktop",
   "build": {
-    "beforeDevCommand": "./node_modules/.bin/vite --host 127.0.0.1 --port 1420",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "./node_modules/.bin/tsc && ./node_modules/.bin/vite build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
