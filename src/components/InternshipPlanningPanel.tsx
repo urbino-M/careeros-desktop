@@ -10,33 +10,33 @@ import {
 import type { AppRoute } from "../types";
 
 const searchTracks = [
-  "Inference / Serving",
-  "Distributed Training",
-  "GPU / CUDA",
-  "ML Platform / MLOps",
-  "Compiler / Runtime",
-  "Data Infrastructure",
-  "Reliability / Observability",
+  "方向 A",
+  "方向 B",
+  "方向 C",
+  "方向 D",
+  "方向 E",
+  "方向 F",
+  "方向 G",
 ];
 
 const contributions = [
-  { id: "#675", label: "Rust · Python · SQLite memory indexing" },
-  { id: "#677", label: "Agent tool input normalization" },
-  { id: "#678", label: "Remote API · WebSocket auth" },
-  { id: "#674", label: "Cross-platform CLI reliability" },
+  { id: "项目 01", label: "已核验贡献条目" },
+  { id: "项目 02", label: "已核验贡献条目" },
+  { id: "项目 03", label: "已核验贡献条目" },
+  { id: "项目 04", label: "已核验贡献条目" },
 ];
 
 const improvementTracks = [
-  { index: "01", title: "Serving / Benchmark", state: "下一步", detail: "补充 latency、throughput 和 memory 的可复现实验。" },
-  { index: "02", title: "GPU / CUDA", state: "待补证", detail: "用 profiling 或 kernel 优化建立第一条 GPU 证据。" },
-  { index: "03", title: "Distributed Systems", state: "待补证", detail: "围绕故障恢复、队列或多机推理做一个可合并贡献。" },
+  { index: "01", title: "岗位方向 A", state: "待设置", detail: "补充岗位要求对应的可复现实验。" },
+  { index: "02", title: "岗位方向 B", state: "待设置", detail: "用一个可核验项目建立第一条能力证据。" },
+  { index: "03", title: "岗位方向 C", state: "待设置", detail: "围绕目标岗位做一个可合并的工程贡献。" },
 ];
 
 const internshipPreferences = [
-  { label: "地点", value: "香港（不离港）" },
-  { label: "工作方式", value: "现场 / 远程（香港）" },
-  { label: "实习时长", value: "不限" },
-  { label: "开始时间", value: "灵活" },
+  { label: "地点", value: "待设置" },
+  { label: "工作方式", value: "待设置" },
+  { label: "实习时长", value: "待设置" },
+  { label: "开始时间", value: "待设置" },
 ];
 
 export function InternshipPlanningSummary({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
@@ -44,7 +44,7 @@ export function InternshipPlanningSummary({ onNavigate }: { onNavigate: (route: 
     <section className="internship-context-strip" aria-label="当前 Internship 求职主线">
       <div className="internship-context-title">
         <Radar size={19} />
-        <div><span>当前求职主线</span><strong>AI Infra</strong></div>
+        <div><span>当前求职主线</span><strong>待设置</strong></div>
       </div>
       <div className="internship-context-profile">
         {internshipPreferences.map((item) => (
@@ -66,7 +66,7 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
     <section className="internship-planning" aria-label="Internship 求职策略">
       <header className="internship-planning-header">
         <div>
-          <div className="eyebrow">CURRENT TRACK · AI INFRA</div>
+          <div className="eyebrow">CURRENT TRACK</div>
           <h2>求职策略</h2>
           <p>先定义统一的求职筛选画像，再用多来源检索保证机会覆盖，把岗位要求映射到你的主简历和下一项工程贡献。</p>
         </div>
@@ -84,10 +84,10 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
         <article className="planning-card planning-radar-card">
           <div className="planning-card-heading">
             <div className="planning-icon"><Radar size={21} /></div>
-            <div><span className="planning-index">01 · 机会雷达</span><h3>全面覆盖 AI Infra</h3></div>
+            <div><span className="planning-index">01 · 机会雷达</span><h3>覆盖目标岗位</h3></div>
           </div>
-          <div className="planning-summary"><span>检索配置</span><strong>7 个方向 · 4 类来源</strong></div>
-          <div className="planning-source-row"><span>官方职位页</span><span>Greenhouse / Lever</span><span>香港岗位</span><span>Remote from HK</span></div>
+          <div className="planning-summary"><span>检索配置</span><strong>待设置</strong></div>
+          <div className="planning-source-row"><span>官方职位页</span><span>ATS 记录</span><span>地区条件</span><span>工作方式</span></div>
           <div className="planning-track-list">
             {searchTracks.map((track, index) => <span key={track} className={index < 3 ? "priority" : ""}>{track}</span>)}
           </div>
@@ -99,7 +99,7 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
             <div className="planning-icon"><GitBranch size={21} /></div>
             <div><span className="planning-index">02 · 主简历证据</span><h3>一份母版，持续积累</h3></div>
           </div>
-          <div className="evidence-count"><strong>4</strong><span>条已核验的 OpenJarvis merged PR</span></div>
+          <div className="evidence-count"><strong>—</strong><span>等待导入已核验贡献</span></div>
           <div className="evidence-list">
             {contributions.map((item) => <div className="evidence-row" key={item.id}><CheckCircle2 size={15} /><strong>{item.id}</strong><span>{item.label}</span></div>)}
           </div>
