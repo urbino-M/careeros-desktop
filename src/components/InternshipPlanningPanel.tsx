@@ -1,14 +1,11 @@
 import {
   ArrowRight,
   CheckCircle2,
-  Clock3,
   GitBranch,
-  MapPin,
   Radar,
   ShieldCheck,
   Sparkles,
   Target,
-  Wifi,
 } from "lucide-react";
 import type { AppRoute } from "../types";
 
@@ -35,6 +32,13 @@ const improvementTracks = [
   { index: "03", title: "Distributed Systems", state: "待补证", detail: "围绕故障恢复、队列或多机推理做一个可合并贡献。" },
 ];
 
+const internshipPreferences = [
+  { label: "地点", value: "香港（不离港）" },
+  { label: "工作方式", value: "现场 / 远程（香港）" },
+  { label: "实习时长", value: "不限" },
+  { label: "开始时间", value: "灵活" },
+];
+
 export function InternshipPlanningSummary({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
   return (
     <section className="internship-context-strip" aria-label="当前 Internship 求职主线">
@@ -42,10 +46,13 @@ export function InternshipPlanningSummary({ onNavigate }: { onNavigate: (route: 
         <Radar size={19} />
         <div><span>当前求职主线</span><strong>AI Infra</strong></div>
       </div>
-      <div className="internship-context-facts">
-        <span><MapPin size={14} /> 香港现场</span>
-        <span><Wifi size={14} /> Remote from Hong Kong</span>
-        <span><Clock3 size={14} /> 时间与时长不限</span>
+      <div className="internship-context-profile">
+        {internshipPreferences.map((item) => (
+          <div className="internship-context-item" key={item.label}>
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+          </div>
+        ))}
       </div>
       <button className="text-button" onClick={() => onNavigate({ page: "applications", careerSystem: "internship", status: "all", view: "strategy" })}>
         查看求职策略 <ArrowRight size={15} />
@@ -61,12 +68,15 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
         <div>
           <div className="eyebrow">CURRENT TRACK · AI INFRA</div>
           <h2>求职策略</h2>
-          <p>先用多来源检索保证机会覆盖，再把岗位要求映射到你的主简历和下一项工程贡献。</p>
+          <p>先定义统一的求职筛选画像，再用多来源检索保证机会覆盖，把岗位要求映射到你的主简历和下一项工程贡献。</p>
         </div>
-        <div className="internship-constraints">
-          <span><MapPin size={15} /> 香港现场</span>
-          <span><Wifi size={15} /> Remote from Hong Kong</span>
-          <span><Clock3 size={15} /> 时间与时长不限</span>
+        <div className="internship-search-profile" aria-label="Internship 求职筛选画像">
+          {internshipPreferences.map((item) => (
+            <div className="internship-search-profile-item" key={item.label}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
         </div>
       </header>
 
