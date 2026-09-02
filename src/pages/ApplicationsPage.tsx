@@ -68,7 +68,7 @@ export function ApplicationsPage({
       <header className="page-header">
         <div className="eyebrow">APPLICATION WORKSPACE</div>
         <h1>申请中心</h1>
-        <p>机会、PI、材料和联系进度都围绕独立联系目标组织；给一个人发信，不会改变另一个人的状态。</p>
+        <p>机会、联系人、材料和联系进度都围绕独立联系目标组织；给一个人发信，不会改变另一个人的状态。</p>
       </header>
 
       <div className="status-tabs" role="tablist" aria-label="申请状态">
@@ -96,7 +96,7 @@ export function ApplicationsPage({
           <Search size={18} />
           <input
             value={search}
-            placeholder="搜索 PI、机构、职位或研究主题…"
+            placeholder="搜索联系人、机构、职位或主题…"
             onChange={(event) => setSearch(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") { setPage(0); setQuery(search); }
@@ -131,7 +131,7 @@ export function ApplicationsPage({
               <h3>{target.organization}</h3>
               <p className="target-role">{target.title}</p>
               <dl>
-                <div><dt>PI / 联系目标</dt><dd>{target.name}</dd></div>
+                <div><dt>联系人 / 负责人</dt><dd>{target.name}</dd></div>
                 <div><dt>地区</dt><dd>{[target.region, target.country].filter(Boolean).join(" · ") || "待确认"}</dd></div>
                 {target.email && <div><dt>邮箱</dt><dd className="email-value">{target.email}</dd></div>}
                 <div><dt>截止</dt><dd>{target.deadline || "待确认"}</dd></div>

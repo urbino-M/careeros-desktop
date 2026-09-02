@@ -4,8 +4,10 @@ import { ApplicationDetailPage } from "./pages/ApplicationDetailPage";
 import { ApplicationsPage } from "./pages/ApplicationsPage";
 import { AutomationPage } from "./pages/AutomationPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { OnboardingPage } from "./pages/OnboardingPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import type { ApplicationTab, AppRoute, Locale, StatusFilter } from "./types";
+import { api, errorMessage } from "./api";
+import type { ApplicationTab, AppRoute, Locale, OnboardingProfile, StatusFilter } from "./types";
 
 function parseHash(): AppRoute {
   const hash = window.location.hash.replace(/^#\/?/, "");
@@ -47,6 +49,15 @@ export default function App() {
   const [locale, setLocale] = useState<Locale>(() =>
     localStorage.getItem("postdocos-locale") === "en" ? "en" : "zh",
   );
+  const [onboarding, setOnboarding] = useState<OnboardingProfile>();
+  const [onboardingError, setOnboardingError] = useState("");
+
+  const loadOnboarding = useCallback(() => {
+    setOnboardingError("");
+    api.onboardingProfile().then(setOnboarding).catch((value) => setOnboardingError(errorMessage(value)));
+  }, []);
+
+  useEffect(() => { loadOnboarding(); }, [loadOnboarding]);
 
   useEffect(() => {
     const onHash = () => setRoute(parseHash());
@@ -66,6 +77,14 @@ export default function App() {
     localStorage.setItem("postdocos-locale", next);
   };
 
+  if (onboardingError) {
+    return <div className="onboarding-boot"><strong>无法读取开始使用资料</strong><p>{onboardingError}</p><button onClick={loadOnboarding}>重新读取</button></div>;
+  }
+  if (!onboarding) return <div className="onboarding-boot"><span />正在准备本机工作区…</div>;
+  if (!onboarding.completed) {
+    return <OnboardingPage initial={onboarding} onComplete={setOnboarding} />;
+  }
+
   return (
     <Shell route={route} locale={locale} onLocale={changeLocale} onNavigate={navigate}>
       {route.page === "dashboard" && <DashboardPage onNavigate={navigate} />}
@@ -76,7 +95,10 @@ export default function App() {
       {route.page === "application" && (
         <ApplicationDetailPage targetId={route.targetId} initialTab={route.tab} returnPage={route.returnPage} focusJobId={route.jobId} locale={locale} onNavigate={navigate} />
       )}
-      {route.page === "settings" && <SettingsPage />}
+      {route.page === "settings" && <SettingsPage onRestartOnboarding={async () => {
+        const saved = await api.saveOnboardingProfile({ ...onboarding, completed: false, currentStep: 0 });
+        setOnboarding(saved);
+      }} />}
     </Shell>
   );
 }

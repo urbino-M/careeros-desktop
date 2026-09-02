@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { ProviderInfo, TaskModelDefault } from "../types";
 
@@ -40,7 +40,10 @@ export function ModelControls({
     const fallback = defaults.find((item) => item.taskType === taskType);
     return fallback ? { providerId: fallback.providerId, modelId: fallback.modelId, reasoning: fallback.reasoning } : undefined;
   })();
-  const reasoningOptions = useMemo(() => ["low", "medium", "high", "xhigh"], []);
+  const selectedModel = models.find((model) => model.id === current?.modelId);
+  const reasoningOptions = selectedModel?.reasoningLevels.length
+    ? selectedModel.reasoningLevels
+    : ["low", "medium", "high"];
 
   if (!current) return <div className="field-hint">正在读取模型设置…</div>;
 
@@ -53,7 +56,13 @@ export function ModelControls({
           value={current.providerId}
           onChange={(event) => {
             const provider = enabledProviders.find((item) => item.id === event.target.value);
-            update({ providerId: event.target.value, modelId: provider?.models.find((model) => model.enabled)?.id ?? "" });
+            const model = provider?.models.find((item) => item.enabled);
+            const levels = model?.reasoningLevels || [];
+            update({
+              providerId: event.target.value,
+              modelId: model?.id ?? "",
+              reasoning: levels.includes("high") ? "high" : levels[0] || "medium",
+            });
           }}
         >
           {enabledProviders.map((provider) => <option value={provider.id} key={provider.id}>{provider.displayName}</option>)}
@@ -61,7 +70,16 @@ export function ModelControls({
       </label>
       <label>
         <span>模型</span>
-        <select value={current.modelId} onChange={(event) => update({ modelId: event.target.value })}>
+        <select value={current.modelId} onChange={(event) => {
+          const model = models.find((item) => item.id === event.target.value);
+          const levels = model?.reasoningLevels || [];
+          update({
+            modelId: event.target.value,
+            reasoning: levels.includes(current.reasoning)
+              ? current.reasoning
+              : levels.includes("high") ? "high" : levels[0] || "medium",
+          });
+        }}>
           {models.map((model) => <option value={model.id} key={model.id}>{model.displayName}</option>)}
         </select>
       </label>

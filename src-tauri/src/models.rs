@@ -167,8 +167,13 @@ pub struct TargetDetail {
 pub struct ProviderInfo {
     pub id: String,
     pub display_name: String,
+    pub adapter_kind: String,
     pub connection_mode: String,
     pub enabled: bool,
+    pub base_url: Option<String>,
+    pub configured: bool,
+    pub last_validated_at: Option<String>,
+    pub validation_message: Option<String>,
     pub models: Vec<ProviderModelInfo>,
 }
 
@@ -181,6 +186,26 @@ pub struct ProviderModelInfo {
     pub enabled: bool,
     pub supports_reasoning: bool,
     pub supports_tools: bool,
+    pub supports_vision: bool,
+    pub reasoning_levels: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderRuntimeConfig {
+    pub id: String,
+    pub display_name: String,
+    pub adapter_kind: String,
+    pub base_url: String,
+    pub secret_reference: String,
+    pub models: Vec<ProviderRuntimeModel>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderRuntimeModel {
+    pub slug: String,
+    pub display_name: String,
+    pub supports_vision: bool,
+    pub reasoning_levels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,7 +256,6 @@ pub struct GmailStatus {
     pub configured: bool,
     pub connected: bool,
     pub account_email: Option<String>,
-    pub expected_email: String,
     pub connection_ok: bool,
     pub oauth_status: String,
     pub oauth_message: Option<String>,

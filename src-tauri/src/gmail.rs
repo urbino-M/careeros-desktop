@@ -1,6 +1,6 @@
 use crate::db;
 use crate::models::{GmailDraftInfo, GmailOAuthStart, GmailStatus};
-use crate::paths::{locate_legacy_root, AppPaths};
+use crate::paths::AppPaths;
 use crate::secrets;
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -20,7 +20,6 @@ use uuid::Uuid;
 const CLIENT_SECRET_REF: &str = "gmail-oauth-client";
 const TOKEN_SECRET_REF: &str = "gmail-oauth-token";
 const GMAIL_SCOPE: &str = "https://www.googleapis.com/auth/gmail.compose";
-const EXPECTED_EMAIL: &str = "urbinohbmiao@gmail.com";
 
 #[derive(Debug, Clone, Deserialize)]
 struct ClientFile {
@@ -71,28 +70,6 @@ impl GmailManager {
         self.save_client_json(&raw)
     }
 
-    pub fn import_legacy_credentials(&self) -> Result<bool> {
-        let Some(root) = locate_legacy_root() else { return Ok(false) };
-        let client_path = root.join("data/gmail/client_secret.json");
-        if !client_path.exists() { return Ok(false) }
-        self.import_client_file(&client_path)?;
-        let token_path = root.join("data/gmail/token.json");
-        if token_path.exists() {
-            let value: Value = serde_json::from_str(&std::fs::read_to_string(token_path)?)?;
-            let token = OAuthToken {
-                access_token: value.get("token").or_else(|| value.get("access_token")).and_then(Value::as_str).unwrap_or_default().to_owned(),
-                refresh_token: value.get("refresh_token").and_then(Value::as_str).map(str::to_owned),
-                expires_at: value.get("expiry").or_else(|| value.get("expires_at")).and_then(Value::as_str).map(str::to_owned),
-                token_type: value.get("token_type").and_then(Value::as_str).map(str::to_owned),
-                scope: Some(GMAIL_SCOPE.into()),
-            };
-            if !token.access_token.is_empty() || token.refresh_token.is_some() {
-                secrets::set_secret(TOKEN_SECRET_REF, &serde_json::to_string(&token)?)?;
-            }
-        }
-        Ok(true)
-    }
-
     pub fn save_client_json(&self, raw: &str) -> Result<()> {
         let parsed: ClientFile = serde_json::from_str(raw).context("OAuth 客户端 JSON 无效")?;
         if parsed.installed.is_none() && parsed.web.is_some() {
@@ -118,13 +95,11 @@ impl GmailManager {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let connection_ok = connected
-            && account_email.as_deref().map(str::to_lowercase).as_deref() == Some(EXPECTED_EMAIL);
+        let connection_ok = configured && connected && account_email.is_some();
         Ok(GmailStatus {
             configured,
             connected,
             account_email,
-            expected_email: EXPECTED_EMAIL.into(),
             connection_ok,
             oauth_status,
             oauth_message,
@@ -150,8 +125,7 @@ impl GmailManager {
             .append_pair("prompt", "consent")
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256")
-            .append_pair("state", &state)
-            .append_pair("login_hint", EXPECTED_EMAIL);
+            .append_pair("state", &state);
         record_oauth_state(&self.paths.database, "pending", Some("等待 Google 授权"))?;
 
         let manager = self.clone();
@@ -215,9 +189,6 @@ impl GmailManager {
         };
         let profile = self.fetch_profile_with_token(&token.access_token).await?;
         let email = profile.get("emailAddress").and_then(Value::as_str).context("Gmail 未返回账号邮箱")?;
-        if !email.eq_ignore_ascii_case(EXPECTED_EMAIL) {
-            bail!("连接的是 {email}，PostdocOS 当前要求使用 {EXPECTED_EMAIL}")
-        }
         secrets::set_secret(TOKEN_SECRET_REF, &serde_json::to_string(&token)?)?;
         save_account(&self.paths.database, email)?;
         record_oauth_state(&self.paths.database, "connected", Some("账号已核验"))?;
@@ -256,8 +227,15 @@ impl GmailManager {
         drop(conn);
         let access_token = self.valid_access_token().await?;
         let profile = self.fetch_profile_with_token(&access_token).await?;
-        let account = profile.get("emailAddress").and_then(Value::as_str).unwrap_or("");
-        if !account.eq_ignore_ascii_case(EXPECTED_EMAIL) { bail!("Gmail 当前账号是 {account}，预期 {EXPECTED_EMAIL}") }
+        let account = profile.get("emailAddress").and_then(Value::as_str).context("Gmail 未返回当前账号邮箱")?;
+        let conn = db::connect(&self.paths.database)?;
+        let connected_account: Option<String> = conn.query_row(
+            "SELECT email FROM gmail_accounts WHERE id='gmail-primary'", [], |row| row.get(0)
+        ).optional()?;
+        let connected_account = connected_account.context("Gmail 账号记录缺失，请在设置中重新连接")?;
+        if !account.eq_ignore_ascii_case(&connected_account) {
+            bail!("Gmail 当前授权账号与已连接账号不一致，请重新连接")
+        }
         let raw = build_mime(recipient, subject, body, &cv_path)?;
         let response = self.http
             .post("https://gmail.googleapis.com/gmail/v1/users/me/drafts")

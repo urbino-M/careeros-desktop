@@ -28,10 +28,10 @@ describe("application material formatting", () => {
   });
 
   it("splits Chinese letters into metadata and readable paragraphs", () => {
-    const parsed = parseLetter("主题：博士后合作\n\n收件人：pi@example.edu\n\n教授您好：\n\n正文。", "zh");
-    expect(parsed.subject).toBe("博士后合作");
-    expect(parsed.to).toBe("pi@example.edu");
-    expect(parsed.paragraphs).toEqual(["教授您好：", "正文。"]); 
+    const parsed = parseLetter("主题：合作机会\n\n收件人：contact@example.edu\n\n您好：\n\n正文。", "zh");
+    expect(parsed.subject).toBe("合作机会");
+    expect(parsed.to).toBe("contact@example.edu");
+    expect(parsed.paragraphs).toEqual(["您好：", "正文。"]);
   });
 
   it("turns GFM-style score tables into structured report blocks", () => {

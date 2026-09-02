@@ -8,6 +8,7 @@ mod gmail;
 mod materials;
 mod migration;
 mod models;
+mod onboarding;
 mod paths;
 mod providers;
 mod scheduler;
@@ -24,6 +25,7 @@ use models::{
 };
 use paths::AppPaths;
 use scheduler::{EnqueueRequest, Scheduler};
+use providers::ProviderConnectionRequest;
 use serde_json::Value;
 use std::sync::Arc;
 use tauri::Manager;
@@ -166,6 +168,48 @@ fn get_model_providers(state: tauri::State<'_, AppState>) -> Result<Vec<Provider
 }
 
 #[tauri::command]
+async fn connect_responses_provider(
+    state: tauri::State<'_, AppState>,
+    request: ProviderConnectionRequest,
+) -> Result<ProviderInfo, String> {
+    let discovery = providers::discover_responses_provider(&request)
+        .await
+        .map_err(display_error)?;
+    let previous = secrets::get_secret(&discovery.secret_reference).map_err(display_error)?;
+    secrets::set_secret(&discovery.secret_reference, request.api_key.trim())
+        .map_err(display_error)?;
+    if let Err(error) = db::upsert_response_provider(&state.paths.database, &discovery) {
+        let rollback = match previous {
+            Some(secret) => secrets::set_secret(&discovery.secret_reference, &secret),
+            None => secrets::delete_secret(&discovery.secret_reference),
+        };
+        if let Err(rollback_error) = rollback {
+            return Err(format!(
+                "保存模型服务失败：{error:#}；Keychain 回滚也失败：{rollback_error:#}"
+            ));
+        }
+        return Err(display_error(error));
+    }
+    state.codex.invalidate_provider(&discovery.id).await;
+    db::providers(&state.paths.database)
+        .map_err(display_error)?
+        .into_iter()
+        .find(|provider| provider.id == discovery.id)
+        .ok_or_else(|| "模型服务已保存，但无法重新读取连接状态".into())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn disconnect_responses_provider(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+) -> Result<(), String> {
+    let secret_reference = db::disable_response_provider(&state.paths.database, &provider_id)
+        .map_err(display_error)?;
+    state.codex.invalidate_provider(&provider_id).await;
+    secrets::delete_secret(&secret_reference).map_err(display_error)
+}
+
+#[tauri::command]
 fn get_task_model_defaults(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<TaskModelDefault>, String> {
@@ -178,6 +222,44 @@ fn save_task_model_default(
     value: TaskModelDefault,
 ) -> Result<(), String> {
     db::save_task_default(&state.paths.database, &value).map_err(display_error)
+}
+
+#[tauri::command]
+fn get_cv_customization(
+    state: tauri::State<'_, AppState>,
+) -> Result<materials::CvCustomizationSettings, String> {
+    materials::load_cv_customization(&state.paths).map_err(display_error)
+}
+
+#[tauri::command]
+fn save_cv_customization(
+    state: tauri::State<'_, AppState>,
+    value: materials::CvCustomizationSettings,
+) -> Result<materials::CvCustomizationSettings, String> {
+    materials::save_cv_customization(&state.paths, value).map_err(display_error)
+}
+
+#[tauri::command]
+fn get_onboarding_profile(
+    state: tauri::State<'_, AppState>,
+) -> Result<onboarding::OnboardingProfile, String> {
+    onboarding::load(&state.paths).map_err(display_error)
+}
+
+#[tauri::command]
+fn save_onboarding_profile(
+    state: tauri::State<'_, AppState>,
+    value: onboarding::OnboardingProfile,
+) -> Result<onboarding::OnboardingProfile, String> {
+    onboarding::save(&state.paths, value).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn import_onboarding_cv(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    onboarding::import_cv(&state.paths, std::path::Path::new(&path)).map_err(display_error)
 }
 
 #[tauri::command]
@@ -245,34 +327,6 @@ async fn wait_for_chatgpt_login(
     Ok(account)
 }
 
-#[tauri::command(rename_all = "camelCase")]
-async fn save_openai_api_key(
-    state: tauri::State<'_, AppState>,
-    api_key: String,
-) -> Result<Value, String> {
-    if !api_key.starts_with("sk-") || api_key.len() < 20 {
-        return Err("API Key 格式不正确".into());
-    }
-    secrets::set_secret("openai-api-key", &api_key).map_err(display_error)?;
-    let result = state.codex.login_with_api_key(&api_key).await.map_err(display_error)?;
-    db::set_openai_auth_kind(&state.paths.database, "api_key").map_err(display_error)?;
-    Ok(result)
-}
-
-#[tauri::command]
-fn has_openai_api_key() -> Result<bool, String> {
-    secrets::get_secret("openai-api-key")
-        .map(|value| value.is_some())
-        .map_err(display_error)
-}
-
-#[tauri::command]
-async fn remove_openai_api_key(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    secrets::delete_secret("openai-api-key").map_err(display_error)?;
-    state.codex.logout().await.map_err(display_error)?;
-    Ok(())
-}
-
 #[tauri::command]
 fn get_gmail_status(state: tauri::State<'_, AppState>) -> Result<GmailStatus, String> {
     state.gmail.status().map_err(display_error)
@@ -287,11 +341,6 @@ fn import_gmail_client(
         .gmail
         .import_client_file(std::path::Path::new(&path))
         .map_err(display_error)
-}
-
-#[tauri::command]
-fn import_legacy_gmail(state: tauri::State<'_, AppState>) -> Result<bool, String> {
-    state.gmail.import_legacy_credentials().map_err(display_error)
 }
 
 #[tauri::command]
@@ -345,7 +394,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let paths = AppPaths::resolve()?;
+            let resource_dir = app.path().resource_dir()?;
+            let paths = AppPaths::resolve(Some(&resource_dir))?;
             let migration = migration::initialize(&paths)?;
             let codex = Arc::new(CodexManager::new(paths.clone()));
             let gmail = Arc::new(gmail::GmailManager::new(paths.clone()));
@@ -379,8 +429,15 @@ pub fn run() {
             generate_typst_cv,
             generate_cover_letter,
             get_model_providers,
+            connect_responses_provider,
+            disconnect_responses_provider,
             get_task_model_defaults,
             save_task_model_default,
+            get_cv_customization,
+            save_cv_customization,
+            get_onboarding_profile,
+            save_onboarding_profile,
+            import_onboarding_cv,
             get_jobs,
             enqueue_job,
             cancel_job,
@@ -390,12 +447,8 @@ pub fn run() {
             get_codex_models,
             connect_chatgpt,
             wait_for_chatgpt_login,
-            save_openai_api_key,
-            has_openai_api_key,
-            remove_openai_api_key,
             get_gmail_status,
             import_gmail_client,
-            import_legacy_gmail,
             start_gmail_oauth,
             approve_cv_for_gmail,
             get_cv_approval,

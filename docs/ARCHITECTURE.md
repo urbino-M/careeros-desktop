@@ -23,7 +23,7 @@ owning Rust subsystem
     └─ gmail.rs / secrets.rs → Gmail draft API and Keychain
 ```
 
-Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/migrates data, constructs Codex, scheduler, and Gmail managers, starts the scheduler, stores them in `AppState`, and registers the Tauri commands.
+Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/migrates data, constructs Codex, scheduler, and Gmail managers, starts the scheduler, stores them in `AppState`, and registers the Tauri commands. When no native database exists, startup imports a discovered legacy database or creates an empty database from the versioned legacy-foundation schema before applying native migrations.
 
 ## Runtime and Data Flows
 
@@ -37,10 +37,10 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 ### Background Task
 
 1. `AutomationPage.tsx` or an application-detail panel creates an `EnqueueRequest` through `src/api.ts`.
-2. `scheduler.rs` snapshots provider/model settings into `native_jobs`, dispatches with bounded concurrency, and records lifecycle events/checkpoints.
-3. `materials.rs` prepares an isolated workspace and runtime input contract (`POSTDOCOS_TASK.json`); this is separate from the developer Task Contract in `AGENTS.md`.
+2. `scheduler.rs` snapshots provider/model settings into `native_jobs`, rejects duplicate active keys, dispatches with bounded concurrency, and records lifecycle events, execution deadlines, lease heartbeats, and checkpoints.
+3. `materials.rs` prepares an isolated workspace and runtime input contract (`POSTDOCOS_TASK.json`); material-revision tasks snapshot the source SHA-256 in both the contract and the trusted job payload. This is separate from the developer Task Contract in `AGENTS.md`.
 4. `codex.rs` runs or resumes the bundled Codex App Server task.
-5. `materials.rs` applies revisions, or `workflows.rs` validates and imports structured business results.
+5. `materials.rs` rejects an Agent revision if the live material no longer matches its trusted base SHA-256, then applies the revision; other jobs use `workflows.rs` to validate and import structured business results.
 6. CV/Cover Letter revisions may invoke `typst.rs` or `cover_letter.rs` to regenerate PDFs.
 7. The job moves to `needs_review`; the frontend refreshes on `postdocos://jobs-changed`.
 
@@ -72,6 +72,7 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 - `src-tauri/resources/skills/`: runtime agent skill copied into the app-specific Codex home.
 - `src/pages/ApplicationDetailPage.test.ts` and colocated Rust `#[cfg(test)]` modules: current regression tests.
 - `script/build_and_run.sh`: development, verification, and release orchestration.
+- `.github/workflows/release.yml`: tag/version gate, platform runtime acquisition, macOS/Windows packaging, and atomic GitHub Release publication.
 
 # Source Ownership
 
@@ -81,13 +82,14 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 | Frontend API bridge | `src/api.ts` | Central typed wrappers around Tauri `invoke` calls | Does not own business rules, persistence, or view state. Do not bypass it with page-local `invoke` calls. |
 | Shared TS contracts | `src/types.ts` | Frontend representations of routes, requests, and Rust command results | Does not own rendering or backend behavior; change it only when a real caller or cross-boundary shape changes. |
 | Tauri command boundary | `src-tauri/src/lib.rs` | `AppState`, startup wiring, command arguments/results, delegation, and command registration | Keep domain logic in owning modules; ordinary page layout changes do not belong here. |
+| First-run onboarding | `src/pages/OnboardingPage.tsx`; gate in `src/App.tsx`; `src-tauri/src/onboarding.rs` | Career-stage and discipline context, target preferences, resumable onboarding state, and local CV source import | Stores profile files only; it does not own model transport, Gmail OAuth, opportunity persistence, or automatic verification of uploaded CV claims. |
 | Application domain | `src-tauri/src/models.rs`; `src-tauri/src/workflows.rs` | Core target/job shapes, structured agent-result contracts, validation, deduplication, and result import | Does not own generic scheduling, UI presentation, or external transport authentication. |
 | CV | `src-tauri/src/cv_schema.rs`; `src-tauri/src/typst.rs`; `src-tauri/resources/templates/cv.typ` | Target-isolated CV normalization and deduplication, exact-two-page preflight/rendering, PDF generation, and CV revision persistence | A target CV must come from that target's Agent selection. It must never be completed from another contact's CV. Visibility, icons, and preview toggles belong to the UI. |
 | Cover Letter | `src-tauri/src/cover_letter.rs`; `src-tauri/resources/templates/cover-letter.typ`; relevant panels in `src/pages/ApplicationDetailPage.tsx` | Cover Letter content assembly, text/source persistence, Typst layout, PDF regeneration, and preview controls | Does not own scheduler lifecycle, Gmail OAuth, or unrelated CV rendering. |
 | Email / Outreach | email/reply/artifact panels in `src/pages/ApplicationDetailPage.tsx`; `src-tauri/src/materials.rs`; `src-tauri/src/workflows.rs`; reply persistence in `src-tauri/src/db.rs` | Display/edit/revision of outreach materials, inbound reply persistence/follow-up, and agent-produced email artifacts | Gmail authentication and remote draft transport belong to Gmail; ordinary outreach editing must not change scheduler infrastructure. |
 | Materials | `src-tauri/src/materials.rs`; artifact queries in `src-tauri/src/db.rs`; material/revision panels in `src/pages/ApplicationDetailPage.tsx` | Target-owned material copies, manual/agent revisions, backups, diffs, task workspaces, and artifact path safety | Does not own general job dispatch or document layout beyond triggering the owning renderer. |
 | Scheduler | `src-tauri/src/scheduler.rs`; `src/pages/AutomationPage.tsx`; scheduler commands in `src-tauri/src/lib.rs` | Background job queue, concurrency, lifecycle, cancellation/retry/review, progress, checkpoints, and dispatch | Ordinary UI/material editing must not touch scheduler unless background behavior changes. Scheduler does not own business-result schemas. |
-| SQLite | `src-tauri/src/db.rs`; `src-tauri/src/migration.rs`; `src-tauri/migrations/*.sql` (latest: `0009_reply_routing_and_submission_status.sql`) | Connections, queries, status/artifact/job persistence, legacy import, native schema, backups, and compatibility | Do not introduce schema changes for a UI-only need or rewrite an already-applied migration; schema evolution must be explicit, versioned, and migration-safe. |
+| SQLite | `src-tauri/src/db.rs`; `src-tauri/src/migration.rs`; `src-tauri/migrations/*.sql` (latest: `0011_scheduler_leases.sql`) | Connections, queries, status/artifact/job persistence, legacy import, native schema, backups, and compatibility | Do not introduce schema changes for a UI-only need or rewrite an already-applied migration; schema evolution must be explicit, versioned, and migration-safe. |
 | Typst / PDF | `src-tauri/src/typst.rs`; rendering portions of `src-tauri/src/cover_letter.rs`; `src-tauri/resources/templates/*.typ`; bundled Typst under `src-tauri/resources/runtime/` | Locate bundled Typst, render document sources, enforce output/page rules, and persist PDF artifacts | Does not own UI preview visibility, job lifecycle, or email transport. Content semantics remain with CV/Cover Letter owners. |
 | Codex integration | `src-tauri/src/codex.rs`; `src-tauri/src/providers.rs`; Codex call sites in `src-tauri/src/scheduler.rs`; `src-tauri/src/paths.rs` | Bundled App Server process, login/account/model calls, task run/resume/interrupt, provider capabilities, and app-specific Codex home | The runtime skill owns application-agent behavior, not developer workflow; presentation and material rendering do not belong here. |
 | Gmail | `src-tauri/src/gmail.rs`; `src-tauri/src/secrets.rs`; Gmail settings/draft panels in `src/pages/SettingsPage.tsx` and `src/pages/ApplicationDetailPage.tsx` | OAuth setup, Keychain-backed credentials, CV approval hashes, MIME construction, remote draft creation, and draft records | Draft-only integration: no send interface and no automatic contact-status transition. It does not own outreach content generation. |
@@ -98,6 +100,7 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 | User asks to change... | Start here | Then inspect | Usually avoid |
 |---|---|---|---|
 | Application detail UI | Relevant panel in `src/pages/ApplicationDetailPage.tsx` | `src/styles.css`, nearest test, and `src/types.ts` only if displayed data changes | `src-tauri/src/scheduler.rs`, migrations, unrelated Rust services |
+| First-run questions or CV import | `src/pages/OnboardingPage.tsx` | `src-tauri/src/onboarding.rs` → commands in `src-tauri/src/lib.rs` → `src/api.ts`/`src/types.ts`; `src-tauri/src/materials.rs` only for Agent workspace copying | SQLite schema, migration startup, scheduler lifecycle |
 | CV visibility or preview toggle | `CvPanel` in `src/pages/ApplicationDetailPage.tsx` | `src/styles.css` and `src/pages/ApplicationDetailPage.test.ts` if behavior is testable | `src-tauri/src/cv_schema.rs`, `src-tauri/src/typst.rs`, scheduler, SQLite |
 | CV content/schema | `src-tauri/src/cv_schema.rs` and `src-tauri/src/typst.rs` | `src-tauri/src/materials.rs`, `src-tauri/resources/templates/cv.typ`, command/API/types only if the contract changes | scheduler internals and unrelated UI cleanup |
 | Cover Letter editing | Cover Letter/material panels in `src/pages/ApplicationDetailPage.tsx` | `src-tauri/src/materials.rs`, `src-tauri/src/cover_letter.rs`, `src-tauri/src/lib.rs` command wrapper | scheduler redesign, database schema, CV engine |
@@ -110,6 +113,7 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 | Tauri API | command in `src-tauri/src/lib.rs` | owning Rust type/service → `src/api.ts` → `src/types.ts` → caller; command registration | unrelated commands and persistence changes not required by the contract |
 | Database field/schema | `src-tauri/migrations/` and `src-tauri/src/migration.rs` | `src-tauri/src/db.rs`, `src-tauri/src/models.rs`, then API/types/UI only if exposed | opportunistic UI or scheduler refactors |
 | Codex runtime/process behavior | `src-tauri/src/codex.rs` | `src-tauri/src/providers.rs`, `src-tauri/src/scheduler.rs`, `src-tauri/src/paths.rs`; runtime skill only for business-agent behavior | document renderers and unrelated pages |
+| Responses model provider connection | provider connection panel in `src/pages/SettingsPage.tsx` | `src/api.ts` → provider commands in `src-tauri/src/lib.rs` → `src-tauri/src/providers.rs`/`secrets.rs`/`db.rs`; `codex.rs` and scheduler only for execution routing | Chat Completions translation, automatic provider fallback, Gmail, document renderers |
 | Gmail connection or draft creation | `src-tauri/src/gmail.rs` | `src-tauri/src/secrets.rs`, Gmail commands, `src/api.ts`, `src/types.ts`, Settings or draft panel | scheduler, CV generation internals, automatic status updates |
 | Startup paths or legacy migration | `src-tauri/src/paths.rs` or `src-tauri/src/migration.rs` | migration SQL, `src-tauri/src/lib.rs` setup, migration tests | ordinary feature/UI modules |
 
@@ -137,15 +141,16 @@ Use the shape of the change to keep inspection targeted:
 
 ## Persistence and Compatibility
 
-`AppPaths` resolves the data root to `POSTDOCOS_DATA_DIR` when set, otherwise macOS Application Support. Important persisted locations include:
+`AppPaths` resolves the data root to `POSTDOCOS_DATA_DIR` when set, otherwise the platform application-data directory. Important persisted locations include:
 
 - `database/postdocos.sqlite3`: SQLite application state;
 - `generated/`: target material and document outputs;
 - `profile/`: candidate source-of-truth files used in agent workspaces;
 - `workspaces/`: isolated Codex task inputs/outputs and resumable results;
 - `codex/`: app-specific Codex home and installed runtime skill;
+- `codex/providers/<provider-id>-config.toml` and `codex/providers/<provider-id>-models.json`: generated non-secret Codex configuration snapshots/catalogs; App Server receives the same values through `-c` overrides because version 0.144.3 does not accept `--profile` for `app-server`; API keys stay in Keychain and are exposed to only that provider's child process through its configured environment variable;
 - `backups/`: migration and artifact backups;
-- macOS Keychain: OpenAI/Gmail secrets referenced through `secrets.rs`.
+- System credential store: macOS Keychain or Windows Credential Manager, referenced through `secrets.rs`.
 
 Compatibility rules:
 
@@ -161,7 +166,7 @@ CV artifact invariants:
 - Formal open opportunities select evidence against the verified recruitment duties and requirements. Prospective-PI records select against the PI's verified research direction without implying an advertised opening.
 - `cv_schema.rs` may normalize and deduplicate only within one target. Cross-target CV merging is prohibited.
 - Normalized CV sections place selected research outputs/publications first, selected patents second, and selected research projects third. Articles and patents must never render after projects.
-- The bundled CV template owns the approved compact spacing: a tight name-to-headline transition, a tight section-title-to-rule transition, and compact bullet-to-entry indentation. It starts the research-project section on page two to balance the ordered two-page layout. It also bolds `Miao, H.` in publication author lists; an unfinished doctorate is written as `Ph.D. Candidate`.
+- The bundled CV template owns the approved compact spacing: a tight name-to-headline transition, a tight section-title-to-rule transition, and compact bullet-to-entry indentation. It starts the research-project section on page two to balance the ordered two-page layout. It bolds the normalized `cvData.authorName` in publication author lists, while career-stage wording comes only from the verified candidate profile.
 - `typst.rs` preflights the normalized selection before import and accepts only exactly two well-filled A4 pages with at least 36 distinct content entries. One page, a sparse second page, and more than two pages are invalid; space must be filled with target-relevant verified evidence rather than repetition, padding, invention, oversized spacing, or unreadably compressed text. A failing CV must not become a newly imported ready-to-contact package.
 
 ## Targeted Validation Routes
@@ -192,5 +197,5 @@ Tests are evidence, not ceremony. A filtered test that does not exercise the cha
 - `scheduler.rs` coordinates Codex, materials, workflows, and renderers. Touching it is justified only by lifecycle/dispatch/job-flow changes.
 - `workflows.rs` owns structured result validation and import, while `scheduler.rs` owns execution lifecycle. Keep that split.
 - `materials.rs` owns workspace/input preparation plus manual and revision artifact application; `workflows.rs` owns validated import of non-revision structured business outputs. `models.rs` owns serialized `JobSummary` data, while `scheduler.rs` owns `EnqueueRequest` and lifecycle transitions.
-- `db.rs` centralizes current queries over both legacy and native data. A new view need does not automatically justify a schema change.
+- `db.rs` preserves imported legacy tables for compatibility and audit, while current task views query `native_jobs` only. A new view need does not automatically justify a schema change or deletion of imported data.
 - The runtime `SKILL.md` constrains generated application materials. Changes to developer workflow belong in `AGENTS.md`, never in the runtime skill.
