@@ -37,6 +37,7 @@
 *.sqlite3
 *.sqlite3-*
 /output/
+/artifacts/
 /tmp/
 /backups/
 
