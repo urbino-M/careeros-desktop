@@ -1410,18 +1410,43 @@ mod tests {
                 account_id: None, model_id: None, reasoning: None, thread_id: None,
             })?;
         }
-        tokio::time::sleep(Duration::from_millis(180)).await;
-        let conn = db::connect(&paths.database)?;
-        let running: i64 = conn.query_row("SELECT COUNT(*) FROM native_jobs WHERE status='running'", [], |row| row.get(0))?;
-        let queued: i64 = conn.query_row("SELECT COUNT(*) FROM native_jobs WHERE status='queued'", [], |row| row.get(0))?;
-        assert_eq!((running, queued), (5, 1));
-        tokio::time::sleep(Duration::from_millis(1400)).await;
-        let review_id: String = conn.query_row(
-            "SELECT id FROM native_jobs WHERE status='needs_review' LIMIT 1",
-            [],
-            |row| row.get(0),
-        )?;
-        drop(conn);
+        let mut concurrency = (0, 6);
+        for _ in 0..80 {
+            let conn = db::connect(&paths.database)?;
+            let running: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM native_jobs WHERE status='running'",
+                [],
+                |row| row.get(0),
+            )?;
+            let queued: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM native_jobs WHERE status='queued'",
+                [],
+                |row| row.get(0),
+            )?;
+            concurrency = (running, queued);
+            if concurrency == (5, 1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(concurrency, (5, 1));
+
+        let mut review_id: Option<String> = None;
+        for _ in 0..80 {
+            let conn = db::connect(&paths.database)?;
+            review_id = conn
+                .query_row(
+                    "SELECT id FROM native_jobs WHERE status='needs_review' LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if review_id.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let review_id = review_id.context("并发验证任务没有进入待审核状态")?;
         scheduler.approve(&review_id)?;
         let conn = db::connect(&paths.database)?;
         let approved: String = conn.query_row(
