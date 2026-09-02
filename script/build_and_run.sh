@@ -5,9 +5,18 @@ MODE="${1:-dev}"
 APP_NAME="PostdocOS"
 PROCESS_NAME="postdocos"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_VERSION="$(node -e 'const fs = require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).version)' "$ROOT_DIR/src-tauri/tauri.conf.json")"
 APP_BUNDLE="$ROOT_DIR/src-tauri/target/release/bundle/macos/$APP_NAME.app"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/$PROCESS_NAME"
-DMG_PATH="$ROOT_DIR/src-tauri/target/release/bundle/dmg/${APP_NAME}_0.1.0_aarch64.dmg"
+case "$(uname -m)" in
+  arm64) DMG_ARCH="aarch64" ;;
+  x86_64) DMG_ARCH="x64" ;;
+  *)
+    echo "Unsupported macOS architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+DMG_PATH="$ROOT_DIR/src-tauri/target/release/bundle/dmg/${APP_NAME}_${APP_VERSION}_${DMG_ARCH}.dmg"
 INSTALLED_APP_BUNDLE="/Applications/$APP_NAME.app"
 INSTALLED_APP_BINARY="$INSTALLED_APP_BUNDLE/Contents/MacOS/$PROCESS_NAME"
 INSTALL_BACKUP_BUNDLE=""
@@ -22,6 +31,62 @@ run_checks() {
   npm test -- --run
   (cd "$ROOT_DIR/src-tauri" && cargo test)
 }
+
+adhoc_sign_app() {
+  if [[ ! -d "$APP_BUNDLE" ]]; then
+    echo "Built app is missing: $APP_BUNDLE" >&2
+    exit 1
+  fi
+
+  local executable
+  while IFS= read -r -d '' executable; do
+    if [[ "$executable" == "$APP_BINARY" ]]; then
+      continue
+    fi
+    if [[ "$(/usr/bin/file -b "$executable")" == Mach-O* ]]; then
+      codesign --force --sign - --timestamp=none --options runtime "$executable"
+    fi
+  done < <(find "$APP_BUNDLE/Contents" -type f -perm -111 -print0)
+
+  codesign --force --sign - --timestamp=none --options runtime "$APP_BUNDLE"
+  codesign --verify --deep --strict --verbose=4 "$APP_BUNDLE"
+}
+
+create_adhoc_dmg() (
+  local staging_dir
+  staging_dir="$(mktemp -d /private/tmp/postdocos-adhoc-dmg.XXXXXX)"
+  trap 'rm -rf "$staging_dir"' EXIT
+
+  /usr/bin/ditto "$APP_BUNDLE" "$staging_dir/$APP_NAME.app"
+  ln -s /Applications "$staging_dir/Applications"
+  mkdir -p "$(dirname "$DMG_PATH")"
+  hdiutil create \
+    -volname "$APP_NAME" \
+    -srcfolder "$staging_dir" \
+    -ov \
+    -format UDZO \
+    "$DMG_PATH"
+  codesign --force --sign - --timestamp=none "$DMG_PATH"
+)
+
+verify_adhoc_dmg() (
+  local mount_dir
+  local mounted=0
+  mount_dir="$(mktemp -d /private/tmp/postdocos-adhoc-verify.XXXXXX)"
+  cleanup() {
+    if [[ "$mounted" -eq 1 ]]; then
+      hdiutil detach "$mount_dir" >/dev/null
+    fi
+    rmdir "$mount_dir"
+  }
+  trap cleanup EXIT
+
+  codesign --verify --strict --verbose=4 "$DMG_PATH"
+  hdiutil verify "$DMG_PATH"
+  hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$DMG_PATH" >/dev/null
+  mounted=1
+  codesign --verify --deep --strict --verbose=4 "$mount_dir/$APP_NAME.app"
+)
 
 launch_app_bundle() {
   local bundle="$1"
@@ -134,6 +199,14 @@ case "$MODE" in
     echo "Release app: $APP_BUNDLE"
     echo "Release DMG: $DMG_PATH"
     ;;
+  --adhoc-dmg|adhoc-dmg)
+    npm run desktop:build -- --bundles app --no-sign
+    adhoc_sign_app
+    create_adhoc_dmg
+    verify_adhoc_dmg
+    echo "Ad-hoc signed app: $APP_BUNDLE"
+    echo "Ad-hoc signed DMG: $DMG_PATH"
+    ;;
   --logs|logs)
     stop_app
     npm run desktop:dev &
@@ -149,7 +222,7 @@ case "$MODE" in
     RUST_BACKTRACE=1 RUST_LOG=debug exec npm run desktop:dev
     ;;
   *)
-    echo "usage: $0 [dev|--verify|--install-unsigned|--release|--logs|--telemetry|--debug]" >&2
+    echo "usage: $0 [dev|--verify|--install-unsigned|--release|--adhoc-dmg|--logs|--telemetry|--debug]" >&2
     exit 2
     ;;
 esac

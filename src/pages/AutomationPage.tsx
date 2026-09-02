@@ -42,12 +42,7 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
 
   const taskHistory = useMemo(() => {
     if (!jobs) return [];
-    const seen = new Set<string>();
-    return [...jobs.needsReview, ...jobs.recent].filter((job) => {
-      if (seen.has(job.id)) return false;
-      seen.add(job.id);
-      return true;
-    }).slice(0, historySize);
+    return buildTaskHistory(jobs, historySize);
   }, [jobs, historySize]);
 
   const visibleJobs = jobs;
@@ -131,8 +126,12 @@ function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () 
   return (
     <article className={`job-card ${failed ? "job-failed" : ""}`}>
       <div className="job-card-title"><div className="job-card-heading"><h3>{jobLabels[job.jobType] || job.jobType}</h3><span className="track-pill">{job.jobType === "internship_search" ? "Internship" : "Postdoc"}</span></div><StatusBadge status={job.status} /></div>
-      <p>{failed ? job.error || "任务失败，展开技术详情查看原因。" : job.message || "任务正在处理。"}</p>
-      {job.status === "running" && <div className="progress-track"><i style={{ width: `${job.progress}%` }} /></div>}
+      {job.status === "running" ? (
+        <div className="job-live-status" role="status" aria-live="polite">
+          <span><i /> 实时活动</span>
+          <strong>{jobStatusMessage(job)}</strong>
+        </div>
+      ) : <p>{jobStatusMessage(job)}</p>}
       <div className="job-meta"><span>{formatLocalTime(job.createdAt)}</span><span>{job.id}</span>{job.modelId && <span>{job.providerId} · {job.accountId || "默认账号"} · {job.modelId} · {job.reasoning}</span>}{job.threadId && <span>会话 {job.threadId}</span>}</div>
       <div className="job-actions">
         {resultTargets.map((targetId, index) => (
@@ -151,6 +150,22 @@ function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () 
   );
 }
 
+export function buildTaskHistory(jobs: Pick<JobGroups, "needsReview" | "recent">, limit: number): JobSummary[] {
+  const unique = new Map<string, JobSummary>();
+  for (const job of [...jobs.needsReview, ...jobs.recent]) unique.set(job.id, job);
+  return [...unique.values()]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+    .slice(0, limit);
+}
+
+export function jobStatusMessage(job: JobSummary): string {
+  if (job.status !== "failed") return job.message || "任务正在处理。";
+  if (job.error?.includes("Agent 没有生成") && job.error.includes("output/search-results.json")) {
+    return "模型线程已结束，但没有生成可导入的完整检索结果。点击“重新运行”会恢复原线程继续完成。";
+  }
+  return job.error || "任务失败，展开技术详情查看原因。";
+}
+
 function resultDestination(jobType: string): { tab: ApplicationTab; label: string } {
   switch (jobType) {
     case "internship_search": return { tab: "fit", label: "查看 Internship 机会" };
@@ -158,7 +173,7 @@ function resultDestination(jobType: string): { tab: ApplicationTab; label: strin
     case "checklist_refresh": return { tab: "checklist", label: "查看申请清单" };
     case "reply_followup":
     case "follow_up_scan": return { tab: "reply", label: "查看回复处理" };
-    case "pi_verification": return { tab: "pi", label: "查看 PI 简报" };
+    case "pi_verification": return { tab: "pi", label: "查看联系人简报" };
     case "opportunity_health": return { tab: "fit", label: "查看核验结果" };
     default: return { tab: "cv", label: "查看申请结果" };
   }
@@ -195,12 +210,12 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
         prompt: isInternship
           ? `Search for current industry internships matching this request: ${query}. Use official company career pages or official ATS records as primary evidence. Exclude postdoctoral, doctoral, faculty and regular full-time roles. Check hard eligibility requirements against available profile evidence; mark unknowns as uncertain. Return review-only structured opportunities and application checklists. Do not create a CV, contact anyone or submit an application.`
           : isPi
-          ? `Research this named PI or researcher for current postdoctoral opportunities: ${query}. Use primary sources, verify identity, email, lab direction and availability, deduplicate against existing opportunities, and return structured evidence. Do not contact anyone.`
+          ? `Research this named contact or researcher for current opportunities compatible with the candidate profile: ${query}. Use primary sources, verify identity, contact route, current direction and availability, deduplicate against existing opportunities, and return structured evidence. Do not contact anyone.`
           : isHealth
             ? `Verify whether these opportunity URLs or records remain active: ${query}. Use primary sources, record the check time and evidence, and return a review-only verification result. Do not archive records or change contact status.`
             : isScan
               ? `Review all contacted, replied, and follow-up contact targets in input/targets.json. Recommend only evidence-based next actions using exact target IDs. Additional instruction: ${query || "Identify which contacts are actually due for follow-up."} Do not change status, create drafts, or send email.`
-            : `Run a complete evidence-based postdoctoral opportunity search using the imported local profile. Search request: ${query}. Verify current primary sources, apply the career-level gate, score fit conservatively, deduplicate by source opportunity and independent contact target, then prepare no more than five complete reviewable material packages. Do not send email or submit applications.`,
+            : `Run a complete evidence-based opportunity search for the candidate described in the imported local profile. Search request: ${query}. Verify current primary sources, apply the candidate's stated career-stage and constraint gates, score fit conservatively, deduplicate by source opportunity and independent contact target, then prepare no more than five complete reviewable material packages. Do not send email or submit applications.`,
       });
       onCreated();
     } catch (value) { setError(errorMessage(value)); }

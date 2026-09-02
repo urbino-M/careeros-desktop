@@ -2,6 +2,7 @@
   "name": "postdocos-desktop",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
@@ -13,7 +14,8 @@
     "desktop:build": "tauri build",
     "desktop:run": "./script/build_and_run.sh",
     "desktop:verify": "./script/build_and_run.sh --verify",
-    "desktop:release": "./script/build_and_run.sh --release"
+    "desktop:release": "./script/build_and_run.sh --release",
+    "desktop:adhoc-dmg": "./script/build_and_run.sh --adhoc-dmg"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

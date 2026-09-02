@@ -20,20 +20,23 @@ pub struct AppPaths {
 }
 
 impl AppPaths {
-    pub fn resolve() -> Result<Self> {
+    pub fn resolve(resource_dir: Option<&Path>) -> Result<Self> {
         let data_root = if let Some(path) = std::env::var_os("POSTDOCOS_DATA_DIR") {
             PathBuf::from(path)
         } else {
             ::dirs::data_dir()
-                .context("macOS Application Support 目录不可用")?
+                .context("系统应用数据目录不可用")?
                 .join("PostdocOS")
         };
         let cache = ::dirs::cache_dir()
-            .context("macOS Cache 目录不可用")?
+            .context("系统缓存目录不可用")?
             .join("PostdocOS");
+        #[cfg(target_os = "macos")]
         let logs = ::dirs::home_dir()
             .context("用户目录不可用")?
             .join("Library/Logs/PostdocOS");
+        #[cfg(not(target_os = "macos"))]
+        let logs = data_root.join("logs");
 
         Ok(Self {
             database: data_root.join("database/postdocos.sqlite3"),
@@ -45,7 +48,7 @@ impl AppPaths {
             data_root,
             cache,
             logs,
-            runtime: locate_runtime_dir(),
+            runtime: locate_runtime_dir(resource_dir),
         })
     }
 
@@ -112,14 +115,34 @@ impl AppPaths {
     }
 }
 
-fn locate_runtime_dir() -> PathBuf {
+fn locate_runtime_dir(resource_dir: Option<&Path>) -> PathBuf {
     if let Some(path) = std::env::var_os("POSTDOCOS_RUNTIME_DIR") {
         return PathBuf::from(path);
     }
+    if let Some(resources) = resource_dir {
+        for bundled in [
+            resources.join("resources/runtime"),
+            resources.join("runtime"),
+        ] {
+            if bundled.is_dir() {
+                return bundled;
+            }
+        }
+    }
     if let Ok(executable) = std::env::current_exe() {
-        if let Some(contents) = executable.parent().and_then(Path::parent) {
-            let resources = contents.join("Resources");
-            for bundled in [resources.join("runtime"), resources.join("resources/runtime")] {
+        if let Some(executable_dir) = executable.parent() {
+            let bundle_resources = executable_dir
+                .parent()
+                .map(|contents| contents.join("Resources"));
+            let mut candidates = vec![
+                executable_dir.join("resources/runtime"),
+                executable_dir.join("runtime"),
+            ];
+            if let Some(resources) = bundle_resources {
+                candidates.push(resources.join("runtime"));
+                candidates.push(resources.join("resources/runtime"));
+            }
+            for bundled in candidates {
                 if bundled.is_dir() {
                     return bundled;
                 }
@@ -127,6 +150,10 @@ fn locate_runtime_dir() -> PathBuf {
         }
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime")
+}
+
+pub fn runtime_binary(root: &Path, name: &str) -> PathBuf {
+    root.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
 pub fn locate_legacy_root() -> Option<PathBuf> {

@@ -9,45 +9,61 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+const LEGACY_FOUNDATION_SCHEMA: &str =
+    include_str!("../migrations/0001_legacy_foundation.sql");
 const NATIVE_MIGRATION: &str = include_str!("../migrations/0008_native_desktop.sql");
 const REPLY_ROUTING_MIGRATION: &str = include_str!("../migrations/0009_reply_routing_and_submission_status.sql");
-const LATEST_NATIVE_SCHEMA_VERSION: i64 = 9;
+const RESPONSES_PROVIDERS_MIGRATION: &str = include_str!("../migrations/0010_responses_model_providers.sql");
+const SCHEDULER_LEASES_MIGRATION: &str = include_str!("../migrations/0011_scheduler_leases.sql");
+const LATEST_NATIVE_SCHEMA_VERSION: i64 = 11;
 
 pub fn initialize(paths: &AppPaths) -> Result<MigrationReport> {
-    paths.ensure()?;
     let legacy_root = locate_legacy_root();
+    initialize_with_legacy_root(paths, legacy_root.as_deref())
+}
+
+fn initialize_with_legacy_root(
+    paths: &AppPaths,
+    legacy_root: Option<&Path>,
+) -> Result<MigrationReport> {
+    paths.ensure()?;
     let mut imported = false;
+    let mut created_fresh = false;
     let mut source_hash = None;
     let mut source_hash_after = None;
     let mut backup_path = None;
 
     if !paths.database.exists() {
-        let root = legacy_root
-            .as_ref()
-            .context("没有找到旧版 PostdocOS 数据，请设置 POSTDOCOS_LEGACY_ROOT")?;
-        let source_db = root.join("data/postdoc.db");
-        let before = sha256_file(&source_db)?;
-        source_hash = Some(before.clone());
+        if let Some(root) = legacy_root {
+            let source_db = root.join("data/postdoc.db");
+            let before = sha256_file(&source_db)?;
+            source_hash = Some(before.clone());
 
-        let staging = paths.database.with_extension("sqlite3.importing");
-        snapshot_sqlite(&source_db, &staging)?;
-        fs::rename(&staging, &paths.database)?;
-        copy_tree_if_missing(&root.join("generated"), &paths.generated)?;
-        copy_tree_if_missing(&root.join("profile"), &paths.profile)?;
-        copy_tree_if_missing(&root.join("data/job_logs"), &paths.logs.join("legacy-jobs"))?;
+            let staging = paths.database.with_extension("sqlite3.importing");
+            snapshot_sqlite(&source_db, &staging)?;
+            fs::rename(&staging, &paths.database)?;
+            copy_tree_if_missing(&root.join("generated"), &paths.generated)?;
+            copy_tree_if_missing(&root.join("profile"), &paths.profile)?;
+            copy_tree_if_missing(&root.join("data/job_logs"), &paths.logs.join("legacy-jobs"))?;
 
-        let after = sha256_file(&source_db)?;
-        source_hash_after = Some(after.clone());
-        // The old Streamlit worker may still be writing while the native app
-        // takes its SQLite online backup. The source is opened read-only, so
-        // a changed hash here means an external writer advanced the old app;
-        // the online-backup snapshot itself remains transactionally valid.
-        imported = true;
+            let after = sha256_file(&source_db)?;
+            source_hash_after = Some(after.clone());
+            // The old Streamlit worker may still be writing while the native app
+            // takes its SQLite online backup. The source is opened read-only, so
+            // a changed hash here means an external writer advanced the old app;
+            // the online-backup snapshot itself remains transactionally valid.
+            imported = true;
+        } else {
+            create_fresh_database(&paths.database)?;
+            created_fresh = true;
+        }
     }
 
-    let backup = backup_before_native_migration(paths)?;
-    if let Some(path) = backup {
-        backup_path = Some(path.display().to_string());
+    if !created_fresh {
+        let backup = backup_before_native_migration(paths)?;
+        if let Some(path) = backup {
+            backup_path = Some(path.display().to_string());
+        }
     }
 
     let mut conn = open_migration_connection(&paths.database)?;
@@ -58,18 +74,37 @@ pub fn initialize(paths: &AppPaths) -> Result<MigrationReport> {
     // replies, revisions, approvals, and checklists from those targets.
     apply_native_schema(&mut conn)?;
     crate::typst::migrate_typst_sources(paths)?;
-    validate_core_counts(&conn)?;
+    validate_core_counts(&conn, imported)?;
 
     let report = collect_report(
         &conn,
         imported,
-        legacy_root.as_deref(),
+        legacy_root,
         source_hash,
         source_hash_after,
         backup_path,
     )?;
     record_audit(&conn, &report)?;
     Ok(report)
+}
+
+fn create_fresh_database(path: &Path) -> Result<()> {
+    let staging = path.with_extension("sqlite3.initializing");
+    if staging.exists() {
+        fs::remove_file(&staging)
+            .with_context(|| format!("无法清理未完成的新数据库 {}", staging.display()))?;
+    }
+    let mut conn = Connection::open(&staging)
+        .with_context(|| format!("无法创建新数据库 {}", staging.display()))?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    {
+        let tx = conn.transaction()?;
+        tx.execute_batch(LEGACY_FOUNDATION_SCHEMA)?;
+        tx.commit()?;
+    }
+    drop(conn);
+    fs::rename(&staging, path).with_context(|| format!("无法启用新数据库 {}", path.display()))?;
+    Ok(())
 }
 
 fn snapshot_sqlite(source: &Path, destination: &Path) -> Result<()> {
@@ -148,6 +183,8 @@ fn apply_native_schema(conn: &mut Connection) -> Result<()> {
         tx.commit()?;
     }
     apply_reply_routing_schema(conn)?;
+    apply_responses_provider_schema(conn)?;
+    apply_scheduler_leases_schema(conn)?;
     Ok(())
 }
 
@@ -162,6 +199,42 @@ fn apply_reply_routing_schema(conn: &mut Connection) -> Result<()> {
         tx.execute_batch(REPLY_ROUTING_MIGRATION)?;
         tx.execute(
             "INSERT INTO native_schema_migrations(version,name) VALUES(9,'reply-routing-and-submission-status')",
+            [],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn apply_responses_provider_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let applied: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=10)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !applied {
+        tx.execute_batch(RESPONSES_PROVIDERS_MIGRATION)?;
+        tx.execute(
+            "INSERT INTO native_schema_migrations(version,name) VALUES(10,'responses-model-providers')",
+            [],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn apply_scheduler_leases_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let applied: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=11)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !applied {
+        tx.execute_batch(SCHEDULER_LEASES_MIGRATION)?;
+        tx.execute(
+            "INSERT INTO native_schema_migrations(version,name) VALUES(11,'scheduler-leases')",
             [],
         )?;
     }
@@ -527,18 +600,23 @@ fn contact_identity(
     format!("{opportunity}::{contact}")
 }
 
-fn validate_core_counts(conn: &Connection) -> Result<()> {
-    let counts = [
-        ("applications", 24_i64),
-        ("opportunities", 27_i64),
-        ("jobs", 80_i64),
-        ("artifact_revisions", 102_i64),
-        ("gmail_drafts", 18_i64),
-    ];
-    for (table, expected_minimum) in counts {
-        let count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))?;
-        if count < expected_minimum {
-            bail!("{table} 迁移数量异常：{count}，预期至少 {expected_minimum}")
+fn validate_core_counts(conn: &Connection, imported: bool) -> Result<()> {
+    if imported {
+        let counts = [
+            ("applications", 24_i64),
+            ("opportunities", 27_i64),
+            ("jobs", 80_i64),
+            ("artifact_revisions", 102_i64),
+            ("gmail_drafts", 18_i64),
+        ];
+        for (table, expected_minimum) in counts {
+            let count: i64 =
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+            if count < expected_minimum {
+                bail!("{table} 迁移数量异常：{count}，预期至少 {expected_minimum}")
+            }
         }
     }
     let invalid: i64 = conn.query_row(
@@ -695,6 +773,143 @@ mod tests {
             "UPDATE contact_targets_v2 SET submission_status='invalid' WHERE id='target-1'",
             [],
         ).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_v10_adds_responses_provider_connection_fields_idempotently() -> Result<()> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE native_schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL);
+             INSERT INTO native_schema_migrations(version,name) VALUES(9,'reply-routing-and-submission-status');
+             CREATE TABLE model_providers(
+                 id TEXT PRIMARY KEY,
+                 display_name TEXT NOT NULL,
+                 adapter_kind TEXT NOT NULL,
+                 connection_mode TEXT NOT NULL,
+                 enabled INTEGER NOT NULL DEFAULT 0,
+                 built_in INTEGER NOT NULL DEFAULT 0,
+                 sort_order INTEGER NOT NULL DEFAULT 100,
+                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );",
+        )?;
+
+        apply_responses_provider_schema(&mut conn)?;
+        apply_responses_provider_schema(&mut conn)?;
+        conn.execute(
+            "INSERT INTO model_providers(id,display_name,adapter_kind,connection_mode,base_url)
+             VALUES('relay-test','Relay','responses','native_responses','https://relay.example/v1')",
+            [],
+        )?;
+        let (base_url, wire_api): (String, String) = conn.query_row(
+            "SELECT base_url,wire_api FROM model_providers WHERE id='relay-test'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(base_url, "https://relay.example/v1");
+        assert_eq!(wire_api, "responses");
+        let version_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM native_schema_migrations WHERE version=10",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(version_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn schema_v11_adds_scheduler_leases_and_active_key_uniqueness() -> Result<()> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE native_schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL);
+             INSERT INTO native_schema_migrations(version,name) VALUES(10,'responses-model-providers');
+             CREATE TABLE native_jobs(
+                 id TEXT PRIMARY KEY,
+                 status TEXT NOT NULL DEFAULT 'queued'
+             );",
+        )?;
+
+        apply_scheduler_leases_schema(&mut conn)?;
+        apply_scheduler_leases_schema(&mut conn)?;
+        conn.execute(
+            "INSERT INTO native_jobs(id,status,active_key) VALUES('job-1','queued','material:target:cv')",
+            [],
+        )?;
+        assert!(conn.execute(
+            "INSERT INTO native_jobs(id,status,active_key) VALUES('job-2','running','material:target:cv')",
+            [],
+        ).is_err());
+        conn.execute("UPDATE native_jobs SET status='completed' WHERE id='job-1'", [])?;
+        conn.execute(
+            "INSERT INTO native_jobs(id,status,active_key) VALUES('job-2','queued','material:target:cv')",
+            [],
+        )?;
+        let (timeout_seconds, lease_owner): (i64, Option<String>) = conn.query_row(
+            "SELECT timeout_seconds,lease_owner FROM native_jobs WHERE id='job-2'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(timeout_seconds, 3600);
+        assert!(lease_owner.is_none());
+        let version_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM native_schema_migrations WHERE version=11",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(version_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_install_creates_empty_native_database_and_reopens() -> Result<()> {
+        let temp = TempDir::new()?;
+        let root = temp.path().to_path_buf();
+        let paths = AppPaths {
+            database: root.join("database/postdocos.sqlite3"),
+            generated: root.join("generated"),
+            profile: root.join("profile"),
+            workspaces: root.join("workspaces"),
+            codex_home: root.join("codex"),
+            backups: root.join("backups"),
+            cache: root.join("cache"),
+            logs: root.join("logs"),
+            runtime: root.join("runtime"),
+            data_root: root,
+        };
+
+        let first = initialize_with_legacy_root(&paths, None)?;
+        assert!(!first.imported);
+        assert!(first.legacy_root.is_none());
+        assert!(first.backup_path.is_none());
+        assert_eq!(first.applications, 0);
+        assert_eq!(first.opportunities, 0);
+        assert_eq!(first.active_targets, 0);
+
+        let conn = open_migration_connection(&paths.database)?;
+        let schema_version: i64 = conn.query_row(
+            "SELECT MAX(version) FROM native_schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(schema_version, LATEST_NATIVE_SCHEMA_VERSION);
+        let foreign_key_violations: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(foreign_key_violations, 0);
+        drop(conn);
+
+        let dashboard = crate::db::dashboard(&paths.database, "postdoc")?;
+        assert!(dashboard.metrics.iter().all(|metric| metric.value == 0));
+        assert!(dashboard.regions.is_empty());
+        assert!(dashboard.priority_targets.is_empty());
+        assert!(crate::db::list_targets(&paths.database, "postdoc", None, None, None, 0, 20)?.is_empty());
+
+        let second = initialize_with_legacy_root(&paths, None)?;
+        assert!(!second.imported);
+        assert_eq!(second.applications, 0);
+        assert_eq!(second.active_targets, 0);
         Ok(())
     }
 

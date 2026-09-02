@@ -1,7 +1,7 @@
 use crate::db;
 use crate::cv_schema::{self, CvData, CvEntry, CvSection};
 use crate::materials::{DiffEntry, RevisionResult};
-use crate::paths::AppPaths;
+use crate::paths::{AppPaths, runtime_binary};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use lopdf::Document;
@@ -362,7 +362,7 @@ fn parse_curve_tex(source: &str) -> Result<CvData> {
     let capture = |pattern: &str| -> Option<String> {
         Regex::new(pattern).ok()?.captures(source)?.get(1).map(|value| latex_to_plain(value.as_str()))
     };
-    let name = capture(r"\\LARGE\\bfseries\s+([^}]+)").unwrap_or_else(|| "Hongbo Miao".into());
+    let name = capture(r"\\LARGE\\bfseries\s+([^}]+)").unwrap_or_else(|| "Candidate".into());
     let tagline = capture(r"\\normalsize\s+([^}]+)").unwrap_or_else(|| "Research Curriculum Vitae".into());
     let email = Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")?
         .find(source).map(|value| value.as_str().to_owned()).unwrap_or_default();
@@ -396,6 +396,7 @@ fn parse_curve_tex(source: &str) -> Result<CvData> {
     Ok(CvData {
         schema_version: 1,
         name,
+        author_name: String::new(),
         tagline,
         contact: [email, phone].into_iter().filter(|value| !value.is_empty()).collect::<Vec<_>>().join(" · "),
         affiliations,
@@ -449,7 +450,10 @@ fn locate_typst_binary(paths: &AppPaths) -> Result<PathBuf> {
         let path = PathBuf::from(value);
         if path.is_file() { return Ok(path) }
     }
-    for path in [paths.runtime.join("typst"), paths.data_root.join("runtime/typst")] {
+    for path in [
+        runtime_binary(&paths.runtime, "typst"),
+        runtime_binary(&paths.data_root.join("runtime"), "typst"),
+    ] {
         if path.is_file() { return Ok(path) }
     }
     bail!("没有找到内置 Typst 运行时")
@@ -477,9 +481,9 @@ mod tests {
 
     #[test]
     fn curve_tex_is_structured_without_latex_commands() -> Result<()> {
-        let source = r"\leftheader{{\LARGE\bfseries Hongbo Miao}\par {\normalsize Marine AI}\par \makefield{\faEnvelope[regular]}{urbinohbmiao@gmail.com} \makefield{\faPhone}{123} \makefield{\faUniversity}{The University of Hong Kong}} \begin{rubric}{Research Profile}\entry*[Focus]% \textbf{Marine sensing:} Verified work.\end{rubric}";
+        let source = r"\leftheader{{\LARGE\bfseries Alex Morgan}\par {\normalsize Targeted Profile}\par \makefield{\faEnvelope[regular]}{candidate@example.org} \makefield{\faPhone}{123} \makefield{\faUniversity}{Example Institute}} \begin{rubric}{Research Profile}\entry*[Focus]% \textbf{Research focus:} Verified work.\end{rubric}";
         let data = parse_curve_tex(source)?;
-        assert_eq!(data.name, "Hongbo Miao");
+        assert_eq!(data.name, "Alex Morgan");
         assert_eq!(data.sections[0].entries[0].key, "Focus");
         assert!(!data.sections[0].entries[0].body.contains("textbf"));
         Ok(())
@@ -494,7 +498,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         fs::write(temp.path().join("cv.typ"), CV_TEMPLATE)?;
         fs::write(temp.path().join("cv-data.json"), serde_json::to_vec_pretty(&data)?)?;
-        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime/typst");
+        let binary = runtime_binary(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime"),
+            "typst",
+        );
         let output = std::process::Command::new(binary)
             .arg("compile")
             .arg("--root")
@@ -533,10 +540,11 @@ mod tests {
         })).collect::<Vec<_>>();
         let value = json!({
             "schemaVersion":1,
-            "name":"Hongbo Miao",
+            "name":"Alex Morgan",
+            "authorName":"Morgan, A.",
             "tagline":"Target-specific research CV",
-            "contact":"verified@example.com",
-            "affiliations":"HKU · HEU",
+            "contact":"verified@example.org",
+            "affiliations":"Example Institute",
             "sections":[{"title":"Selected Research Experience","entries":entries}]
         });
         let error = validate_cv_data(&paths, &value).await.unwrap_err();
@@ -551,10 +559,11 @@ mod tests {
         assert!(ensure_cv_page_count(3).is_err());
         let sparse = CvData {
             schema_version: 1,
-            name: "Hongbo Miao".into(),
+            name: "Alex Morgan".into(),
+            author_name: "Morgan, A.".into(),
             tagline: "Targeted CV".into(),
-            contact: "verified@example.com".into(),
-            affiliations: "HKU · HEU".into(),
+            contact: "verified@example.org".into(),
+            affiliations: "Example Institute".into(),
             sections: vec![CvSection {
                 title: "Research".into(),
                 entries: vec![CvEntry { key: "Focus".into(), body: "Verified research.".into() }],

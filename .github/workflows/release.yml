@@ -1,0 +1,322 @@
+name: Release desktop
+run-name: Desktop build ${{ inputs.version || github.ref_name }}
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build without publishing a Release
+        required: true
+        default: "0.1.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "11.19.0"
+  CODEX_VERSION: "0.144.3"
+  CODEX_MACOS_ARCHIVE_SHA256: "249aaf12644add3876e740998cba0eac8d7d175e903add8cbc8d8eaa1f02e2b5"
+  CODEX_MACOS_BINARY_SHA256: "718724d7221cf1298071ca92411cb74caa8422809154150cedca7b569a4518e3"
+  CODEX_WINDOWS_BINARY_SHA256: "e5dcc9f9b08102c58596af85345f689a69fd53a87d8d408bdc0fcdaf99fcf6e3"
+  TYPST_VERSION: "0.15.1"
+  TYPST_MACOS_ARCHIVE_SHA256: "48f62ed034aa3a7978309579ac6ca00045e2ef0da73114e8af27cfd8e74dc05a"
+  TYPST_MACOS_BINARY_SHA256: "7c4a136b377f3689400afe37b4f0fe3528d50faaa55cbb1106ac8a128f86ba1a"
+  TYPST_WINDOWS_ARCHIVE_SHA256: "19ce3551153c2fe7ee9fa2f95208310c8f4d3209fedb699e0333faf8913f6736"
+  TYPST_WINDOWS_BINARY_SHA256: "081217a463adb006f8894b44227fe4b9c9e91fc85f5463d5948e8370db9bb31e"
+
+jobs:
+  metadata:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        name: Require tag and project versions to match
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ "$GITHUB_REF_NAME" != "v$version" || -z "$version" ]]; then
+              echo "Release tag must use the v<version> form." >&2
+              exit 1
+            fi
+          else
+            version="$REQUESTED_VERSION"
+            if [[ -z "$version" ]]; then
+              echo "A version is required for a manual build." >&2
+              exit 1
+            fi
+          fi
+          tauri_version="$(jq -r '.version' src-tauri/tauri.conf.json)"
+          package_version="$(jq -r '.version' package.json)"
+          cargo_version="$(awk '/^\[package\]/{in_package=1; next} in_package && /^version = /{gsub(/[" ]/, "", $3); print $3; exit}' src-tauri/Cargo.toml)"
+          if [[ "$version" != "$tauri_version" || "$version" != "$package_version" || "$version" != "$cargo_version" ]]; then
+            echo "Requested version $version does not match Tauri=$tauri_version, package=$package_version, Cargo=$cargo_version." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    name: Build Apple Silicon DMG
+    needs: metadata
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download and verify Apple Silicon runtimes
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "arm64" ]]
+          runtime_dir="$GITHUB_WORKSPACE/src-tauri/resources/runtime"
+          download_dir="$(mktemp -d "$RUNNER_TEMP/postdocos-runtime.XXXXXX")"
+          trap 'rm -rf "$download_dir"' EXIT
+
+          codex_archive="$download_dir/codex.tar.gz"
+          curl -fL --retry 3 \
+            "https://github.com/openai/codex/releases/download/rust-v$CODEX_VERSION/codex-aarch64-apple-darwin.tar.gz" \
+            -o "$codex_archive"
+          echo "$CODEX_MACOS_ARCHIVE_SHA256  $codex_archive" | shasum -a 256 -c -
+          mkdir "$download_dir/codex"
+          tar -xzf "$codex_archive" -C "$download_dir/codex"
+          codex_binary="$(find "$download_dir/codex" -type f \( -name codex -o -name codex-aarch64-apple-darwin \) -print -quit)"
+          [[ -n "$codex_binary" ]]
+          install -m 755 "$codex_binary" "$runtime_dir/codex"
+          echo "$CODEX_MACOS_BINARY_SHA256  $runtime_dir/codex" | shasum -a 256 -c -
+
+          typst_archive="$download_dir/typst.tar.xz"
+          curl -fL --retry 3 \
+            "https://github.com/typst/typst/releases/download/v$TYPST_VERSION/typst-aarch64-apple-darwin.tar.xz" \
+            -o "$typst_archive"
+          echo "$TYPST_MACOS_ARCHIVE_SHA256  $typst_archive" | shasum -a 256 -c -
+          mkdir "$download_dir/typst"
+          tar -xJf "$typst_archive" -C "$download_dir/typst"
+          typst_binary="$(find "$download_dir/typst" -type f -name typst -print -quit)"
+          [[ -n "$typst_binary" ]]
+          install -m 755 "$typst_binary" "$runtime_dir/typst"
+          echo "$TYPST_MACOS_BINARY_SHA256  $runtime_dir/typst" | shasum -a 256 -c -
+
+      - name: Run release checks
+        run: |
+          pnpm run typecheck
+          pnpm test
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Build and verify ad-hoc signed DMG
+        run: pnpm run desktop:adhoc-dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: src-tauri/target/release/bundle/dmg/PostdocOS_${{ needs.metadata.outputs.version }}_aarch64.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows:
+    name: Build Windows installer
+    needs: metadata
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download and verify Windows runtimes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Assert-Sha256([string]$Path, [string]$Expected) {
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+            if ($actual -ne $Expected) {
+              throw "SHA256 mismatch for $Path. Expected $Expected, got $actual"
+            }
+          }
+
+          $runtimeDir = Join-Path $env:GITHUB_WORKSPACE "src-tauri/resources/runtime"
+          $downloadDir = Join-Path $env:RUNNER_TEMP "postdocos-runtime"
+          New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+          foreach ($name in @("codex", "typst", "codex.exe", "typst.exe")) {
+            $path = Join-Path $runtimeDir $name
+            if (Test-Path -LiteralPath $path) {
+              Remove-Item -LiteralPath $path -Force
+            }
+          }
+
+          $codexExe = Join-Path $runtimeDir "codex.exe"
+          $codexUrl = "https://github.com/openai/codex/releases/download/rust-v$env:CODEX_VERSION/codex-x86_64-pc-windows-msvc.exe"
+          & curl.exe -fL --retry 3 $codexUrl -o $codexExe
+          if ($LASTEXITCODE -ne 0) { throw "Codex download failed with exit code $LASTEXITCODE" }
+          Assert-Sha256 $codexExe $env:CODEX_WINDOWS_BINARY_SHA256
+
+          $typstArchive = Join-Path $downloadDir "typst.zip"
+          $typstUrl = "https://github.com/typst/typst/releases/download/v$env:TYPST_VERSION/typst-x86_64-pc-windows-msvc.zip"
+          & curl.exe -fL --retry 3 $typstUrl -o $typstArchive
+          if ($LASTEXITCODE -ne 0) { throw "Typst download failed with exit code $LASTEXITCODE" }
+          Assert-Sha256 $typstArchive $env:TYPST_WINDOWS_ARCHIVE_SHA256
+          $typstExtract = Join-Path $downloadDir "typst"
+          Expand-Archive -LiteralPath $typstArchive -DestinationPath $typstExtract -Force
+          $typstSource = Get-ChildItem -LiteralPath $typstExtract -Filter typst.exe -Recurse | Select-Object -First 1
+          if (-not $typstSource) { throw "typst.exe was not found in the official archive" }
+          $typstExe = Join-Path $runtimeDir "typst.exe"
+          Copy-Item -LiteralPath $typstSource.FullName -Destination $typstExe -Force
+          Assert-Sha256 $typstExe $env:TYPST_WINDOWS_BINARY_SHA256
+
+          & $codexExe --version
+          & $typstExe --version
+
+      - name: Run Windows release checks
+        run: |
+          pnpm run typecheck
+          pnpm test
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Build NSIS installer
+        run: pnpm tauri build --bundles nsis
+
+      - name: Verify installer and fresh-install launch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = @(Get-ChildItem -LiteralPath "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe")
+          if ($installer.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installer.Count)"
+          }
+          $installer = $installer[0]
+          Write-Host "Installer: $($installer.FullName)"
+          Write-Host "SHA256: $((Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant())"
+
+          $installRoot = Join-Path $env:LOCALAPPDATA "PostdocOS"
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "NSIS silent install failed with exit code $($install.ExitCode)"
+          }
+
+          $appExe = Join-Path $installRoot "postdocos.exe"
+          $codexExe = Join-Path $installRoot "resources/runtime/codex.exe"
+          $typstExe = Join-Path $installRoot "resources/runtime/typst.exe"
+          $cvTemplate = Join-Path $installRoot "resources/templates/cv.typ"
+          $agentSkill = Join-Path $installRoot "resources/skills/postdoc-application-agent/SKILL.md"
+          foreach ($path in @($appExe, $codexExe, $typstExe, $cvTemplate, $agentSkill)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Installed payload is missing: $path"
+            }
+          }
+          & $codexExe --version
+          if ($LASTEXITCODE -ne 0) { throw "Installed codex.exe failed with exit code $LASTEXITCODE" }
+          & $typstExe --version
+          if ($LASTEXITCODE -ne 0) { throw "Installed typst.exe failed with exit code $LASTEXITCODE" }
+
+          $dataDir = Join-Path $env:RUNNER_TEMP "postdocos-fresh-install"
+          $env:POSTDOCOS_DATA_DIR = $dataDir
+          $app = Start-Process -FilePath $appExe -PassThru
+          try {
+            Start-Sleep -Seconds 10
+            if ($app.HasExited) {
+              throw "Freshly installed PostdocOS exited during startup with code $($app.ExitCode)"
+            }
+            $database = Join-Path $dataDir "database/postdocos.sqlite3"
+            if (-not (Test-Path -LiteralPath $database -PathType Leaf)) {
+              throw "Fresh install did not create its SQLite database: $database"
+            }
+          } finally {
+            if (-not $app.HasExited) {
+              Stop-Process -Id $app.Id -Force
+              Wait-Process -Id $app.Id -ErrorAction SilentlyContinue
+            }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push'
+    needs:
+      - metadata
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: release-assets/macos
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+          path: release-assets/windows
+
+      - name: Generate release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp LICENSE THIRD_PARTY_NOTICES.md release-assets/
+          cd release-assets
+          sha256sum macos/*.dmg windows/*.exe | sed -E 's#  (macos|windows)/#  #' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(release-assets/macos/*.dmg release-assets/windows/*.exe release-assets/SHA256SUMS.txt release-assets/LICENSE release-assets/THIRD_PARTY_NOTICES.md)
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --title "PostdocOS $GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY"
+          fi

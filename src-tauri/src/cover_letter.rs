@@ -1,7 +1,7 @@
 use crate::cv_schema::{self, CvData};
 use crate::db;
 use crate::materials::{DiffEntry, RevisionResult};
-use crate::paths::AppPaths;
+use crate::paths::{AppPaths, runtime_binary};
 use anyhow::{bail, Context, Result};
 use chrono::{Datelike, Local, Utc};
 use lopdf::Document;
@@ -262,21 +262,16 @@ async fn render_and_persist(
 fn build_data(target: &TargetContext, email: &str, cv: Option<&CvData>) -> CoverLetterData {
     let (email_subject, email_greeting, email_paragraphs) = parse_email(email);
     let name = cv.map(|value| value.name.trim()).filter(|value| !value.is_empty())
-        .unwrap_or("Hongbo Miao").to_owned();
+        .unwrap_or("Candidate").to_owned();
     let contact = cv.map(|value| value.contact.trim()).filter(|value| !value.is_empty())
-        .unwrap_or("urbinohbmiao@gmail.com · +86 188 4510 9373").to_owned();
+        .unwrap_or_default().to_owned();
     let mut headline_lines = cv.map(|value| value.affiliations.split(" · ")
         .map(str::trim).filter(|value| !value.is_empty()).take(2).map(str::to_owned).collect::<Vec<_>>())
         .unwrap_or_default();
-    if headline_lines.is_empty() {
-        headline_lines = vec![
-            "Ph.D. Candidate, Underwater Acoustic Engineering, Harbin Engineering University".into(),
-            "Visiting Ph.D. Student, Electrical and Computer Engineering (ECE), The University of Hong Kong".into(),
-        ];
-    }
+    if headline_lines.is_empty() { headline_lines.push("Candidate profile".into()); }
     let now = Local::now();
     let date = format!("{} {} {}", now.day(), now.format("%B"), now.year());
-    let mut recipient_lines = vec![format!("Professor {}", target.name.trim())];
+    let mut recipient_lines = vec![target.name.trim().to_owned()];
     if let Some(department) = target.department.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
         recipient_lines.push(department.to_owned());
     }
@@ -393,7 +388,7 @@ fn parse_rendered_markdown(value: &str, mut data: CoverLetterData) -> Result<Cov
 
 fn fallback_paragraphs(target: &TargetContext, cv: Option<&CvData>) -> Vec<String> {
     let mut paragraphs = vec![format!(
-        "I am writing to apply for the {} at {}. I am a Ph.D. candidate in Underwater Acoustic Engineering at Harbin Engineering University and a Visiting Ph.D. Student in Electrical and Computer Engineering at The University of Hong Kong. I expect to complete my Ph.D. in December 2026 and would be available from January 2027.",
+        "I am writing regarding the {} at {}. My enclosed materials summarize the verified experience and qualifications relevant to this opportunity.",
         target.title, target.organization,
     )];
     if let Some(cv) = cv {
@@ -457,7 +452,10 @@ fn locate_typst_binary(paths: &AppPaths) -> Result<PathBuf> {
         let path = PathBuf::from(value);
         if path.is_file() { return Ok(path) }
     }
-    for path in [paths.runtime.join("typst"), paths.data_root.join("runtime/typst")] {
+    for path in [
+        runtime_binary(&paths.runtime, "typst"),
+        runtime_binary(&paths.data_root.join("runtime"), "typst"),
+    ] {
         if path.is_file() { return Ok(path) }
     }
     bail!("没有找到内置 Typst 运行时")
@@ -486,27 +484,27 @@ mod tests {
     #[test]
     fn email_headers_are_not_rendered_as_letter_paragraphs() {
         let (subject, greeting, paragraphs) = parse_email(
-            "To: pi@example.edu\nSubject: Marine robotics postdoc\n\nDear Professor Smith,\n\nFirst paragraph.\n\nSecond paragraph.\n\nSincerely,\nHongbo Miao",
+            "To: contact@example.edu\nSubject: Research opportunity\n\nDear Dr. Smith,\n\nFirst paragraph.\n\nSecond paragraph.\n\nSincerely,\nAlex Morgan",
         );
-        assert_eq!(subject.as_deref(), Some("Marine robotics postdoc"));
-        assert_eq!(greeting.as_deref(), Some("Dear Professor Smith,"));
+        assert_eq!(subject.as_deref(), Some("Research opportunity"));
+        assert_eq!(greeting.as_deref(), Some("Dear Dr. Smith,"));
         assert_eq!(paragraphs, vec!["First paragraph.", "Second paragraph."]);
     }
 
     #[test]
     fn editable_markdown_round_trips_back_to_typst_data() -> Result<()> {
         let original = CoverLetterData {
-            name: "Hongbo Miao".into(),
-            headline_lines: vec!["Ph.D. Candidate".into()],
-            contact: "urbinohbmiao@gmail.com".into(),
+            name: "Alex Morgan".into(),
+            headline_lines: vec!["Current role".into()],
+            contact: "candidate@example.org".into(),
             date: "31 August 2026".into(),
             recipient_lines: vec!["Professor Example".into(), "Example University".into()],
             subject: "Application for Research Fellow".into(),
             greeting: "Dear Professor Example,".into(),
             paragraphs: vec!["Old paragraph.".into(), "Second paragraph.".into()],
             closing: "Sincerely,".into(),
-            signature: "Hongbo Miao".into(),
-            footer: "Hongbo Miao | Example University".into(),
+            signature: "Alex Morgan".into(),
+            footer: "Alex Morgan | Example Institute".into(),
         };
         let revised_markdown = render_markdown(&original).replace("Old paragraph.", "Revised exact paragraph.");
         let revised = parse_rendered_markdown(&revised_markdown, original)?;
@@ -519,22 +517,25 @@ mod tests {
     #[test]
     fn bundled_template_compiles_to_one_page() -> Result<()> {
         let data = CoverLetterData {
-            name: "Hongbo Miao".into(),
-            headline_lines: vec!["Ph.D. Candidate, Underwater Acoustic Engineering".into(), "Visiting Ph.D. Student, The University of Hong Kong".into()],
-            contact: "urbinohbmiao@gmail.com · +86 188 4510 9373".into(),
+            name: "Alex Morgan".into(),
+            headline_lines: vec!["Current role, Example Field".into(), "Example Institute".into()],
+            contact: "candidate@example.org · +1 555 0100".into(),
             date: "31 August 2026".into(),
             recipient_lines: vec!["Professor Example".into(), "Department of Engineering".into(), "Example University".into()],
             subject: "Application for Research Fellow".into(),
             greeting: "Dear Professor Example,".into(),
-            paragraphs: vec!["I am writing to apply for the Research Fellow position. My research focuses on underwater acoustics and marine sensing.".into(); 5],
+            paragraphs: vec!["I am writing to apply for the advertised opportunity. My verified experience aligns with its stated requirements.".into(); 5],
             closing: "Sincerely,".into(),
-            signature: "Hongbo Miao".into(),
-            footer: "Hongbo Miao | Example University".into(),
+            signature: "Alex Morgan".into(),
+            footer: "Alex Morgan | Example Institute".into(),
         };
         let temp = tempfile::tempdir()?;
         fs::write(temp.path().join("cover-letter.typ"), COVER_LETTER_TEMPLATE)?;
         fs::write(temp.path().join("cover-letter-data.json"), serde_json::to_vec_pretty(&data)?)?;
-        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime/typst");
+        let binary = runtime_binary(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime"),
+            "typst",
+        );
         let output = std::process::Command::new(binary)
             .arg("compile").arg("--root").arg(temp.path())
             .arg(temp.path().join("cover-letter.typ"))

@@ -30,10 +30,10 @@ const tabLabels: Record<DetailTab, string> = {
   cv: "CV",
   cover_letter: "Cover Letter",
   checklist: "申请清单",
-  email_en: "英文套磁信",
-  email_zh: "中文套磁信",
+  email_en: "英文联系信",
+  email_zh: "中文联系信",
   fit: "匹配分析",
-  pi: "PI 简报",
+  pi: "联系人简报",
   revision: "编辑与修订",
   reply: "回复处理",
   other: "其他",
@@ -192,8 +192,7 @@ export function ApplicationDetailPage({
 
 function CvPanel({ detail }: { detail: TargetDetail }) {
   const pdf = detail.artifacts.find((item) => item.artifactType === "cv_pdf");
-  const source = detail.artifacts.find((item) => item.artifactType === "cv_typst")
-    ?? detail.artifacts.find((item) => item.artifactType === "cv_tex");
+  const source = detail.artifacts.find((item) => item.artifactType === "cv_typst");
   const [approved, setApproved] = useState<boolean>();
   const [notice, setNotice] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -247,9 +246,9 @@ function CvPanel({ detail }: { detail: TargetDetail }) {
             <button className="button secondary" onClick={() => openPath(pdf.path)}><ExternalLink size={14} /> 用系统预览打开</button>
             <button className="button secondary" onClick={() => {
               void revealArtifactInFinder(pdf.path)
-                .then(() => setNotice("已在 Finder 中定位当前 CV。"))
+                .then(() => setNotice("已在系统文件管理器中定位当前 CV。"))
                 .catch((value) => setNotice(errorMessage(value)));
-            }}><FolderOpen size={14} /> 在 Finder 中显示</button>
+            }}><FolderOpen size={14} /> 在文件管理器中显示</button>
           </div>
         </header>
         {previewLoading && <div className="pdf-preview-state">正在载入 PDF…</div>}
@@ -307,7 +306,7 @@ function CoverLetterPanel({ detail, onChanged }: { detail: TargetDetail; onChang
     setNotice("");
     try {
       const result = await api.generateCoverLetter(detail.target.id);
-      setNotice(`Cover Letter 已按旧版 TeX 格式生成：${result.pageCount} 页；旧版本已保留。`);
+      setNotice(`Cover Letter 已生成：${result.pageCount} 页；历史版本已保留。`);
       await loadPreview(result.pdfPath);
       onChanged();
     } catch (value) { setNotice(errorMessage(value)); }
@@ -336,7 +335,7 @@ function CoverLetterPanel({ detail, onChanged }: { detail: TargetDetail; onChang
         payload: { applicationId: detail.target.applicationId, artifactType: "cover_letter_text", instruction },
         prompt: `Revise the Cover Letter for application ${detail.target.applicationId} and contact target ${detail.target.id}. Preserve all verified facts and the existing one-page professional format. User request: ${instruction}. Return a structured change summary with exact locations and before/after text. Never send email or submit an application.`,
       });
-      setNotice(`Cover Letter 定制任务已加入：${id}。完成后会自动重新排版 PDF，并保留旧版本。`);
+      setNotice(`Cover Letter 定制任务已加入：${id}。完成后会自动重新排版 PDF，并保留历史版本。`);
       onChanged();
     } catch (value) { setNotice(errorMessage(value)); }
     finally { setBusy(false); }
@@ -353,10 +352,10 @@ function CoverLetterPanel({ detail, onChanged }: { detail: TargetDetail; onChang
         <FileText size={25} /><span><strong>Cover Letter PDF</strong><small>{pdf.path.split("/").pop()} · 点击重新载入预览</small></span><Eye size={17} />
       </button></div>
       <section className="pdf-preview-panel" aria-label="Cover Letter PDF 预览">
-        <header><div><span className="section-index">PDF</span><h4>Cover Letter 预览</h4><small>Times New Roman · A4 · 旧版 TeX 版式</small></div><div>
+        <header><div><span className="section-index">PDF</span><h4>Cover Letter 预览</h4><small>Times New Roman · A4</small></div><div>
           <button className="button ghost" onClick={() => void loadPreview(pdf.path)}>重新载入</button>
           <button className="button secondary" onClick={() => openPath(pdf.path)}><ExternalLink size={14} /> 用系统预览打开</button>
-          <button className="button secondary" onClick={() => void revealArtifactInFinder(pdf.path).catch((value) => setNotice(errorMessage(value)))}><FolderOpen size={14} /> 在 Finder 中显示</button>
+          <button className="button secondary" onClick={() => void revealArtifactInFinder(pdf.path).catch((value) => setNotice(errorMessage(value)))}><FolderOpen size={14} /> 在文件管理器中显示</button>
         </div></header>
         {previewLoading && <div className="pdf-preview-state">正在载入 Cover Letter…</div>}
         {previewError && <div className="pdf-preview-state error">{previewError}</div>}
@@ -365,7 +364,7 @@ function CoverLetterPanel({ detail, onChanged }: { detail: TargetDetail; onChang
       <button className="button secondary wide" disabled={busy} onClick={generate}>{busy ? "正在重新生成…" : "按当前材料重新生成 Cover Letter"}</button>
     </>}
     <div className="form-card">
-      <label className="field"><span>Cover Letter 定制要求</span><textarea value={customization} onChange={(event) => setCustomization(event.target.value)} placeholder="例如：根据对方回复信的积极但谨慎态度，语气保持专业克制；强调我与项目的具体匹配，不要写成已经获得邀请。" /></label>
+      <label className="field"><span>Cover Letter 定制要求</span><textarea value={customization} onChange={(event) => setCustomization(event.target.value)} placeholder="说明希望强调的匹配证据、语气、篇幅和必须避免的表述。" /></label>
       <div className="info-card">{latestReply ? `将参考最近一封回复的语气与关系背景：${latestReply.subject || "无主题回复"} · ${formatLocalTime(latestReply.receivedAt || latestReply.createdAt)}` : "当前没有保存的回复；Codex 只会根据申请材料和你的要求定制。"}</div>
       <ModelControls taskType="material_revision" value={model} onChange={setModel} />
       <button className="button primary wide" disabled={busy || !customization.trim()} onClick={customize}><Sparkles size={17} /> {busy ? "正在加入…" : pdf?.exists ? "让 Codex 定制 Cover Letter" : "生成基础版并交给 Codex 定制"}</button>
@@ -407,7 +406,7 @@ const checklistLabels: Record<string, Record<MaterialLanguage, string>> = {
   cv_pdf: { zh: "学术简历 PDF", en: "Academic CV (PDF)" },
   degrees: { zh: "学位证明", en: "Degree certificates" },
   eligibility_confirmation: { zh: "资格确认", en: "Eligibility confirmation" },
-  outreach_email: { zh: "套磁邮件", en: "Outreach email" },
+  outreach_email: { zh: "联系邮件", en: "Outreach email" },
   publication_sample: { zh: "代表作", en: "Publication sample" },
   references: { zh: "推荐人信息", en: "References" },
   research_statement: { zh: "研究陈述", en: "Research statement" },
@@ -544,10 +543,10 @@ function ArtifactPanel({
         reasoning: verificationModel?.reasoning,
         payload: { applicationId: detail.target.applicationId, sourceUrl: detail.target.sourceUrl },
         prompt: pi
-          ? `Reverify PI/contact ${detail.target.name} for exact contact target ${detail.target.id}. Confirm identity, current affiliation, research direction, public contact evidence, and current opportunity relevance from primary sources. Return review-only verification; do not contact anyone or change status.`
+          ? `Reverify contact ${detail.target.name} for exact contact target ${detail.target.id}. Confirm identity, current affiliation or role, current direction, public contact evidence, and opportunity relevance from primary sources. Return review-only verification; do not contact anyone or change status.`
           : `Reverify the opportunity for exact contact target ${detail.target.id}. Confirm whether the source is active, deadline, role level, institution, and application route from primary sources. Return review-only verification; do not archive or change status.`,
       });
-      setVerificationNotice(`${pi ? "PI" : "机会"}重新核验已加入：${id}`);
+      setVerificationNotice(`${pi ? "联系人" : "机会"}重新核验已加入：${id}`);
     } catch (value) { setVerificationNotice(errorMessage(value)); }
     finally { setVerificationBusy(false); }
   };
@@ -560,11 +559,11 @@ function ArtifactPanel({
         artifactType: type,
         language,
         content: draftText,
-        note: language === "zh" ? "在中文套磁信页面直接编辑" : "在英文套磁信页面直接编辑",
+        note: language === "zh" ? "在中文联系信页面直接编辑" : "在英文联系信页面直接编辑",
       });
       setText(draftText);
       setEditing(false);
-      onNotice?.(`套磁信已保存并记录版本：${result.revisionId}。旧版本仍保留。`);
+      onNotice?.(`联系信已保存并记录版本：${result.revisionId}。历史版本仍保留。`);
       onChanged?.();
     } catch (value) { onNotice?.(errorMessage(value)); }
     finally { setSaving(false); }
@@ -573,7 +572,7 @@ function ArtifactPanel({
     <div className="artifact-stack">
       {canVerify && <section className="verification-strip">
         <ModelControls taskType="maintenance" value={verificationModel} onChange={setVerificationModel} compact />
-        <button className="button secondary" disabled={verificationBusy} onClick={verify}>{verificationBusy ? "正在加入…" : companion === "pi" ? "重新核验当前 PI" : "重新核验当前机会"}</button>
+        <button className="button secondary" disabled={verificationBusy} onClick={verify}>{verificationBusy ? "正在加入…" : companion === "pi" ? "重新核验当前联系人" : "重新核验当前机会"}</button>
         {verificationNotice && <span>{verificationNotice}</span>}
       </section>}
       {type === "email" ? (
@@ -589,7 +588,7 @@ function ArtifactPanel({
         </div>
       ) : (
         <div className={`markdown-document report-document report-${companion || "general"}`}>
-          <div className="report-kicker"><span>{type === "reply_analysis" ? "回复处理判断" : type === "followup_email" ? (language === "zh" ? "中文跟进草稿" : "FOLLOW-UP DRAFT") : language === "zh" ? (companion === "pi" ? "PI 研究联系简报" : "申请匹配分析") : (companion === "pi" ? "RESEARCH CONTACT DOSSIER" : "APPLICATION FIT MEMO")}</span><small>{detail.target.organization}</small></div>
+          <div className="report-kicker"><span>{type === "reply_analysis" ? "回复处理判断" : type === "followup_email" ? (language === "zh" ? "中文跟进草稿" : "FOLLOW-UP DRAFT") : language === "zh" ? (companion === "pi" ? "联系人研究简报" : "申请匹配分析") : (companion === "pi" ? "RESEARCH CONTACT DOSSIER" : "APPLICATION FIT MEMO")}</span><small>{detail.target.organization}</small></div>
           <RichMarkdown text={text} />
         </div>
       )}
@@ -622,8 +621,8 @@ function GmailDraftPanel({ detail, emailText }: { detail: TargetDetail; emailTex
   };
   return (
     <section className="gmail-draft-panel">
-      <div className="content-title"><Mail size={21} /><div><h3>一键起草 Gmail 草稿</h3><p>当前英文套磁信 + 已审核 CV；不会发送，也不会改变联系状态。</p></div></div>
-      {!status?.connectionOk && <div className="info-card blue">请先在设置中连接 {status?.expectedEmail || "Gmail"}。若 OAuth 应用处于测试状态，需要把该邮箱加入测试用户。</div>}
+      <div className="content-title"><Mail size={21} /><div><h3>一键起草 Gmail 草稿</h3><p>当前英文联系信 + 已审核 CV；不会发送，也不会改变联系状态。</p></div></div>
+      {!status?.connectionOk && <div className="info-card blue">请先在设置中配置桌面 OAuth 客户端 JSON，并连接准备作为发件人的 Gmail 账号。</div>}
       <div className="form-card">
         <label className="field"><span>收件人（锁定为当前联系目标）</span><input value={detail.target.email || "尚未核验邮箱"} readOnly /></label>
         <label className="field"><span>邮件主题</span><input value={subject} onChange={(event) => setSubject(event.target.value)} /></label>
@@ -637,7 +636,7 @@ function GmailDraftPanel({ detail, emailText }: { detail: TargetDetail; emailTex
 }
 
 export function parseEmailMarkdown(content: string) {
-  const subject = content.match(/^(?:\*\*)?Subject[:：](?:\*\*)?\s*(.+)$/mi)?.[1]?.trim() || "Postdoctoral research opportunity";
+  const subject = content.match(/^(?:\*\*)?Subject[:：](?:\*\*)?\s*(.+)$/mi)?.[1]?.trim() || "Research opportunity inquiry";
   const lines = content.split("\n");
   const firstContentIndex = lines.findIndex((line) => line.trim().length > 0);
   const firstContent = firstContentIndex >= 0 ? lines[firstContentIndex].trim() : "";
@@ -651,7 +650,7 @@ function LetterDocument({ text, language }: { text: string; language: string }) 
   return (
     <article className={`letter-document letter-${language}`}>
       <header>
-        <span>{language === "zh" ? "套磁信" : "POSTDOCTORAL CORRESPONDENCE"}</span>
+        <span>{language === "zh" ? "联系信" : "PROFESSIONAL CORRESPONDENCE"}</span>
         <dl>
           <div><dt>{language === "zh" ? "收件人" : "TO"}</dt><dd>{parsed.to || "当前联系目标"}</dd></div>
           <div><dt>{language === "zh" ? "主题" : "SUBJECT"}</dt><dd>{parsed.subject || "—"}</dd></div>
@@ -744,7 +743,7 @@ function RevisionPanel({ detail, focusJobId, onChanged, onNotice }: { detail: Ta
         providerId: model?.providerId,
         modelId: model?.modelId,
         reasoning: model?.reasoning,
-        prompt: `Revise the ${artifact} for application ${detail.target.applicationId} and contact target ${detail.target.id}. Preserve all verified facts and the old version. User request: ${requirement}. Return a structured change summary with exact locations and before/after text. Never send email or submit an application.`,
+        prompt: `Revise the ${artifact} for application ${detail.target.applicationId} and contact target ${detail.target.id}. Preserve all verified facts and version history. User request: ${requirement}. Return a structured change summary with exact locations and before/after text. Never send email or submit an application.`,
         payload: { applicationId: detail.target.applicationId, artifactType: artifact, instruction: requirement },
       });
       onNotice(`材料修订已加入：${id}。完成后会回到这里显示精确差异。`);
@@ -763,7 +762,7 @@ function RevisionPanel({ detail, focusJobId, onChanged, onNotice }: { detail: Ta
         content: manualText,
         note: manualNote || undefined,
       });
-      onNotice(`已保存新版本：${result.summary}。旧版本已保留。`);
+      onNotice(`已保存新版本：${result.summary}。历史版本已保留。`);
       setManualNote("");
       onChanged();
     } catch (value) { onNotice(errorMessage(value)); }
@@ -771,44 +770,44 @@ function RevisionPanel({ detail, focusJobId, onChanged, onNotice }: { detail: Ta
   };
   return (
     <div className="content-section">
-      <div className="content-title"><Sparkles size={21} /><div><h3>编辑与修订</h3><p>新旧版本并存，修改位置和前后差异会留在这里。</p></div></div>
+      <div className="content-title"><Sparkles size={21} /><div><h3>编辑与修订</h3><p>当前内容与历史版本分开保存，修改位置和前后差异会留在这里。</p></div></div>
       <div className="segmented revision-mode">
         <button className={mode === "codex" ? "selected" : ""} onClick={() => setMode("codex")}>让 Codex 改</button>
         <button className={mode === "manual" ? "selected" : ""} onClick={() => setMode("manual")}>我自己改</button>
       </div>
       {mode === "codex" ? (
         <div className="form-card">
-          <div className="info-card blue">选择材料并说明修改要求。完成后会展示修改摘要、具体位置、前后差异、模型、任务时间和旧版本。</div>
+          <div className="info-card blue">选择当前材料并说明修改要求。完成后会展示修改摘要、具体位置、前后差异、模型、任务时间和历史版本。</div>
           <label className="field"><span>Codex 要修改哪里</span><select value={artifact} onChange={(event) => setArtifact(event.target.value)}>
-            <option value="cv_data">CV 结构化内容（Typst）</option><option value="cover_letter_text">Cover Letter 正文（自动重排 PDF）</option><option value="cv_selection">旧 CV 内容选择</option><option value="email_en">英文套磁信</option><option value="email_zh">中文套磁信</option><option value="fit_analysis">匹配分析</option><option value="pi_profile">PI 简报</option>
+            <option value="cv_data">CV 结构化内容（Typst）</option><option value="cover_letter_text">Cover Letter 正文（自动重排 PDF）</option><option value="email_en">英文联系信</option><option value="email_zh">中文联系信</option><option value="fit_analysis">匹配分析</option><option value="pi_profile">联系人简报</option>
           </select></label>
           {!selectedArtifact && <div className="info-card">这份材料尚未生成，请先在对应材料页面创建。</div>}
           <ModelControls taskType="material_revision" value={model} onChange={setModel} />
-          <label className="field"><span>修改要求</span><textarea value={requirement} onChange={(event) => setRequirement(event.target.value)} placeholder="例如：第二段把海洋机器人匹配写得更具体，不要声称我做过 AUV 控制。" /></label>
+          <label className="field"><span>修改要求</span><textarea value={requirement} onChange={(event) => setRequirement(event.target.value)} placeholder="说明要修改的位置、希望加强的证据，以及必须避免或保留的内容。" /></label>
           <button className="button primary wide" disabled={busy || !requirement.trim() || !selectedArtifact} onClick={submit}><Sparkles size={17} /> {busy ? "正在加入…" : "提交给 Codex 修改"}</button>
         </div>
       ) : (
         <div className="form-card">
           <label className="field"><span>我自己修改哪份材料</span><select value={artifact} onChange={(event) => setArtifact(event.target.value)}>
-            <option value="cv_data">CV 结构化内容（Typst）</option><option value="cover_letter_text">Cover Letter 正文（保存后自动重排 PDF）</option><option value="cv_selection">旧 CV 内容选择</option><option value="email_en">英文套磁信</option><option value="email_zh">中文套磁信</option><option value="fit_analysis">匹配分析</option><option value="pi_profile">PI 简报</option>
+            <option value="cv_data">CV 结构化内容（Typst）</option><option value="cover_letter_text">Cover Letter 正文（保存后自动重排 PDF）</option><option value="email_en">英文联系信</option><option value="email_zh">中文联系信</option><option value="fit_analysis">匹配分析</option><option value="pi_profile">联系人简报</option>
           </select></label>
           {!selectedArtifact ? <div className="info-card">这份材料尚未生成，需先让 Codex 创建。</div> : <>
             <label className="field"><span>材料正文</span><textarea className="manual-editor" value={manualText} onChange={(event) => setManualText(event.target.value)} disabled={manualLoading} /></label>
-            <label className="field"><span>修改说明（会自动记录为写作偏好）</span><input value={manualNote} onChange={(event) => setManualNote(event.target.value)} placeholder="例如：语气更直接，减少泛泛表述" /></label>
+            <label className="field"><span>修改说明（会自动记录为写作偏好）</span><input value={manualNote} onChange={(event) => setManualNote(event.target.value)} placeholder="概括本次修改偏好，便于后续材料保持一致" /></label>
             <button className="button primary wide" disabled={busy || manualLoading || !manualText.trim()} onClick={saveManual}><Check size={17} /> {busy ? "正在保存…" : "保存为新版本"}</button>
           </>}
         </div>
       )}
       <div className="revision-history">
         <h3><FileClock size={18} /> 修改摘要与版本历史</h3>
-        {detail.revisions.map((revision) => (
+        {detail.revisions.filter((revision) => revision.artifactType !== "cv_selection").map((revision) => (
           <details key={revision.id} id={revision.jobId ? `revision-${revision.jobId}` : undefined} className={`revision-entry ${revision.jobId === focusJobId ? "focused" : ""}`} open={revision.jobId === focusJobId || undefined}>
             <summary><span>{revision.artifactType} · {revision.editor === "codex" ? "Codex" : revision.editor}</span><small>{formatLocalTime(revision.createdAt)}</small></summary>
-            <div className="revision-meta"><span>{revision.modelId || "旧版未记录模型"}</span><span>{revision.reasoning || "—"}</span>{revision.jobId && <span>任务 {revision.jobId}</span>}</div>
-            <p className="revision-summary">{revision.summary || revision.note || "旧修订仅保留版本记录，没有结构化修改摘要。"}</p>
+            <div className="revision-meta"><span>{revision.modelId || "模型未记录"}</span><span>{revision.reasoning || "—"}</span>{revision.jobId && <span>任务 {revision.jobId}</span>}</div>
+            <p className="revision-summary">{revision.summary || revision.note || "该历史记录没有结构化修改摘要。"}</p>
             {revision.locationsJson && <RevisionLocations value={revision.locationsJson} />}
             {revision.diffJson && <RevisionDiffView value={revision.diffJson} />}
-            {revision.backupPath && <button className="text-button" onClick={() => openPath(revision.backupPath!)}>打开旧版本 <ExternalLink size={14} /></button>}
+            {revision.backupPath && <button className="text-button" onClick={() => openPath(revision.backupPath!)}>打开历史版本 <ExternalLink size={14} /></button>}
           </details>
         ))}
       </div>
@@ -828,7 +827,7 @@ function ReplyPanel({ detail, onChanged, onNotice, onNavigate }: { detail: Targe
   const [sender, setSender] = useState(detail.replies[0]?.sender ?? detail.target.email ?? "");
   const [subject, setSubject] = useState(detail.replies[0]?.subject ?? "");
   const [savedReplyId, setSavedReplyId] = useState<string | undefined>(detail.replies[0]?.id);
-  const [instruction, setInstruction] = useState("判断对方回复的真实意图；如推荐了其他人，核验推荐对象并起草下一封跟进邮件。不要发送邮件。");
+  const [instruction, setInstruction] = useState("判断回复的真实意图与下一步；如提到其他联系人、机构或机会，先独立核验，再准备可审核的后续内容。不要发送邮件或提交申请。");
   const [model, setModel] = useState<ModelSelection>();
   const [busy, setBusy] = useState(false);
   const hasReplyAnalysis = detail.artifacts.some((item) => item.artifactType === "reply_analysis" && item.language === "zh");
@@ -901,20 +900,18 @@ function ReplyPanel({ detail, onChanged, onNotice, onNavigate }: { detail: Targe
 }
 
 function OtherPanel({ detail }: { detail: TargetDetail }) {
-  const known = new Set(["cv_pdf", "email", "fit_analysis", "pi_profile", "reply_analysis", "followup_email"]);
+  const known = new Set(["cv_pdf", "cv_tex", "cv_selection", "email", "fit_analysis", "pi_profile", "reply_analysis", "followup_email"]);
   const items = detail.artifacts.filter((item) => !known.has(item.artifactType)
     && !(item.artifactType === "cover_letter" && item.language === "en"));
   const labels: Record<string, string> = {
     cv_typst: "Typst 源文件",
-    cv_tex: "旧 LaTeX 源文件（只读）",
     cv_data: "CV 结构化内容",
-    cv_selection: "旧 CV 内容选择",
     cover_letter_typst: "Cover Letter Typst 源文件",
     cover_letter_data: "Cover Letter 结构化内容",
     cover_letter_text: "Cover Letter 可读文本",
   };
   return <div className="content-section">
-    <div className="content-title"><FileText size={21} /><div><h3>源文件与辅助材料</h3><p>CV 页面只负责预览与审核；可编辑源数据、旧模板和辅助文件集中保存在这里。</p></div></div>
+    <div className="content-title"><FileText size={21} /><div><h3>源文件与辅助材料</h3><p>CV 页面只负责预览与审核；当前可编辑源数据和辅助文件集中保存在这里。</p></div></div>
     <div className="file-grid">{items.map((item) => <FileTile item={item} label={labels[item.artifactType] || `${item.artifactType} · ${item.language}`} key={`${item.artifactType}-${item.language}`} />)}</div>
   </div>;
 }
@@ -926,7 +923,7 @@ function RevisionLocations({ value }: { value: string }) {
 
 function RevisionDiffView({ value }: { value: string }) {
   const diff = parseRevisionDiff(value);
-  if (diff.length === 0) return <div className="revision-diff-empty">这个旧版本没有可读的前后对比数据。</div>;
+  if (diff.length === 0) return <div className="revision-diff-empty">这条历史记录没有可读的前后对比数据。</div>;
   return <div className="revision-diff-list">{diff.map((entry, index) => (
     <article className="revision-diff-card" key={`${entry.line}-${index}`}>
       <header><span>CHANGE {String(index + 1).padStart(2, "0")}</span><small>{entry.line > 0 ? `第 ${entry.line} 行` : "位置未记录"}</small></header>

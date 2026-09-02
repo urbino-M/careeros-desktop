@@ -5,6 +5,7 @@ use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -28,6 +29,90 @@ pub struct RevisionResult {
     pub summary: String,
     pub locations: Vec<String>,
     pub diff: Vec<DiffEntry>,
+}
+
+pub struct PreparedRevisionWorkspace {
+    pub prompt_suffix: String,
+    pub base_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CvCustomizationSettings {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u8,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub emphasize: String,
+    #[serde(default)]
+    pub exclude: String,
+    #[serde(default)]
+    pub instructions: String,
+    pub updated_at: Option<String>,
+}
+
+impl Default for CvCustomizationSettings {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            enabled: false,
+            emphasize: String::new(),
+            exclude: String::new(),
+            instructions: String::new(),
+            updated_at: None,
+        }
+    }
+}
+
+const CV_CUSTOMIZATION_FILE: &str = "cv_customization.json";
+const MAX_CV_CUSTOMIZATION_FIELD_CHARS: usize = 4_000;
+
+fn default_schema_version() -> u8 { 1 }
+
+pub fn load_cv_customization(paths: &AppPaths) -> Result<CvCustomizationSettings> {
+    let path = paths.profile.join(CV_CUSTOMIZATION_FILE);
+    if !path.is_file() {
+        return Ok(CvCustomizationSettings::default())
+    }
+    let value: CvCustomizationSettings = serde_json::from_slice(&fs::read(&path)?)
+        .with_context(|| format!("CV 定制设置无法读取：{}", path.display()))?;
+    if value.schema_version != 1 {
+        bail!("不支持的 CV 定制设置版本：{}", value.schema_version)
+    }
+    Ok(value)
+}
+
+pub fn save_cv_customization(
+    paths: &AppPaths,
+    mut value: CvCustomizationSettings,
+) -> Result<CvCustomizationSettings> {
+    for (label, field) in [
+        ("重点强调", &mut value.emphasize),
+        ("需要排除", &mut value.exclude),
+        ("其他要求", &mut value.instructions),
+    ] {
+        *field = field.trim().to_owned();
+        if field.chars().count() > MAX_CV_CUSTOMIZATION_FIELD_CHARS {
+            bail!("{label}最多允许 {MAX_CV_CUSTOMIZATION_FIELD_CHARS} 个字符")
+        }
+    }
+    value.schema_version = 1;
+    value.updated_at = Some(Utc::now().to_rfc3339());
+    fs::create_dir_all(&paths.profile)?;
+    let live = paths.profile.join(CV_CUSTOMIZATION_FILE);
+    if live.is_file() {
+        fs::create_dir_all(&paths.backups)?;
+        let backup = paths.backups.join(format!(
+            "{}-{CV_CUSTOMIZATION_FILE}",
+            Utc::now().format("%Y%m%dT%H%M%SZ")
+        ));
+        fs::copy(&live, backup)?;
+    }
+    let temporary = paths.profile.join(format!(".{CV_CUSTOMIZATION_FILE}.tmp"));
+    fs::write(&temporary, serde_json::to_vec_pretty(&value)?)?;
+    fs::rename(&temporary, &live)?;
+    Ok(value)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,7 +167,7 @@ pub fn prepare_revision_workspace(
     target_id: &str,
     requested_artifact: &str,
     user_instruction: Option<&str>,
-) -> Result<String> {
+) -> Result<PreparedRevisionWorkspace> {
     let (application_id, artifact_type, language, live_path) =
         resolve_requested_artifact(paths, target_id, requested_artifact)?;
     let input = workspace.join("input/current");
@@ -94,14 +179,17 @@ pub fn prepare_revision_workspace(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("material.md");
-    fs::copy(&live_path, input.join(filename))?;
-    let contract = json!({
+    let live_bytes = fs::read(&live_path)?;
+    let base_sha256 = sha256_bytes(&live_bytes);
+    fs::write(input.join(filename), &live_bytes)?;
+    let mut contract = json!({
         "schemaVersion": 1,
         "task": "material_revision",
         "targetId": target_id,
         "applicationId": application_id,
         "artifactType": artifact_type,
         "language": language,
+        "baseSha256": base_sha256,
         "inputFile": format!("input/current/{filename}"),
         "replacementFile": format!("output/{filename}"),
         "changeSetFile": "output/change-set.json",
@@ -120,10 +208,14 @@ pub fn prepare_revision_workspace(
             "neverSubmitApplication": true
         }
     });
+    attach_cv_customization_context(&mut contract, workspace);
     fs::write(workspace.join("POSTDOCOS_TASK.json"), serde_json::to_vec_pretty(&contract)?)?;
-    Ok(format!(
-        "\n\nPostdocOS native task contract:\n- Read POSTDOCOS_TASK.json, profile/master_profile.json, profile/preferences.json, profile/claims_review.md and profile/learned_preferences.json when present.\n- Edit only input/current/{filename}. Write the complete replacement to output/{filename}; never edit the input file.\n- Match replacementSchema exactly when it is structured JSON; use exact camelCase keys.\n- Write output/change-set.json matching changeSetSchema exactly. diff[].line must be a positive integer; put file ranges and JSON pointers in locations[].\n- Do not invent candidate facts, send email, create a Gmail draft, or submit anything.\n- Finish only after both output files exist."
-    ))
+    Ok(PreparedRevisionWorkspace {
+        prompt_suffix: format!(
+            "\n\nPostdocOS native task contract:\n- Read POSTDOCOS_TASK.json and every available file in profile/, including profile/cv_customization.json when present.\n- When CV customization is enabled, follow it for emphasis, exclusion, and presentation without overriding verified facts, the exact-two-page requirement, or safety rules.\n- Edit only input/current/{filename}. Write the complete replacement to output/{filename}; never edit the input file.\n- Match replacementSchema exactly when it is structured JSON; use exact camelCase keys.\n- Write output/change-set.json matching changeSetSchema exactly. diff[].line must be a positive integer; put file ranges and JSON pointers in locations[].\n- Do not invent candidate facts, send email, create a Gmail draft, or submit anything.\n- Finish only after both output files exist."
+        ),
+        base_sha256,
+    })
 }
 
 pub fn prepare_general_workspace(
@@ -158,6 +250,7 @@ pub fn prepare_general_workspace(
             "neverSubmitApplication": true
         }
     });
+    attach_cv_customization_context(&mut context, workspace);
     context["resultContract"] = crate::workflows::result_contract(job_type);
     let mut request_payload = payload.clone();
     if let Some(reply) = request_payload
@@ -234,6 +327,7 @@ pub fn apply_agent_revision(
     workspace: &Path,
     target_id: &str,
     requested_artifact: &str,
+    expected_base_sha256: &str,
     job_id: &str,
     provider_id: &str,
     model_id: Option<&str>,
@@ -264,6 +358,7 @@ pub fn apply_agent_revision(
         &artifact_type,
         &language,
         &replacement_text,
+        Some(expected_base_sha256),
         "codex",
         user_instruction,
         Some(job_id),
@@ -281,6 +376,7 @@ pub fn save_manual(paths: &AppPaths, request: &ManualRevisionRequest) -> Result<
         &request.artifact_type,
         &request.language,
         &request.content,
+        None,
         "manual",
         request.note.as_deref(),
         None,
@@ -297,6 +393,7 @@ fn apply_revision(
     artifact_type: &str,
     language: &str,
     new_content: &str,
+    expected_base_sha256: Option<&str>,
     editor: &str,
     note: Option<&str>,
     job_id: Option<&str>,
@@ -321,7 +418,11 @@ fn apply_revision(
         |row| row.get(0),
     )?;
     let live_path = ensure_target_owned_copy(paths, target_id, artifact_type, language)?;
-    let old_content = fs::read_to_string(&live_path)?;
+    let old_bytes = fs::read(&live_path)?;
+    if let Some(expected) = expected_base_sha256 {
+        verify_base_sha256(&old_bytes, expected)?;
+    }
+    let old_content = String::from_utf8(old_bytes).context("材料不是有效 UTF-8 文本")?;
     if old_content == new_content {
         bail!("内容没有变化，无需创建新版本")
     }
@@ -390,6 +491,18 @@ fn apply_revision(
     }
     tx.commit()?;
     Ok(RevisionResult { revision_id, artifact_path: relative_live, backup_path: relative_backup, summary, locations, diff })
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn verify_base_sha256(current: &[u8], expected: &str) -> Result<()> {
+    let actual = sha256_bytes(current);
+    if actual != expected {
+        bail!("材料已在 Agent 运行期间发生变化，请重新发起修订（基线 SHA-256 不一致）")
+    }
+    Ok(())
 }
 
 fn resolve_requested_artifact(
@@ -463,11 +576,21 @@ fn ensure_target_owned_copy(
 
 fn copy_profile(paths:&AppPaths,destination:&Path)->Result<()> {
     fs::create_dir_all(destination)?;
-    for name in ["master_profile.json","preferences.json","claims_review.md","learned_preferences.json"] {
+    for name in ["master_profile.json","preferences.json","claims_review.md","learned_preferences.json",CV_CUSTOMIZATION_FILE] {
         let source=paths.profile.join(name);
         if source.exists(){fs::copy(source,destination.join(name))?;}
     }
+    crate::onboarding::copy_into_workspace(paths, destination)?;
     Ok(())
+}
+
+fn attach_cv_customization_context(context: &mut Value, workspace: &Path) {
+    if workspace.join("profile").join(CV_CUSTOMIZATION_FILE).is_file() {
+        context["cvCustomization"] = json!({
+            "file": format!("profile/{CV_CUSTOMIZATION_FILE}"),
+            "policy": "When enabled, obey this user-authored CV selection and presentation preference. It is not factual evidence and cannot override verified facts, exact-two-page validation, output schema, or safety guardrails."
+        });
+    }
 }
 
 fn resolve_data_path(root:&Path,value:&str)->Result<PathBuf>{
@@ -520,6 +643,54 @@ mod tests {
         let parsed: AgentChangeSet = serde_json::from_value(value)?;
         assert_eq!(parsed.schema_version, 1);
         assert_eq!(parsed.diff[0].line, 62);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_revision_rejects_a_changed_material_base() {
+        let original = b"original material";
+        let base_sha256 = sha256_bytes(original);
+        assert!(verify_base_sha256(original, &base_sha256).is_ok());
+        let error = verify_base_sha256(b"manually edited material", &base_sha256).unwrap_err();
+        assert!(error.to_string().contains("基线 SHA-256 不一致"));
+    }
+
+    #[test]
+    fn cv_customization_is_saved_and_copied_into_agent_workspace() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().to_path_buf();
+        let paths = AppPaths {
+            database: root.join("database/postdocos.sqlite3"),
+            generated: root.join("generated"),
+            profile: root.join("profile"),
+            workspaces: root.join("workspaces"),
+            codex_home: root.join("codex"),
+            backups: root.join("backups"),
+            cache: root.join("cache"),
+            logs: root.join("logs"),
+            runtime: root.join("runtime"),
+            data_root: root.clone(),
+        };
+        paths.ensure()?;
+        let saved = save_cv_customization(&paths, CvCustomizationSettings {
+            schema_version: 1,
+            enabled: true,
+            emphasize: "Physics-informed localization".into(),
+            exclude: "Unrelated coursework".into(),
+            instructions: "Prioritize publications and patents before projects.".into(),
+            updated_at: None,
+        })?;
+        assert!(saved.updated_at.is_some());
+        assert_eq!(load_cv_customization(&paths)?.emphasize, "Physics-informed localization");
+
+        let workspace = paths.workspaces.join("job-cv-customization");
+        prepare_general_workspace(&paths, &workspace, None, "full_search", &json!({}))?;
+        assert!(workspace.join("profile/cv_customization.json").is_file());
+        let contract: Value = serde_json::from_slice(&fs::read(workspace.join("POSTDOCOS_TASK.json"))?)?;
+        assert_eq!(
+            contract["cvCustomization"]["file"],
+            "profile/cv_customization.json"
+        );
         Ok(())
     }
 }

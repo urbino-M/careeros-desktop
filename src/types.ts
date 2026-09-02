@@ -182,14 +182,26 @@ export interface ProviderModelInfo {
   enabled: boolean;
   supportsReasoning: boolean;
   supportsTools: boolean;
+  supportsVision: boolean;
+  reasoningLevels: string[];
 }
 
 export interface ProviderInfo {
   id: string;
   displayName: string;
+  adapterKind: string;
   connectionMode: string;
   enabled: boolean;
+  baseUrl?: string;
+  configured: boolean;
+  lastValidatedAt?: string;
+  validationMessage?: string;
   models: ProviderModelInfo[];
+}
+
+export interface ProviderConnectionRequest {
+  baseUrl: string;
+  apiKey: string;
 }
 
 export interface TaskModelDefault {
@@ -197,6 +209,33 @@ export interface TaskModelDefault {
   providerId: string;
   modelId: string;
   reasoning: string;
+}
+
+export interface CvCustomizationSettings {
+  schemaVersion: number;
+  enabled: boolean;
+  emphasize: string;
+  exclude: string;
+  instructions: string;
+  updatedAt?: string;
+}
+
+export interface OnboardingProfile {
+  schemaVersion: number;
+  completed: boolean;
+  currentStep: number;
+  fullName: string;
+  publicationName: string;
+  careerStage: string;
+  discipline: string;
+  currentSituation: string;
+  targetRoles: string;
+  targetRegions: string;
+  goals: string;
+  constraints: string;
+  preferredLanguage: "zh" | "en" | "bilingual";
+  cvSourceFile?: string;
+  updatedAt?: string;
 }
 
 export interface JobSummary {
@@ -232,7 +271,6 @@ export interface GmailStatus {
   configured: boolean;
   connected: boolean;
   accountEmail?: string;
-  expectedEmail: string;
   connectionOk: boolean;
   oauthStatus: "idle" | "pending" | "connected" | "failed";
   oauthMessage?: string;

@@ -213,7 +213,7 @@ fn opportunity_contract() -> Value {
         "department":"optional",
         "country":"optional",
         "region":"optional",
-        "opportunityType":"formal_postdoc|fellowship|prospective_pi",
+        "opportunityType":"formal_position|fellowship|program|prospective_contact|other (legacy formal_postdoc/prospective_pi also accepted)",
         "deadline":"ISO date or null",
         "summary":"verified summary",
         "keywords":["keyword"],
@@ -221,7 +221,7 @@ fn opportunity_contract() -> Value {
         "verifiedAt":"UTC ISO-8601",
         "sources":[{"title":"primary source","url":"https://...","checkedAt":"UTC ISO-8601","evidenceType":"primary"}],
         "contacts":[{
-            "name":"PI or contact","email":"verified email or null","fitScore":86,
+            "name":"contact or responsible person","email":"verified email or null","fitScore":86,
             "priority":1,"homepageUrl":"optional","labUrl":"optional","researchSummary":"verified",
             "materials":{
                 "cvData": crate::cv_schema::contract(),
@@ -230,8 +230,8 @@ fn opportunity_contract() -> Value {
                 "fitAnalysis":"evidence-based Markdown",
                 "fitAnalysisZh":"concise Chinese explanation of the English analysis",
                 "piProfile":"verified Markdown with source links",
-                "piProfileZh":"concise Chinese explanation of the English PI profile",
-                "checklist":[{"itemType":"unique stable key such as eligibility_confirmation","required":true,"status":"ready|review|missing","origin":"verified|inferred","evidence":"text","sourceUrl":"https://...","note":"optional","sortOrder":10}]
+                "piProfileZh":"concise Chinese explanation of the English contact profile",
+                "checklist":[{"itemType":"unique stable key such as eligibility_confirmation","required":true,"status":"ready|review|missing","origin":"verified|inferred","evidence":"text","sourceUrl":"verified https URL or null for inferred-only items","note":"optional","sortOrder":10}]
             }
         }]
     })
@@ -288,13 +288,15 @@ pub fn result_contract(job_type: &str) -> Value {
                 "cvData is the final target-specific selection, not a full master CV and not content copied from another contact.",
                 "Select CV evidence by fit: target research direction first, then the strongest relevant experience, outputs, and required skills.",
                 "For an open formal vacancy or fellowship, tailor cvData to the verified duties and requirements on the primary recruitment page.",
-                "For a prospective PI without an open vacancy, tailor cvData to the PI's verified current research direction and never imply that a vacancy exists.",
+                "For a prospective contact without an open vacancy, tailor cvData to the contact's verified current direction and never imply that a vacancy exists.",
+                "When profile/cv_customization.json exists and enabled is true, obey its emphasize, exclude, and instructions fields for CV selection and presentation unless they conflict with verified facts, this output contract, exact-two-page validation, or safety guardrails.",
                 "Do not repeat the same claim in multiple sections or create synonymous duplicate sections.",
                 "Order research evidence sections as selected research outputs or publications, then selected patents, then selected research projects; articles and patents must always appear before projects.",
-                "Use the compact bundled CV layout, bold Miao, H. in publication author lists, and describe the unfinished doctorate as Ph.D. Candidate.",
+                "Use the compact bundled CV layout, set cvData.authorName to the candidate's verified publication-author form, and render current education or career stage exactly as verified.",
                 "The rendered CV must be exactly two well-filled A4 pages; a one-page CV, a sparse second page, or a CV over two pages is invalid.",
-                "Provide at least 36 distinct target-relevant entries so both pages carry substantive evidence.",
-                "Fill both pages with additional target-relevant verified evidence from the master profile, never with repetition, generic padding, invented claims, or unreadably compressed text."
+                "Use 36 to 38 distinct target-relevant entries, normally across no more than 8 sections, so both pages carry substantive evidence without spilling to a third page.",
+                "Keep each entry key as a short label, preferably 18 characters or fewer; put descriptive detail in the body because wrapped key labels waste vertical space.",
+                "Keep entry bodies concise and fill both pages with target-relevant verified evidence from the master profile, never with repetition, generic padding, invented claims, reduced typography, or unreadably compressed text."
             ],
             "limits": {"discovery":20,"deepVerification":8,"completePackages":5},
             "required": {
@@ -320,7 +322,7 @@ pub fn result_contract(job_type: &str) -> Value {
             "file":"output/checklist.json",
             "schemaVersion":1,
             "rules":["itemType must be a unique stable snake_case key within this target; never use the literal value item for every row."],
-            "required":{"schemaVersion":1,"items":[{"itemType":"unique key such as eligibility_confirmation or cv","required":true,"status":"ready|review|missing","origin":"verified|inferred","evidence":"text","sourceUrl":"https://...","note":"optional","sortOrder":10}]}
+            "required":{"schemaVersion":1,"items":[{"itemType":"unique key such as eligibility_confirmation or cv","required":true,"status":"ready|review|missing","origin":"verified|inferred","evidence":"text","sourceUrl":"verified https URL or null for inferred-only items","note":"optional","sortOrder":10}]}
         }),
         "follow_up_scan" => json!({
             "file":"output/follow-up-scan.json",
@@ -411,7 +413,7 @@ fn import_verification(paths: &AppPaths, job: &JobSummary, output: VerificationO
         let source_lines = output.sources.iter().map(|source| format!("- [{}]({}) · {}", source.title, source.url, source.checked_at)).collect::<Vec<_>>().join("\n");
         let body = format!(
             "# {}\n\n- 状态：{}\n- 核验时间：{}\n\n{}\n\n## 来源\n\n{}\n",
-            if job.job_type == "pi_verification" { "PI 重新核验" } else { "机会重新核验" },
+            if job.job_type == "pi_verification" { "联系人重新核验" } else { "机会重新核验" },
             if output.active { "有效" } else { "可能失效" },
             output.checked_at,
             output.summary_zh,
@@ -914,7 +916,7 @@ fn upsert_opportunity(conn:&Connection,value:&FoundOpportunity)->Result<String>{
             deadline,source_url,source_title,discovered_at,last_verified_at,summary,keywords_json,fit_score,priority,notes
          ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'open',?9,?10,?11,?12,?12,?13,?14,?15,?16,?17)",
         params![id,identity,value.title,value.organization,value.department,value.country,value.region,
-            value.opportunity_type.as_deref().unwrap_or("formal_postdoc"),value.deadline,value.source_url,
+            value.opportunity_type.as_deref().unwrap_or("formal_position"),value.deadline,value.source_url,
             value.source_title,value.verified_at,value.summary,serde_json::to_string(&value.keywords)?,
             value.contacts.iter().map(|item|item.fit_score).fold(0.0,f64::max),"review",value.external_id],
     )?;
@@ -982,13 +984,17 @@ fn normalize_checklist_items(items:&[ChecklistOutput])->Result<Vec<ChecklistOutp
     if items.is_empty() { bail!("申请清单为空") }
     let mut seen = HashSet::new();
     let mut normalized = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().cloned().enumerate() {
+    for (index, mut item) in items.iter().cloned().enumerate() {
         if !matches!(item.status.as_str(), "ready" | "review" | "missing") {
             bail!("清单项 {} 的状态无效：{}", index + 1, item.status)
         }
         if !matches!(item.origin.as_str(), "verified" | "inferred") {
             bail!("清单项 {} 的来源类型无效：{}", index + 1, item.origin)
         }
+        item.source_url = item.source_url.take().and_then(|url| {
+            let trimmed = url.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        });
         if let Some(url) = item.source_url.as_deref() {
             if !is_http_url(url) { bail!("清单项 {} 的来源 URL 无效", index + 1) }
         }
@@ -1021,13 +1027,13 @@ fn record_sources(conn:&Connection,entity_type:&str,entity_id:&str,sources:&[Sou
 }
 
 fn validate_opportunity(value:&FoundOpportunity)->Result<()> {
-    if !value.career_level_eligible { bail!("职业层级不符合博士后或研究员门槛") }
+    if !value.career_level_eligible { bail!("职业阶段、资格或现实约束与目标机会不匹配") }
     if value.title.trim().is_empty() || value.organization.trim().is_empty() { bail!("职位或机构为空") }
     if !is_http_url(&value.source_url) { bail!("缺少有效的机会来源 URL") }
     if value.verified_at.trim().is_empty() { bail!("缺少核验时间") }
     chrono::DateTime::parse_from_rfc3339(&value.verified_at).context("机会核验时间不是 ISO-8601")?;
     if let Some(kind)=value.opportunity_type.as_deref() {
-        if !matches!(kind,"formal_postdoc"|"fellowship"|"prospective_pi") { bail!("机会类型无效：{kind}") }
+        if !matches!(kind,"formal_position"|"fellowship"|"program"|"prospective_contact"|"other"|"formal_postdoc"|"prospective_pi") { bail!("机会类型无效：{kind}") }
     }
     if value.sources.is_empty() { bail!("缺少来源证据") }
     for source in &value.sources { validate_source(source)?; }
@@ -1089,9 +1095,9 @@ fn validate_contact(value:&FoundContact)->Result<()> {
     crate::cv_schema::normalize(&value.materials.cv_data).context("缺少有效的结构化 CV")?;
     normalize_checklist_items(&value.materials.checklist)?;
     for (label,text) in [
-        ("英文套磁信",&value.materials.email_en),("中文套磁信",&value.materials.email_zh),
+        ("英文联系信",&value.materials.email_en),("中文联系信",&value.materials.email_zh),
         ("匹配分析",&value.materials.fit_analysis),("匹配分析中文说明",&value.materials.fit_analysis_zh),
-        ("PI 简报",&value.materials.pi_profile),("PI 简报中文说明",&value.materials.pi_profile_zh),
+        ("联系人简报",&value.materials.pi_profile),("联系人简报中文说明",&value.materials.pi_profile_zh),
     ] { if text.trim().len()<40 { bail!("{label}不完整") } }
     Ok(())
 }
@@ -1186,6 +1192,9 @@ mod tests{
         assert_eq!(search["required"]["schemaVersion"], 1);
         assert_eq!(search["required"]["opportunities"][0]["contacts"][0]["materials"]["cvData"]["schemaVersion"], 1);
         assert_ne!(search["required"]["opportunities"][0]["contacts"][0]["materials"]["checklist"][0]["itemType"], "item");
+        assert!(search["rules"].as_array().unwrap().iter().any(|rule| {
+            rule.as_str().is_some_and(|value| value.contains("profile/cv_customization.json"))
+        }));
         let reply = result_contract("reply_followup");
         assert!(reply["required"]["recommendedOpportunities"].is_array());
     }
@@ -1278,6 +1287,18 @@ mod tests{
     }
 
     #[test]
+    fn inferred_checklist_allows_a_blank_optional_source_url() -> Result<()> {
+        let items = vec![ChecklistOutput {
+            item_type:"career_level_gate".into(), required:true, status:"review".into(),
+            origin:"inferred".into(), evidence:Some("Ph.D. completion date inferred from the profile.".into()),
+            source_url:Some("  ".into()), note:None, sort_order:10,
+        }];
+        let normalized = normalize_checklist_items(&items)?;
+        assert_eq!(normalized[0].source_url, None);
+        Ok(())
+    }
+
+    #[test]
     fn one_opportunity_keeps_two_pi_statuses_independent() -> Result<()> {
         let temp=TempDir::new()?;
         let root=temp.path().to_path_buf();
@@ -1289,12 +1310,12 @@ mod tests{
         };
         paths.ensure()?;
         let conn=db::connect(&paths.database)?;
-        conn.execute_batch(include_str!("../../../postdoc-os/postdoc_os/schema.sql"))?;
+        conn.execute_batch(include_str!("../migrations/0001_legacy_foundation.sql"))?;
         conn.execute_batch(include_str!("../migrations/0008_native_desktop.sql"))?;
         conn.execute_batch(include_str!("../migrations/0009_reply_routing_and_submission_status.sql"))?;
         conn.execute("INSERT INTO native_jobs(id,job_type,status,provider_id,payload_json) VALUES('job-test','full_search','running','openai','{}')",[])?;
         drop(conn);
-        let cv=json!({"schemaVersion":1,"name":"Hongbo Miao","tagline":"Marine AI","contact":"urbinohbmiao@gmail.com","affiliations":"HKU · HEU","sections":[{"title":"Research Profile","entries":[{"key":"Focus","body":"Verified underwater acoustics and marine robotics research."}]}]});
+        let cv=json!({"schemaVersion":1,"name":"Alex Morgan","authorName":"Morgan, A.","tagline":"Targeted profile","contact":"candidate@example.org","affiliations":"Example Institute","sections":[{"title":"Research Profile","entries":[{"key":"Focus","body":"Verified target-relevant research."}]}]});
         let materials=MaterialPackage{
             cv_data:cv,email_en:"Complete English reviewable draft with verified facts and no invented claims for this contact.".into(),
             email_zh:"完整中文审核稿，仅使用已确认事实，不会自动发送，也不会提交任何申请。".into(),
@@ -1316,7 +1337,7 @@ mod tests{
             sources:vec![SourceEvidence{title:"Official".into(),url:"https://example.edu/jobs/1".into(),checked_at:"2026-08-31T00:00:00Z".into(),evidence_type:"primary".into()}],contacts:vec![],
         };
         let mut invalid_materials = materials.clone();
-        invalid_materials.cv_data = json!({"schemaVersion":1,"name":"Hongbo Miao"});
+        invalid_materials.cv_data = json!({"schemaVersion":1,"name":"Alex Morgan"});
         let invalid = FoundContact{name:"Invalid PI".into(),email:Some("invalid@example.edu".into()),fit_score:90.0,priority:1,homepage_url:None,lab_url:None,research_summary:None,materials:invalid_materials};
         assert!(upsert_complete_contact(&paths,"job-test",&opportunity,&invalid).is_err());
         let conn=db::connect(&paths.database)?;

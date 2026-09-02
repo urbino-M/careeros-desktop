@@ -3,56 +3,52 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Bot,
   CheckCircle2,
-  Database,
   ExternalLink,
+  FileText,
   KeyRound,
-  LockKeyhole,
   Mail,
   PlugZap,
   Save,
-  ShieldCheck,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api";
 import { ErrorState, LoadingState } from "../components/Ui";
-import type { GmailStatus, MigrationReport, ProviderInfo, TaskModelDefault } from "../types";
+import type { CvCustomizationSettings, GmailStatus, ProviderInfo, TaskModelDefault } from "../types";
 
 const taskLabels: Record<string, string> = {
   full_search: "完整检索",
-  research_pi: "按姓名研究 PI",
+  research_pi: "按姓名研究联系人",
   material_revision: "材料修订",
   reply_followup: "回复处理",
   maintenance: "检查与维护",
 };
 
-export function SettingsPage() {
+export function SettingsPage({ onRestartOnboarding }: { onRestartOnboarding: () => Promise<void> }) {
   const [providers, setProviders] = useState<ProviderInfo[]>();
   const [defaults, setDefaults] = useState<TaskModelDefault[]>();
-  const [migration, setMigration] = useState<MigrationReport>();
+  const [cvCustomization, setCvCustomization] = useState<CvCustomizationSettings>();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const load = () => Promise.all([api.providers(), api.taskDefaults(), api.migration()])
-    .then(([p, d, m]) => { setProviders(p); setDefaults(d); setMigration(m); })
+  const load = () => Promise.all([api.providers(), api.taskDefaults(), api.cvCustomization()])
+    .then(([p, d, cv]) => { setProviders(p); setDefaults(d); setCvCustomization(cv); })
     .catch((value) => setError(errorMessage(value)));
   useEffect(() => { load(); }, []);
 
   if (error) return <div className="page"><ErrorState message={error} retry={load} /></div>;
-  if (!providers || !defaults || !migration) return <div className="page"><LoadingState label="正在读取本机设置" /></div>;
+  if (!providers || !defaults || !cvCustomization) return <div className="page"><LoadingState label="正在读取本机设置" /></div>;
 
   return (
     <div className="page settings-page">
       <header className="page-header">
         <div className="eyebrow">LOCAL-FIRST CONTROL</div>
         <h1>设置</h1>
-        <p>账号凭据只进入 macOS Keychain；数据库、材料和 Codex 状态保存在系统标准应用目录。</p>
+        <p>账号凭据只进入系统凭据库（macOS Keychain / Windows Credential Manager）；数据库、材料和 Codex 状态保存在系统标准应用目录。</p>
+        <button className="button ghost settings-onboarding-button" onClick={() => void onRestartOnboarding().catch((value) => setNotice(errorMessage(value)))}>重新打开开始使用引导</button>
       </header>
       {notice && <div className="inline-notice">{notice}</div>}
 
       <SettingsSection index="01" title="OpenAI / Codex" icon={Bot} badge="V1 已启用">
-        <div className="settings-card-grid">
-          <CodexAccountCard onNotice={setNotice} />
-          <ApiKeyCard onNotice={setNotice} />
-        </div>
+        <CodexAccountCard onNotice={setNotice} />
       </SettingsSection>
 
       <SettingsSection index="02" title="任务默认模型" icon={PlugZap} badge="可逐次覆盖">
@@ -63,37 +59,55 @@ export function SettingsPage() {
         </div>
       </SettingsSection>
 
-      <SettingsSection index="03" title="Gmail 草稿" icon={Mail} badge="只创建草稿">
+      <SettingsSection index="03" title="CV 定制" icon={FileText} badge="Agent 自动遵从">
+        <CvCustomizationCard
+          value={cvCustomization}
+          onSaved={(saved) => {
+            setCvCustomization(saved);
+            setNotice(saved.enabled ? "CV 定制规则已启用，后续 Agent 任务会自动遵从。" : "CV 定制规则已保存但当前未启用。");
+          }}
+          onError={(value) => setNotice(errorMessage(value))}
+        />
+      </SettingsSection>
+
+      <SettingsSection index="04" title="Gmail 草稿" icon={Mail} badge="只创建草稿">
         <GmailSettingsCard onNotice={setNotice} />
       </SettingsSection>
 
-      <SettingsSection index="04" title="第三方模型" icon={KeyRound} badge="预留入口">
-        <div className="provider-grid">
-          {providers.filter((provider) => provider.id !== "openai").map((provider) => (
-            <article className="provider-card disabled" key={provider.id}>
-              <div className="provider-top"><h3>{provider.displayName}</h3><span>当前版本未启用</span></div>
-              <p>{provider.connectionMode === "internal_gateway" ? "预留 PostdocOS 内置 Responses 协议转换入口。" : "预留连接 CC Switch 等外部本地路由。"}</p>
-              <button disabled>配置连接</button>
-            </article>
-          ))}
-        </div>
-        <div className="settings-footnote">这些入口已具备数据库和 Provider Adapter 基础，但不能被任务误选；本轮不会实现或承诺 DeepSeek 调用。</div>
+      <SettingsSection index="05" title="模型中转站 / DeepSeek" icon={KeyRound} badge="Responses 直连">
+        <ProviderConnectionSettings
+          providers={providers.filter((provider) => provider.id !== "openai")}
+          onChanged={(message) => { setNotice(message); load(); }}
+        />
       </SettingsSection>
 
-      <SettingsSection index="05" title="数据迁移与隐私" icon={Database} badge="旧库只读">
-        <div className="migration-card">
-          <div className="migration-summary"><ShieldCheck size={26} /><div><h3>schema v7 数据副本已校验</h3><p>旧数据库校验值不会因桌面迁移而变化；所有新表和状态修正只写入本机副本。</p></div></div>
-          <div className="migration-stats">
-            <span><strong>{migration.applications}</strong>申请</span>
-            <span><strong>{migration.opportunities}</strong>机会</span>
-            <span><strong>{migration.legacyJobs}</strong>任务</span>
-            <span><strong>{migration.revisions}</strong>修订</span>
-            <span><strong>{migration.gmailDrafts}</strong>草稿记录</span>
-          </div>
-          <details className="technical-details"><summary>迁移详情</summary><pre>{JSON.stringify(migration, null, 2)}</pre></details>
-        </div>
-      </SettingsSection>
     </div>
+  );
+}
+
+function CvCustomizationCard({ value, onSaved, onError }: { value: CvCustomizationSettings; onSaved: (value: CvCustomizationSettings) => void; onError: (value: unknown) => void }) {
+  const [draft, setDraft] = useState(value);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setDraft(value), [value]);
+  const save = async () => {
+    setBusy(true);
+    try { onSaved(await api.saveCvCustomization(draft)); }
+    catch (value) { onError(value); }
+    finally { setBusy(false); }
+  };
+  return (
+    <article className="cv-customization-card">
+      <div className="cv-customization-intro">
+        <div><h3>统一控制所有目标 CV 的选择与呈现</h3><p>完整检索、按姓名研究和 CV 修订都会读取这里。事实真实性、正好两页、文章与专利在项目前等硬规则始终优先。</p></div>
+        <label className="cv-customization-toggle"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} /><span>{draft.enabled ? "已启用" : "未启用"}</span></label>
+      </div>
+      <div className="cv-customization-grid">
+        <label><span>重点强调</span><textarea value={draft.emphasize} onChange={(event) => setDraft({ ...draft, emphasize: event.target.value })} placeholder="填写希望优先呈现的经历、方法、成果类型或能力。" /></label>
+        <label><span>需要排除或弱化</span><textarea value={draft.exclude} onChange={(event) => setDraft({ ...draft, exclude: event.target.value })} placeholder="填写与目标无关、已经过时或不希望重复出现的内容。" /></label>
+        <label className="wide"><span>其他定制要求</span><textarea value={draft.instructions} onChange={(event) => setDraft({ ...draft, instructions: event.target.value })} placeholder="填写章节顺序、语气、语言或针对不同机会的组织要求。" /></label>
+      </div>
+      <div className="cv-customization-actions"><span>这些内容只作为定制指令，不会被当作个人事实或研究证据。</span><button className="button primary" disabled={busy} onClick={() => void save()}><Save size={16} /> {busy ? "保存中…" : "保存 CV 定制"}</button></div>
+    </article>
   );
 }
 
@@ -115,15 +129,6 @@ function GmailSettingsCard({ onNotice }: { onNotice: (value: string) => void }) 
     setBusy(true);
     try { await api.importGmailClient(selected); onNotice("OAuth 桌面客户端已安全导入；现在可以连接 Gmail。"); refresh(); }
     catch (value) { onNotice(errorMessage(value)); }
-    finally { setBusy(false); }
-  };
-  const importLegacy = async () => {
-    setBusy(true);
-    try {
-      const imported = await api.importLegacyGmail();
-      onNotice(imported ? "已把旧版 Gmail 凭据导入 macOS Keychain；旧文件保持不变。" : "没有找到可导入的旧版 Gmail 凭据。");
-      refresh();
-    } catch (value) { onNotice(errorMessage(value)); }
     finally { setBusy(false); }
   };
   const connect = async () => {
@@ -152,12 +157,12 @@ function GmailSettingsCard({ onNotice }: { onNotice: (value: string) => void }) 
         <span className="reserved-chip">绝不发送</span>
       </div>
       <div className="gmail-action-row">
+        <button className="button ghost" onClick={() => openUrl("https://developers.google.com/workspace/gmail/api/quickstart/nodejs")}><ExternalLink size={16} /> Google 官方 JSON 创建教程</button>
         <button className="button secondary" disabled={busy} onClick={chooseClient}><KeyRound size={16} /> 选择 OAuth 客户端 JSON</button>
-        <button className="button secondary" disabled={busy} onClick={importLegacy}>导入旧版凭据</button>
         <button className="button primary" disabled={busy || !status?.configured} onClick={connect}><ExternalLink size={16} /> 连接 Gmail</button>
         <button className="button ghost" disabled={busy} onClick={refresh}>刷新状态</button>
       </div>
-      <div className="oauth-guide"><strong>若 Google 显示 403：</strong>这不是等待时间问题。请在 Google Cloud 的 OAuth 同意屏幕中把 <code>urbinohbmiao@gmail.com</code> 加为测试用户，并确认客户端类型为“桌面应用”，然后再点连接。</div>
+      <div className="settings-footnote">请选择“桌面应用”类型的 OAuth 客户端 JSON。若 OAuth 应用仍处于测试模式，请在 Google Cloud 中把准备连接的账号加入测试用户。</div>
     </div>
   );
 }
@@ -224,23 +229,59 @@ function CodexAccountCard({ onNotice }: { onNotice: (value: string) => void }) {
   );
 }
 
-function ApiKeyCard({ onNotice }: { onNotice: (value: string) => void }) {
-  const [key, setKey] = useState("");
-  const [hasKey, setHasKey] = useState(false);
+function ProviderConnectionSettings({ providers, onChanged }: { providers: ProviderInfo[]; onChanged: (message: string) => void }) {
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { api.hasOpenAiKey().then(setHasKey).catch(() => undefined); }, []);
-  const save = async () => {
+  const connect = async () => {
     setBusy(true);
-    try { await api.saveOpenAiKey(key); setHasKey(true); setKey(""); onNotice("OpenAI API Key 已保存到 macOS Keychain。"); }
-    catch (value) { onNotice(errorMessage(value)); }
-    finally { setBusy(false); }
+    try {
+      const provider = await api.connectResponsesProvider({ baseUrl, apiKey });
+      setApiKey("");
+      onChanged(`${provider.displayName} 已连接；发现 ${provider.models.length} 个可用模型。`);
+    } catch (value) {
+      onChanged(errorMessage(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disconnect = async (provider: ProviderInfo) => {
+    setBusy(true);
+    try {
+      await api.disconnectResponsesProvider(provider.id);
+      onChanged(`${provider.displayName} 已断开，API Key 已从 Keychain 删除。`);
+    } catch (value) {
+      onChanged(errorMessage(value));
+    } finally {
+      setBusy(false);
+    }
   };
   return (
-    <article className="account-card">
-      <div className="settings-icon"><LockKeyhole size={23} /></div>
-      <div className="account-copy"><h3>OpenAI API Key</h3><p>密钥不写入 SQLite、配置文件或日志。</p>{hasKey && <span className="connected-label"><CheckCircle2 size={15} /> Keychain 已保存</span>}<input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="sk-…" /></div>
-      <div className="account-actions"><button className="button secondary" disabled={busy || !key} onClick={save}><Save size={16} /> 保存密钥</button>{hasKey && <button className="button ghost danger" onClick={() => api.removeOpenAiKey().then(() => { setHasKey(false); onNotice("API Key 已从 Keychain 删除。"); })}>删除</button>}</div>
-    </article>
+    <div className="provider-settings-stack">
+      <article className="provider-connect-card">
+        <div className="provider-connect-heading">
+          <div><h3>用 URL + API Key 接入</h3><p>自动读取 <code>/models</code> 并做一次最小 <code>/responses</code> 兼容性探测。密钥只进入系统凭据库。</p></div>
+          <button className="button ghost" disabled={busy} onClick={() => setBaseUrl("https://api.deepseek.com")}>使用 DeepSeek 官方地址</button>
+        </div>
+        <div className="provider-connect-fields">
+          <label><span>Base URL</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://relay.example/v1" /></label>
+          <label><span>API Key</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="只保存到 Keychain" /></label>
+          <button className="button primary" disabled={busy || !baseUrl.trim() || apiKey.trim().length < 8} onClick={connect}><PlugZap size={16} /> {busy ? "正在验证…" : "验证并连接"}</button>
+        </div>
+        <div className="settings-footnote">当前直连只接受 OpenAI Responses 兼容服务。若地址只有 Chat Completions，连接时会明确拦截；本次探测会产生极少量模型 token。</div>
+      </article>
+      {providers.length > 0 && <div className="provider-grid">
+        {providers.map((provider) => (
+          <article className={`provider-card${provider.enabled ? "" : " disabled"}`} key={provider.id}>
+            <div className="provider-top"><h3>{provider.displayName}</h3><span>{provider.enabled ? "已连接" : "已断开"}</span></div>
+            <p className="provider-url">{provider.baseUrl}</p>
+            <p>{provider.validationMessage || "尚未完成 Responses 校验"}</p>
+            <div className="provider-model-chips">{provider.models.filter((model) => model.enabled).slice(0, 8).map((model) => <span key={model.id}>{model.displayName}</span>)}</div>
+            {provider.enabled && <button className="button ghost danger" disabled={busy} onClick={() => void disconnect(provider)}>断开并删除密钥</button>}
+          </article>
+        ))}
+      </div>}
+    </div>
   );
 }
 
@@ -248,12 +289,14 @@ function DefaultRow({ value, providers, onSaved }: { value: TaskModelDefault; pr
   const [draft, setDraft] = useState(value);
   const provider = providers.find((item) => item.id === draft.providerId);
   const enabledProviders = providers.filter((item) => item.enabled);
+  const selectedModel = provider?.models.find((model) => model.id === draft.modelId);
+  const reasoningLevels = selectedModel?.reasoningLevels.length ? selectedModel.reasoningLevels : ["low", "medium", "high"];
   return (
     <div className="default-row">
       <strong>{taskLabels[value.taskType] || value.taskType}</strong>
-      <select value={draft.providerId} onChange={(event) => { const next = enabledProviders.find((item) => item.id === event.target.value)!; setDraft({ ...draft, providerId: next.id, modelId: next.models.find((model) => model.enabled)?.id || "" }); }}>{enabledProviders.map((item) => <option value={item.id} key={item.id}>{item.displayName}</option>)}</select>
-      <select value={draft.modelId} onChange={(event) => setDraft({ ...draft, modelId: event.target.value })}>{provider?.models.filter((model) => model.enabled).map((model) => <option value={model.id} key={model.id}>{model.displayName}</option>)}</select>
-      <select value={draft.reasoning} onChange={(event) => setDraft({ ...draft, reasoning: event.target.value })}>{["low", "medium", "high", "xhigh"].map((item) => <option value={item} key={item}>{item}</option>)}</select>
+      <select value={draft.providerId} onChange={(event) => { const next = enabledProviders.find((item) => item.id === event.target.value)!; const model = next.models.find((item) => item.enabled); const levels = model?.reasoningLevels || []; setDraft({ ...draft, providerId: next.id, modelId: model?.id || "", reasoning: levels.includes("high") ? "high" : levels[0] || "medium" }); }}>{enabledProviders.map((item) => <option value={item.id} key={item.id}>{item.displayName}</option>)}</select>
+      <select value={draft.modelId} onChange={(event) => { const model = provider?.models.find((item) => item.id === event.target.value); const levels = model?.reasoningLevels || []; setDraft({ ...draft, modelId: event.target.value, reasoning: levels.includes(draft.reasoning) ? draft.reasoning : levels.includes("high") ? "high" : levels[0] || "medium" }); }}>{provider?.models.filter((model) => model.enabled).map((model) => <option value={model.id} key={model.id}>{model.displayName}</option>)}</select>
+      <select value={draft.reasoning} onChange={(event) => setDraft({ ...draft, reasoning: event.target.value })}>{reasoningLevels.map((item) => <option value={item} key={item}>{item}</option>)}</select>
       <button onClick={() => api.saveTaskDefault(draft).then(() => onSaved(`${taskLabels[draft.taskType]}默认模型已保存。`))}><Save size={15} /> 保存</button>
     </div>
   );

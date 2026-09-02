@@ -1,9 +1,11 @@
 use crate::models::{
     ArtifactItem, ChecklistItem, DashboardData, DashboardMetric, JobGroups, JobSummary,
     InboundReplyRequest, ProviderInfo, ProviderModelInfo, RegionCount, ReplyItem,
-    RevisionItem, TargetCard, TargetDetail, TaskModelDefault,
+    ProviderRuntimeConfig, ProviderRuntimeModel, RevisionItem, TargetCard, TargetDetail,
+    TaskModelDefault,
 };
 use crate::paths::AppPaths;
+use crate::providers::ProviderDiscovery;
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
@@ -580,8 +582,14 @@ pub fn save_inbound_reply(path: &Path, request: &InboundReplyRequest) -> Result<
 pub fn providers(path: &Path) -> Result<Vec<ProviderInfo>> {
     let conn = connect(path)?;
     let mut provider_statement = conn.prepare(
-        "SELECT id, display_name, connection_mode, enabled
-         FROM model_providers ORDER BY sort_order, display_name",
+        "SELECT p.id, p.display_name, p.adapter_kind, p.connection_mode, p.enabled,
+                p.base_url, p.last_validated_at, p.validation_message,
+                EXISTS(SELECT 1 FROM provider_accounts a
+                       WHERE a.provider_id=p.id AND a.enabled=1
+                         AND a.secret_keychain_ref IS NOT NULL)
+         FROM model_providers p
+         WHERE p.adapter_kind != 'reserved'
+         ORDER BY p.sort_order, p.display_name",
     )?;
     let providers = provider_statement
         .query_map([], |row| {
@@ -589,16 +597,22 @@ pub fn providers(path: &Path) -> Result<Vec<ProviderInfo>> {
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)? != 0,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)? != 0,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, i64>(8)? != 0,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     providers
         .into_iter()
-        .map(|(id, display_name, connection_mode, enabled)| {
+        .map(|(id, display_name, adapter_kind, connection_mode, enabled, base_url, last_validated_at, validation_message, configured)| {
             let mut model_statement = conn.prepare(
-                "SELECT id, model_slug, display_name, enabled, supports_reasoning, supports_tools
+                "SELECT id, model_slug, display_name, enabled, supports_reasoning,
+                        supports_tools, supports_vision, metadata_json
                  FROM provider_models WHERE provider_id=?1 ORDER BY display_name",
             )?;
             let models = model_statement
@@ -610,14 +624,24 @@ pub fn providers(path: &Path) -> Result<Vec<ProviderInfo>> {
                         enabled: row.get::<_, i64>(3)? != 0,
                         supports_reasoning: row.get::<_, i64>(4)? != 0,
                         supports_tools: row.get::<_, i64>(5)? != 0,
+                        supports_vision: row.get::<_, i64>(6)? != 0,
+                        reasoning_levels: reasoning_levels(
+                            &row.get::<_, String>(7)?,
+                            &id,
+                        ),
                     })
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(ProviderInfo {
                 id,
                 display_name,
+                adapter_kind,
                 connection_mode,
                 enabled,
+                base_url,
+                configured,
+                last_validated_at,
+                validation_message,
                 models,
             })
         })
@@ -656,15 +680,212 @@ pub fn save_task_default(path: &Path, value: &TaskModelDefault) -> Result<()> {
     if !valid {
         bail!("该服务商或模型尚未启用")
     }
+    let account_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM provider_accounts
+             WHERE provider_id=?1 AND enabled=1
+             ORDER BY updated_at DESC, id LIMIT 1",
+            [&value.provider_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if value.provider_id != "openai" && account_id.is_none() {
+        bail!("该服务商没有可用凭据，请重新连接")
+    }
     conn.execute(
-        "INSERT INTO task_model_defaults(task_type, provider_id, model_id, reasoning)
-         VALUES(?1,?2,?3,?4)
+        "INSERT INTO task_model_defaults(task_type, provider_id, account_id, model_id, reasoning)
+         VALUES(?1,?2,?3,?4,?5)
          ON CONFLICT(task_type) DO UPDATE SET provider_id=excluded.provider_id,
-             model_id=excluded.model_id, reasoning=excluded.reasoning,
+             account_id=excluded.account_id, model_id=excluded.model_id,
+             reasoning=excluded.reasoning,
              updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')",
-        params![value.task_type, value.provider_id, value.model_id, value.reasoning],
+        params![value.task_type, value.provider_id, account_id, value.model_id, value.reasoning],
     )?;
     Ok(())
+}
+
+pub fn upsert_response_provider(path: &Path, discovery: &ProviderDiscovery) -> Result<()> {
+    let mut conn = connect(path)?;
+    let tx = conn.transaction()?;
+    let sort_order = if discovery.id == "deepseek" { 40 } else { 70 };
+    tx.execute(
+        "INSERT INTO model_providers(
+             id,display_name,adapter_kind,connection_mode,enabled,built_in,sort_order,
+             base_url,wire_api,last_validated_at,validation_message
+         ) VALUES(?1,?2,?3,'native_responses',1,0,?4,?5,'responses',
+                  strftime('%Y-%m-%dT%H:%M:%SZ','now'),?6)
+         ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,
+             adapter_kind=excluded.adapter_kind,connection_mode='native_responses',enabled=1,
+             base_url=excluded.base_url,wire_api='responses',
+             last_validated_at=excluded.last_validated_at,
+             validation_message=excluded.validation_message,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+        params![
+            discovery.id,
+            discovery.display_name,
+            discovery.adapter_kind,
+            sort_order,
+            discovery.base_url,
+            discovery.validation_message,
+        ],
+    )?;
+    let account_id = format!("{}-active", discovery.id);
+    tx.execute(
+        "INSERT INTO provider_accounts(
+             id,provider_id,display_name,auth_kind,secret_keychain_ref,enabled,last_validated_at
+         ) VALUES(?1,?2,?3,'api_key',?4,1,strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+         ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,
+             display_name=excluded.display_name,auth_kind='api_key',
+             secret_keychain_ref=excluded.secret_keychain_ref,enabled=1,
+             last_validated_at=excluded.last_validated_at,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+        params![
+            account_id,
+            discovery.id,
+            format!("{} API Key", discovery.display_name),
+            discovery.secret_reference,
+        ],
+    )?;
+    tx.execute(
+        "UPDATE provider_models SET enabled=0,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+         WHERE provider_id=?1",
+        [&discovery.id],
+    )?;
+    for model in &discovery.models {
+        let model_id = format!("{}:{}", discovery.id, model.id);
+        let metadata = serde_json::to_string(&serde_json::json!({
+            "reasoningLevels": model.reasoning_levels,
+        }))?;
+        tx.execute(
+            "INSERT INTO provider_models(
+                 id,provider_id,model_slug,display_name,supports_reasoning,supports_tools,
+                 supports_vision,enabled,metadata_json
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8)
+             ON CONFLICT(provider_id,model_slug) DO UPDATE SET
+                 id=excluded.id,display_name=excluded.display_name,
+                 supports_reasoning=excluded.supports_reasoning,
+                 supports_tools=excluded.supports_tools,supports_vision=excluded.supports_vision,
+                 enabled=1,metadata_json=excluded.metadata_json,
+                 updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+            params![
+                model_id,
+                discovery.id,
+                model.id,
+                model.display_name,
+                model.capabilities.reasoning as i64,
+                model.capabilities.tools as i64,
+                model.capabilities.vision as i64,
+                metadata,
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn disable_response_provider(path: &Path, provider_id: &str) -> Result<String> {
+    if provider_id == "openai" {
+        bail!("OpenAI 连接由上方账号设置管理")
+    }
+    let mut conn = connect(path)?;
+    let tx = conn.transaction()?;
+    let secret_reference: String = tx
+        .query_row(
+            "SELECT secret_keychain_ref FROM provider_accounts
+             WHERE provider_id=?1 AND secret_keychain_ref IS NOT NULL
+             ORDER BY updated_at DESC LIMIT 1",
+            [provider_id],
+            |row| row.get(0),
+        )
+        .context("没有找到该服务商的凭据记录")?;
+    tx.execute(
+        "UPDATE model_providers SET enabled=0,
+             validation_message='已断开',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+         WHERE id=?1 AND adapter_kind != 'reserved'",
+        [provider_id],
+    )?;
+    tx.execute(
+        "UPDATE provider_accounts SET enabled=0,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE provider_id=?1",
+        [provider_id],
+    )?;
+    tx.execute(
+        "UPDATE task_model_defaults SET provider_id='openai',account_id='openai-active',
+             model_id=CASE WHEN task_type='maintenance' THEN 'openai:gpt-5.6-luna'
+                           ELSE 'openai:gpt-5.6-sol' END,
+             reasoning=CASE WHEN task_type='maintenance' THEN 'medium' ELSE 'xhigh' END,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+         WHERE provider_id=?1",
+        [provider_id],
+    )?;
+    tx.commit()?;
+    Ok(secret_reference)
+}
+
+pub fn provider_runtime_config(
+    path: &Path,
+    provider_id: &str,
+    account_id: Option<&str>,
+) -> Result<ProviderRuntimeConfig> {
+    let conn = connect(path)?;
+    let selected: Option<(String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT p.id,p.display_name,p.adapter_kind,p.base_url,a.secret_keychain_ref
+             FROM model_providers p
+             JOIN provider_accounts a ON a.provider_id=p.id AND a.enabled=1
+             WHERE p.id=?1 AND p.enabled=1 AND p.adapter_kind != 'reserved'
+               AND (?2 IS NULL OR a.id=?2)
+             ORDER BY a.updated_at DESC LIMIT 1",
+            params![provider_id, account_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()?;
+    let (id, display_name, adapter_kind, base_url, secret_reference) =
+        selected.context("该模型服务尚未连接或已被禁用")?;
+    let mut statement = conn.prepare(
+        "SELECT model_slug,display_name,supports_vision,metadata_json
+         FROM provider_models WHERE provider_id=?1 AND enabled=1 ORDER BY display_name",
+    )?;
+    let models = statement
+        .query_map([&id], |row| {
+            let metadata: String = row.get(3)?;
+            Ok(ProviderRuntimeModel {
+                slug: row.get(0)?,
+                display_name: row.get(1)?,
+                supports_vision: row.get::<_, i64>(2)? != 0,
+                reasoning_levels: reasoning_levels(&metadata, &id),
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if models.is_empty() {
+        bail!("该模型服务没有已启用的模型")
+    }
+    Ok(ProviderRuntimeConfig {
+        id,
+        display_name,
+        adapter_kind,
+        base_url,
+        secret_reference,
+        models,
+    })
+}
+
+fn reasoning_levels(metadata: &str, provider_id: &str) -> Vec<String> {
+    let configured = serde_json::from_str::<serde_json::Value>(metadata)
+        .ok()
+        .and_then(|value| value.get("reasoningLevels").and_then(|levels| levels.as_array()).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    if !configured.is_empty() {
+        configured
+    } else if provider_id == "openai" {
+        vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()]
+    } else {
+        vec!["low".into(), "medium".into(), "high".into()]
+    }
 }
 
 pub fn set_openai_auth_kind(path: &Path, auth_kind: &str) -> Result<()> {
@@ -694,49 +915,19 @@ pub fn job_groups(path: &Path, page_size: usize) -> Result<JobGroups> {
     let page_size = page_size.clamp(1, 100);
     let native_count: i64 = conn.query_row("SELECT COUNT(*) FROM native_jobs", [], |row| row.get(0))?;
     let native_review_count: i64 = conn.query_row("SELECT COUNT(*) FROM native_jobs WHERE status='needs_review'", [], |row| row.get(0))?;
-    let legacy_review_count: i64 = conn.query_row("SELECT COUNT(*) FROM jobs WHERE status='needs_review'", [], |row| row.get(0))?;
-    let legacy_count: i64 = conn.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;
     let running = query_native_jobs(&conn, Some("running"), 100)?;
     let queued = query_native_jobs(&conn, Some("queued"), 100)?;
-    let mut needs_review = query_native_jobs(&conn, Some("needs_review"), page_size)?;
-    needs_review.extend(query_legacy_jobs_by_status(&conn, "needs_review", page_size)?);
-    needs_review.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
-    needs_review.truncate(page_size);
-    let mut recent = query_native_jobs(&conn, None, page_size)?;
-    recent.extend(query_legacy_jobs(&conn, page_size)?);
-    recent.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
-    recent.truncate(page_size);
+    let needs_review = query_native_jobs(&conn, Some("needs_review"), page_size)?;
+    let recent = query_native_jobs(&conn, None, page_size)?;
     Ok(JobGroups {
         running,
         queued,
         needs_review,
-        needs_review_total: native_review_count + legacy_review_count,
+        needs_review_total: native_review_count,
         recent,
-        recent_total: native_count + legacy_count,
+        recent_total: native_count,
         capacity: 5,
     })
-}
-
-fn query_legacy_jobs_by_status(conn: &Connection, status: &str, limit: usize) -> Result<Vec<JobSummary>> {
-    let mut statement = conn.prepare(
-        "SELECT id, job_type, target_id, status, progress, message, error,
-                created_at, started_at, finished_at
-         FROM jobs WHERE status=?1 ORDER BY created_at DESC LIMIT ?2",
-    )?;
-    let mut jobs = statement
-        .query_map(params![status, limit as i64], |row| {
-            Ok(JobSummary {
-                id: row.get(0)?, job_type: row.get(1)?, target_id: row.get(2)?,
-                result_target_ids: Vec::new(),
-                status: row.get(3)?, progress: row.get(4)?, message: row.get(5)?,
-                provider_id: "legacy".into(), account_id: None, model_id: None, reasoning: None,
-                thread_id: None, error: row.get(6)?, created_at: row.get(7)?,
-                started_at: row.get(8)?, finished_at: row.get(9)?,
-            })
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    attach_legacy_targets(conn, &mut jobs)?;
-    Ok(jobs)
 }
 
 fn query_native_jobs(conn: &Connection, status: Option<&str>, limit: usize) -> Result<Vec<JobSummary>> {
@@ -755,37 +946,6 @@ fn query_native_jobs(conn: &Connection, status: Option<&str>, limit: usize) -> R
     Ok(jobs)
 }
 
-fn query_legacy_jobs(conn: &Connection, limit: usize) -> Result<Vec<JobSummary>> {
-    let mut statement = conn.prepare(
-        "SELECT id, job_type, target_id, status, progress, message, error,
-                created_at, started_at, finished_at
-         FROM jobs ORDER BY created_at DESC LIMIT ?1",
-    )?;
-    let mut jobs = statement
-        .query_map([limit as i64], |row| {
-            Ok(JobSummary {
-                id: row.get(0)?,
-                job_type: row.get(1)?,
-                target_id: row.get(2)?,
-                result_target_ids: Vec::new(),
-                status: row.get(3)?,
-                progress: row.get(4)?,
-                message: row.get(5)?,
-                provider_id: "legacy".into(),
-                account_id: None,
-                model_id: None,
-                reasoning: None,
-                thread_id: None,
-                error: row.get(6)?,
-                created_at: row.get(7)?,
-                started_at: row.get(8)?,
-                finished_at: row.get(9)?,
-            })
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    attach_legacy_targets(conn, &mut jobs)?;
-    Ok(jobs)
-}
 
 fn target_from_row(row: &Row<'_>) -> rusqlite::Result<TargetCard> {
     Ok(TargetCard {
@@ -844,27 +1004,6 @@ fn attach_result_targets(conn: &Connection, jobs: &mut [JobSummary]) -> Result<(
     Ok(())
 }
 
-fn attach_legacy_targets(conn: &Connection, jobs: &mut [JobSummary]) -> Result<()> {
-    let mut direct = conn.prepare(
-        "SELECT id FROM contact_targets_v2 WHERE id=?1 AND archived_at IS NULL",
-    )?;
-    let mut by_application = conn.prepare(
-        "SELECT id FROM contact_targets_v2
-         WHERE application_id=?1 AND archived_at IS NULL
-         ORDER BY priority, fit_score DESC, id",
-    )?;
-    for job in jobs {
-        let Some(reference) = job.target_id.as_deref() else { continue };
-        if let Some(target_id) = direct.query_row([reference], |row| row.get::<_, String>(0)).optional()? {
-            job.result_target_ids.push(target_id);
-            continue;
-        }
-        job.result_target_ids = by_application
-            .query_map([reference], |row| row.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-    }
-    Ok(())
-}
 
 fn validate_status_filter(status: Option<&str>) -> Result<()> {
     if let Some(value) = status {
@@ -941,6 +1080,7 @@ pub fn read_pdf_preview(paths: &AppPaths, artifact_path: &str) -> Result<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::{AdapterModel, ModelCapabilities};
     use tempfile::TempDir;
 
     #[test]
@@ -999,5 +1139,104 @@ mod tests {
             dashboard_region(Some("Middle East"), Some("Saudi Arabia")),
             "Middle East"
         );
+    }
+
+    #[test]
+    fn task_views_return_native_jobs_without_deleting_imported_history() -> Result<()> {
+        let temp = TempDir::new()?;
+        let database = temp.path().join("jobs.sqlite3");
+        let conn = connect(&database)?;
+        conn.execute_batch(
+            "CREATE TABLE native_jobs(
+                id TEXT PRIMARY KEY, job_type TEXT NOT NULL, target_id TEXT,
+                status TEXT NOT NULL, progress INTEGER NOT NULL, message TEXT,
+                provider_id TEXT NOT NULL, account_id TEXT, model_id TEXT,
+                reasoning TEXT, thread_id TEXT, error TEXT, created_at TEXT NOT NULL,
+                started_at TEXT, finished_at TEXT
+             );
+             CREATE TABLE native_job_results(
+                job_id TEXT NOT NULL, target_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             CREATE TABLE jobs(id TEXT PRIMARY KEY);
+             INSERT INTO native_jobs(
+                id,job_type,status,progress,provider_id,created_at
+             ) VALUES('native-1','full_search','completed',100,'openai','2026-09-02T01:00:00Z');
+             INSERT INTO jobs(id) VALUES('legacy-1');",
+        )?;
+        drop(conn);
+
+        let groups = job_groups(&database, 10)?;
+        assert_eq!(groups.recent_total, 1);
+        assert_eq!(groups.recent.len(), 1);
+        assert_eq!(groups.recent[0].id, "native-1");
+
+        let conn = connect(&database)?;
+        let imported_count: i64 = conn.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;
+        assert_eq!(imported_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn response_provider_round_trips_without_storing_secret_bytes() -> Result<()> {
+        let temp = TempDir::new()?;
+        let database = temp.path().join("providers.sqlite3");
+        let conn = connect(&database)?;
+        conn.execute_batch(
+            "CREATE TABLE model_providers(
+                id TEXT PRIMARY KEY,display_name TEXT NOT NULL,adapter_kind TEXT NOT NULL,
+                connection_mode TEXT NOT NULL,enabled INTEGER NOT NULL,built_in INTEGER NOT NULL,
+                sort_order INTEGER NOT NULL,base_url TEXT,wire_api TEXT NOT NULL,
+                last_validated_at TEXT,validation_message TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             CREATE TABLE provider_accounts(
+                id TEXT PRIMARY KEY,provider_id TEXT NOT NULL,display_name TEXT NOT NULL,
+                auth_kind TEXT NOT NULL,secret_keychain_ref TEXT,account_email TEXT,
+                enabled INTEGER NOT NULL,last_validated_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             CREATE TABLE provider_models(
+                id TEXT PRIMARY KEY,provider_id TEXT NOT NULL,model_slug TEXT NOT NULL,
+                display_name TEXT NOT NULL,supports_reasoning INTEGER NOT NULL,
+                supports_tools INTEGER NOT NULL,supports_vision INTEGER NOT NULL,
+                enabled INTEGER NOT NULL,metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(provider_id,model_slug)
+             );",
+        )?;
+        drop(conn);
+        let discovery = ProviderDiscovery {
+            id: "relay-test".into(),
+            display_name: "Test Relay".into(),
+            adapter_kind: "responses_relay".into(),
+            base_url: "https://relay.example/v1".into(),
+            secret_reference: "model-provider:relay-test:api-key".into(),
+            validation_message: "Responses 已验证".into(),
+            models: vec![AdapterModel {
+                id: "gpt-test".into(),
+                display_name: "GPT Test".into(),
+                capabilities: ModelCapabilities {
+                    reasoning: true,
+                    tools: true,
+                    vision: false,
+                    streaming: true,
+                },
+                reasoning_levels: vec!["low".into(), "high".into()],
+            }],
+        };
+        upsert_response_provider(&database, &discovery)?;
+        let listed = providers(&database)?;
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].configured);
+        assert_eq!(listed[0].models[0].reasoning_levels, vec!["low", "high"]);
+        let runtime = provider_runtime_config(&database, "relay-test", None)?;
+        assert_eq!(runtime.secret_reference, discovery.secret_reference);
+        assert_eq!(runtime.models[0].slug, "gpt-test");
+        let raw = std::fs::read(&database)?;
+        assert!(!String::from_utf8_lossy(&raw).contains("test-secret-value"));
+        Ok(())
     }
 }

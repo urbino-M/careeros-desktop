@@ -5,6 +5,7 @@ import type {
   CoverLetterGenerationResult,
   CareerSystem,
   ApplicationFilter,
+  CvCustomizationSettings,
   EnqueueRequest,
   JobGroups,
   GmailDraftInfo,
@@ -13,7 +14,9 @@ import type {
   InboundReplyRequest,
   ManualRevisionRequest,
   MigrationReport,
+  OnboardingProfile,
   ProviderInfo,
+  ProviderConnectionRequest,
   TargetCard,
   TargetDetail,
   TaskModelDefault,
@@ -52,10 +55,24 @@ export const api = {
   generateCoverLetter: (targetId: string) =>
     invoke<CoverLetterGenerationResult>("generate_cover_letter", { targetId }),
   providers: () => invoke<ProviderInfo[]>("get_model_providers"),
+  connectResponsesProvider: (request: ProviderConnectionRequest) =>
+    invoke<ProviderInfo>("connect_responses_provider", { request }),
+  disconnectResponsesProvider: (providerId: string) =>
+    invoke<void>("disconnect_responses_provider", { providerId }),
   taskDefaults: () =>
     invoke<TaskModelDefault[]>("get_task_model_defaults"),
   saveTaskDefault: (value: TaskModelDefault) =>
     invoke<void>("save_task_model_default", { value }),
+  cvCustomization: () =>
+    invoke<CvCustomizationSettings>("get_cv_customization"),
+  saveCvCustomization: (value: CvCustomizationSettings) =>
+    invoke<CvCustomizationSettings>("save_cv_customization", { value }),
+  onboardingProfile: () =>
+    invoke<OnboardingProfile>("get_onboarding_profile"),
+  saveOnboardingProfile: (value: OnboardingProfile) =>
+    invoke<OnboardingProfile>("save_onboarding_profile", { value }),
+  importOnboardingCv: (path: string) =>
+    invoke<string>("import_onboarding_cv", { path }),
   jobs: (pageSize = 5) => invoke<JobGroups>("get_jobs", { pageSize }),
   enqueue: (request: EnqueueRequest) =>
     invoke<string>("enqueue_job", { request }),
@@ -68,14 +85,9 @@ export const api = {
     invoke<Record<string, unknown>>("connect_chatgpt"),
   waitForChatGptLogin: (loginId: string) =>
     invoke<Record<string, unknown>>("wait_for_chatgpt_login", { loginId }),
-  saveOpenAiKey: (apiKey: string) =>
-    invoke<Record<string, unknown>>("save_openai_api_key", { apiKey }),
-  hasOpenAiKey: () => invoke<boolean>("has_openai_api_key"),
-  removeOpenAiKey: () => invoke<void>("remove_openai_api_key"),
   gmailStatus: () => invoke<GmailStatus>("get_gmail_status"),
   importGmailClient: (path: string) =>
     invoke<void>("import_gmail_client", { path }),
-  importLegacyGmail: () => invoke<boolean>("import_legacy_gmail"),
   startGmailOAuth: () => invoke<GmailOAuthStart>("start_gmail_oauth"),
   approveCv: (targetId: string) =>
     invoke<string>("approve_cv_for_gmail", { targetId }),

@@ -27,10 +27,14 @@
 ]
 
 #let author-body(body) = {
-  let parts = body.split("Miao, H.")
-  for (index, part) in parts.enumerate() {
-    part
-    if index < parts.len() - 1 { strong("Miao, H.") }
+  if data.authorName == "" {
+    body
+  } else {
+    let parts = body.split(data.authorName)
+    for (index, part) in parts.enumerate() {
+      part
+      if index < parts.len() - 1 { strong(data.authorName) }
+    }
   }
 }
 

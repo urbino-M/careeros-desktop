@@ -9,6 +9,8 @@ pub(crate) struct CvData {
     #[serde(default = "protocol_version", alias = "schema_version")]
     pub(crate) schema_version: u8,
     pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) author_name: String,
     pub(crate) tagline: String,
     pub(crate) contact: String,
     pub(crate) affiliations: String,
@@ -33,6 +35,7 @@ pub(crate) fn contract() -> Value {
     json!({
         "schemaVersion": 1,
         "name": "candidate full name",
+        "authorName": "candidate name exactly as it appears in publication or output author lists",
         "tagline": "targeted research headline",
         "contact": "email · phone",
         "affiliations": "current affiliations separated by ·",
@@ -53,10 +56,13 @@ pub(crate) fn normalize_text(raw: &str) -> Result<String> {
 }
 
 pub(crate) fn normalize(value: &Value) -> Result<CvData> {
-    let data = match serde_json::from_value::<CvData>(value.clone()) {
+    let mut data = match serde_json::from_value::<CvData>(value.clone()) {
         Ok(data) => data,
         Err(_) => convert_legacy_agent_shape(value)?,
     };
+    if data.author_name.trim().is_empty() {
+        data.author_name = inferred_publication_name(&data.name);
+    }
     let data = deduplicate(data);
     validate(&data)?;
     Ok(data)
@@ -64,6 +70,14 @@ pub(crate) fn normalize(value: &Value) -> Result<CvData> {
 
 fn canonical_section(title: &str) -> String {
     title.trim().to_lowercase().replace("(continued)", "").trim().to_owned()
+}
+
+fn inferred_publication_name(full_name: &str) -> String {
+    let parts = full_name.split_whitespace().collect::<Vec<_>>();
+    if parts.len() < 2 { return full_name.trim().to_owned() }
+    let surname = parts.last().copied().unwrap_or_default().trim_matches(',');
+    let initial = parts.first().and_then(|part| part.chars().next());
+    initial.map(|value| format!("{surname}, {value}.")).unwrap_or_else(|| full_name.trim().to_owned())
 }
 
 fn research_section_order(title: &str) -> Option<u8> {
@@ -225,6 +239,7 @@ fn convert_legacy_agent_shape(value: &Value) -> Result<CvData> {
     let data = CvData {
         schema_version: protocol_version(),
         name,
+        author_name: string_at(candidate, "publication_name").unwrap_or_default(),
         tagline: if tagline.trim().is_empty() { "Research Curriculum Vitae".into() } else { tagline },
         contact,
         affiliations,
@@ -290,11 +305,12 @@ mod tests {
     #[test]
     fn accepts_canonical_camel_case() -> Result<()> {
         let data = normalize(&json!({
-            "schemaVersion":1,"name":"Hongbo Miao","tagline":"Marine AI",
-            "contact":"urbinohbmiao@gmail.com","affiliations":"HKU · HEU",
-            "sections":[{"title":"Research","entries":[{"key":"Focus","body":"Underwater acoustics"}]}]
+            "schemaVersion":1,"name":"Alex Morgan","authorName":"Morgan, A.","tagline":"Targeted profile",
+            "contact":"candidate@example.org","affiliations":"Example Institute",
+            "sections":[{"title":"Research","entries":[{"key":"Focus","body":"Verified research topic"}]}]
         }))?;
-        assert_eq!(data.name, "Hongbo Miao");
+        assert_eq!(data.name, "Alex Morgan");
+        assert_eq!(data.author_name, "Morgan, A.");
         Ok(())
     }
 
@@ -302,15 +318,15 @@ mod tests {
     fn converts_legacy_agent_selection_shape() -> Result<()> {
         let value = normalize_value(&json!({
             "schema_version":1,
-            "candidate":{"full_name":"Hongbo Miao","email":"urbinohbmiao@gmail.com","current_roles":["HKU","HEU"]},
-            "headline":["Underwater Acoustics","Marine Robotics"],
-            "alignment":"Propagation-aware cooperative sensing.",
-            "selected_research":[{"title":"Localization","summary":"Physics-informed matched-field processing."}],
-            "selected_publications":[{"title":"Paper","venue":"JASA","year":2025,"status":"published"}],
-            "selected_skills":{"programming":["Python","MATLAB"]}
+            "candidate":{"full_name":"Alex Morgan","email":"candidate@example.org","current_roles":["Example Institute"]},
+            "headline":["Target field","Relevant methods"],
+            "alignment":"Verified alignment with the opportunity.",
+            "selected_research":[{"title":"Research project","summary":"Verified method and result."}],
+            "selected_publications":[{"title":"Paper","venue":"Example Journal","year":2025,"status":"published"}],
+            "selected_skills":{"methods":["Method A","Method B"]}
         }))?;
         assert_eq!(value["schemaVersion"], 1);
-        assert_eq!(value["name"], "Hongbo Miao");
+        assert_eq!(value["name"], "Alex Morgan");
         assert!(value["sections"].as_array().is_some_and(|items| items.len() >= 3));
         Ok(())
     }
@@ -318,15 +334,15 @@ mod tests {
     #[test]
     fn repeated_sections_and_claims_are_collapsed_within_one_target() -> Result<()> {
         let data = normalize(&json!({
-            "schemaVersion":1,"name":"Hongbo Miao","tagline":"Target headline",
-            "contact":"verified@example.com","affiliations":"HKU · HEU",
+            "schemaVersion":1,"name":"Alex Morgan","tagline":"Target headline",
+            "contact":"verified@example.org","affiliations":"Example Institute",
             "sections":[
                 {"title":"Selected Research Experience","entries":[
-                    {"key":"One","body":"Physics-informed localization."},
-                    {"key":"Duplicate","body":"Physics informed localization"}
+                    {"key":"One","body":"Verified qualitative analysis."},
+                    {"key":"Duplicate","body":"Verified qualitative analysis"}
                 ]},
                 {"title":"Selected Research Experience (continued)","entries":[
-                    {"key":"Two","body":"Marine robotics field validation."}
+                    {"key":"Two","body":"Independent field validation."}
                 ]}
             ]
         }))?;
@@ -339,8 +355,8 @@ mod tests {
     #[test]
     fn outputs_and_patents_are_ordered_before_projects() -> Result<()> {
         let data = normalize(&json!({
-            "schemaVersion":1,"name":"Hongbo Miao","tagline":"Target headline",
-            "contact":"verified@example.com","affiliations":"HKU · HEU",
+            "schemaVersion":1,"name":"Alex Morgan","tagline":"Target headline",
+            "contact":"verified@example.org","affiliations":"Example Institute",
             "sections":[
                 {"title":"Education","entries":[{"key":"Degree","body":"Verified education."}]},
                 {"title":"Selected Research Projects","entries":[{"key":"Project","body":"Verified project."}]},

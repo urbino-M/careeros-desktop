@@ -7,6 +7,8 @@
 # Bundled third-party runtimes stay local and are attached to releases separately
 /src-tauri/resources/runtime/codex
 /src-tauri/resources/runtime/typst
+/src-tauri/resources/runtime/codex.exe
+/src-tauri/resources/runtime/typst.exe
 
 # Node / frontend build artifacts
 /node_modules/
