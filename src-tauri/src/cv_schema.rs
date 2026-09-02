@@ -60,12 +60,28 @@ pub(crate) fn normalize(value: &Value) -> Result<CvData> {
         Ok(data) => data,
         Err(_) => convert_legacy_agent_shape(value)?,
     };
+    data.name = strip_emphasis_markers(&data.name);
+    data.author_name = strip_emphasis_markers(&data.author_name);
+    data.tagline = strip_emphasis_markers(&data.tagline);
+    data.contact = strip_emphasis_markers(&data.contact);
+    data.affiliations = strip_emphasis_markers(&data.affiliations);
+    for section in &mut data.sections {
+        section.title = strip_emphasis_markers(&section.title);
+        for entry in &mut section.entries {
+            entry.key = strip_emphasis_markers(&entry.key);
+            entry.body = strip_emphasis_markers(&entry.body);
+        }
+    }
     if data.author_name.trim().is_empty() {
         data.author_name = inferred_publication_name(&data.name);
     }
     let data = deduplicate(data);
     validate(&data)?;
     Ok(data)
+}
+
+fn strip_emphasis_markers(value: &str) -> String {
+    value.replace("**", "").replace("__", "").trim().to_owned()
 }
 
 fn canonical_section(title: &str) -> String {
@@ -186,7 +202,7 @@ fn convert_legacy_agent_shape(value: &Value) -> Result<CvData> {
         .or_else(|| string_at(Some(object), "name"))
         .unwrap_or_default();
     let headline = string_list(object.get("headline"));
-    let alignment = object.get("alignment").and_then(Value::as_str).unwrap_or_default();
+    let alignment = strip_emphasis_markers(object.get("alignment").and_then(Value::as_str).unwrap_or_default());
     let tagline = if headline.is_empty() {
         alignment.to_owned()
     } else {
@@ -236,6 +252,30 @@ fn convert_legacy_agent_shape(value: &Value) -> Result<CvData> {
             sections.push(CvSection { title: "Technical Skills".into(), entries });
         }
     }
+    push_object_entries(
+        &mut sections,
+        object.get("selected_references")
+            .or_else(|| object.get("references"))
+            .or_else(|| object.get("referees"))
+            .or_else(|| object.get("recommendations"))
+            .or_else(|| object.get("refs")),
+        "References",
+        &["name", "person", "referee", "recommender", "referees"],
+        &[
+            "name",
+            "person",
+            "referee",
+            "recommender",
+            "title",
+            "position",
+            "institution",
+            "organization",
+            "email",
+            "phone",
+            "contact",
+            "relationship",
+        ],
+    );
     let data = CvData {
         schema_version: protocol_version(),
         name,
@@ -257,10 +297,18 @@ fn push_object_entries(
     body_fields: &[&str],
 ) {
     let entries = value.and_then(Value::as_array).into_iter().flatten().filter_map(|item| {
-        let object = item.as_object()?;
-        let key = first_text(object, key_fields).unwrap_or_else(|| "Selected".into());
-        let body = body_fields.iter().filter_map(|field| object.get(*field))
-            .map(value_text).filter(|part| !part.is_empty()).collect::<Vec<_>>().join(". ");
+        let (key, body) = match item {
+            Value::String(value) => {
+                (first_text(&Map::new(), key_fields).unwrap_or_else(|| "Selected".into()), strip_emphasis_markers(value))
+            }
+            Value::Object(item) => {
+                let key = first_text(item, key_fields).unwrap_or_else(|| "Selected".into());
+                let body = body_fields.iter().filter_map(|field| item.get(*field))
+                    .map(value_text).filter(|part| !part.is_empty()).collect::<Vec<_>>().join(". ");
+                (key, body)
+            }
+            _ => return None,
+        };
         (!body.is_empty()).then(|| CvEntry { key, body })
     }).collect::<Vec<_>>();
     if !entries.is_empty() {
@@ -269,7 +317,11 @@ fn push_object_entries(
 }
 
 fn string_at(object: Option<&Map<String, Value>>, key: &str) -> Option<String> {
-    object?.get(key).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
+    object?
+        .get(key)
+        .and_then(Value::as_str)
+        .map(strip_emphasis_markers)
+        .filter(|value| !value.is_empty())
 }
 
 fn first_text(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
@@ -283,7 +335,7 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
 fn value_text(value: &Value) -> String {
     match value {
         Value::Null => String::new(),
-        Value::String(value) => value.trim().to_owned(),
+        Value::String(value) => strip_emphasis_markers(value),
         Value::Number(value) => value.to_string(),
         Value::Bool(value) => value.to_string(),
         Value::Array(values) => values.iter().map(value_text).filter(|value| !value.is_empty()).collect::<Vec<_>>().join(", "),
@@ -328,6 +380,46 @@ mod tests {
         assert_eq!(value["schemaVersion"], 1);
         assert_eq!(value["name"], "Alex Morgan");
         assert!(value["sections"].as_array().is_some_and(|items| items.len() >= 3));
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_legacy_references_shape() -> Result<()> {
+        let value = normalize_value(&json!({
+            "schema_version":1,
+            "candidate":{"full_name":"Alex Morgan","email":"candidate@example.org","publication_name":"Morgan, A."},
+            "selected_references":[
+                {"name":"Dr. Li","position":"Professor","institution":"Beijing Univ.","email":"li@example.org"},
+                "Prof. Chen, Dept. of AI"
+            ]
+        }))?;
+        let sections = value["sections"].as_array().context("sections missing")?;
+        let references = sections.iter().find(|section| section["title"] == "References")
+            .context("references section missing")?;
+        assert_eq!(references["entries"].as_array().context("entries missing")?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn strips_markdown_emphasis_markers() -> Result<()> {
+        let value = normalize_value(&json!({
+            "schemaVersion":1,
+            "name":"Alex Morgan",
+            "tagline":"Research **Focused** and __Strong__",
+            "contact":"candidate@example.org",
+            "affiliations":"Example Institute",
+            "sections":[
+                {"title":"Research","entries":[
+                    {"key":"A","body":"Verified **methods** in AI."},
+                    {"key":"B","body":"__Deep__ learning and **models**."}
+                ]}
+            ]
+        }))?;
+        assert_eq!(value["tagline"], "Research Focused and Strong");
+        let sections = value["sections"].as_array().context("sections missing")?;
+        let entries = sections[0]["entries"].as_array().context("entries missing")?;
+        assert_eq!(entries[0]["body"], "Verified methods in AI.");
+        assert_eq!(entries[1]["body"], "Deep learning and models.");
         Ok(())
     }
 

@@ -401,6 +401,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let resource_dir = app.path().resource_dir()?;
             let paths = AppPaths::resolve(Some(&resource_dir))?;

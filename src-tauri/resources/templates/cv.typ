@@ -89,8 +89,8 @@
   ]
 ]
 
-#for section in data.sections [
-  #if section.title.contains("(continued)") or section.title.contains("Research Projects") [#pagebreak()]
+#for (index, section) in data.sections.enumerate() [
+  #if index > 0 and section.title.contains("(continued)") [#pagebreak()]
   #section-title(section.title)
   #for item in section.entries [#entry(section.title, item)]
 ]

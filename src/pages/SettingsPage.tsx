@@ -8,12 +8,15 @@ import {
   KeyRound,
   Mail,
   PlugZap,
+  RefreshCw,
   Save,
+  ShieldCheck,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api";
 import { ErrorState, LoadingState } from "../components/Ui";
 import type { CvCustomizationSettings, GmailStatus, ProviderInfo, TaskModelDefault } from "../types";
+import { useDesktopUpdates } from "../updates/UpdateManager";
 
 const taskLabels: Record<string, string> = {
   full_search: "完整检索",
@@ -81,7 +84,28 @@ export function SettingsPage({ onRestartOnboarding }: { onRestartOnboarding: () 
         />
       </SettingsSection>
 
+      <SettingsSection index="06" title="应用更新" icon={RefreshCw} badge="签名校验">
+        <ApplicationUpdateCard />
+      </SettingsSection>
+
     </div>
+  );
+}
+
+function ApplicationUpdateCard() {
+  const updates = useDesktopUpdates();
+  const busy = updates.phase === "checking" || updates.phase === "downloading" || updates.phase === "installing";
+  return (
+    <article className="application-update-card">
+      <div className="settings-icon"><RefreshCw size={22} /></div>
+      <div>
+        <h3>CareerOS v{updates.currentVersion}</h3>
+        <p>启动后自动检查 GitHub Release，之后每小时检查一次。下载的更新包必须通过内置公钥验签，失败时不会安装。</p>
+        <span className={updates.phase === "error" ? "gmail-state" : "connected-label"}><ShieldCheck size={15} /> {updates.message}</span>
+        <small>上次检查：{updates.lastCheckedLabel}</small>
+      </div>
+      <button className="button secondary" disabled={busy} onClick={() => void updates.checkNow()}><RefreshCw size={16} className={busy ? "spinning" : ""} /> {updates.phase === "checking" ? "检查中…" : "检查更新"}</button>
+    </article>
   );
 }
 
