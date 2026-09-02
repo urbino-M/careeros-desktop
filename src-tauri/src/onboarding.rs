@@ -194,7 +194,7 @@ mod tests {
 
     fn test_paths(root: &Path) -> AppPaths {
         AppPaths {
-            database: root.join("database/postdocos.sqlite3"),
+            database: root.join("database/careeros.sqlite3"),
             generated: root.join("generated"),
             profile: root.join("profile"),
             workspaces: root.join("workspaces"),

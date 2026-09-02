@@ -6,15 +6,16 @@ CareerOS 的本机桌面版本，目前发布 Apple Silicon macOS 和 Windows x6
 
 1. macOS：打开 `CareerOS.dmg`，把 CareerOS 拖入“应用程序”。当前使用 ad-hoc 签名；如果 macOS 阻止启动，请在 Finder 中右键 CareerOS，选择“打开”，再确认一次。
 2. Windows：运行 `CareerOS_*_x64-setup.exe`。当前尚无 Authenticode 证书，首次安装可能出现 SmartScreen 提示。
-3. 当前兼容版本继续读取旧技术路径 `~/Library/Application Support/PostdocOS`，因此改名不会复制或丢失现有数据库和材料。
+3. CareerOS 的数据默认写入平台应用数据目录下的 `CareerOS`，数据库为 `database/careeros.sqlite3`；不会读取或迁移旧品牌目录。
 4. 在首次引导或“设置”中连接 ChatGPT/Codex，或使用兼容 Responses 的模型 URL 与 API Key；Gmail 草稿功能需要单独完成 Google OAuth。
 
 应用只会创建 Gmail 草稿并附加已审核 CV，不包含发送邮件的接口。创建草稿也不会自动把申请标记为“已联系”。
 
 ## 开发与验证
 
-- `POSTDOCOS_LEGACY_ROOT`：指定旧版 `postdoc-os` 目录。
-- `POSTDOCOS_DATA_DIR`：指定隔离的数据目录，供测试迁移使用。
+- `CAREEROS_DATA_DIR`：指定隔离的数据目录，供本地验证使用。
+- `CAREEROS_RUNTIME_DIR`：指定开发环境中的运行时目录。
+- `CAREEROS_CODEX_BIN` / `CAREEROS_TYPST_BIN`：指定开发环境中的 Codex / Typst 可执行文件。
 - `./node_modules/.bin/tsc --noEmit`：前端类型检查。
 - `./node_modules/.bin/vite build`：前端生产构建。
 - 在 `src-tauri` 运行 `cargo test --lib`：Rust、迁移、并发、去重、Gmail MIME 和 Typst 回归。

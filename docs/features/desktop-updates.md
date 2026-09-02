@@ -33,7 +33,7 @@ This subsystem checks the public CareerOS GitHub Release channel, presents relea
 
 ## Contracts
 
-- Endpoint: `https://github.com/urbino-M/postdoc-os-desktop/releases/latest/download/latest.json`.
+- Endpoint: `https://github.com/urbino-M/careeros-desktop/releases/latest/download/latest.json`.
 - Manifest platforms: `darwin-aarch64` and `windows-x86_64`.
 - macOS artifact: `.app.tar.gz` plus `.sig`.
 - Windows artifact: NSIS `-setup.exe` plus `.sig`.

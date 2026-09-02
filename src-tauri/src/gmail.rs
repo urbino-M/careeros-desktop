@@ -381,7 +381,7 @@ fn valid_email(value:&str)->bool {
 }
 
 fn build_mime(recipient:&str,subject:&str,body:&str,cv_path:&Path)->Result<String> {
-    let boundary=format!("postdocos-{}",Uuid::new_v4().simple());
+    let boundary=format!("careeros-{}",Uuid::new_v4().simple());
     let filename=cv_path.file_name().and_then(|value|value.to_str()).unwrap_or("cv.pdf");
     let encoded_subject=if subject.is_ascii(){subject.to_owned()}else{format!("=?UTF-8?B?{}?=",STANDARD.encode(subject.as_bytes()))};
     let attachment=STANDARD.encode(std::fs::read(cv_path)?);

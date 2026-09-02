@@ -8,7 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import ReactMarkdown from "react-markdown";
 import { UPDATE_CHECK_INTERVAL_MS, UPDATE_CHECK_TIMEOUT_MS, formatLastChecked, updateErrorMessage, updateProgress } from "./updateCore";
 
-const RELEASE_URL = "https://github.com/urbino-M/postdoc-os-desktop/releases/latest";
+const RELEASE_URL = "https://github.com/urbino-M/careeros-desktop/releases/latest";
 const SKIPPED_VERSION_KEY = "careeros.updates.skipped-version";
 const LAST_CHECKED_KEY = "careeros.updates.last-checked";
 

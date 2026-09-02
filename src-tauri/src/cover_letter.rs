@@ -448,7 +448,7 @@ fn load_cv_data(paths: &AppPaths, conn: &rusqlite::Connection, target_id: &str) 
 }
 
 fn locate_typst_binary(paths: &AppPaths) -> Result<PathBuf> {
-    if let Some(value) = std::env::var_os("POSTDOCOS_TYPST_BIN") {
+    if let Some(value) = std::env::var_os("CAREEROS_TYPST_BIN") {
         let path = PathBuf::from(value);
         if path.is_file() { return Ok(path) }
     }

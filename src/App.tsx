@@ -89,7 +89,7 @@ function routeHash(route: AppRoute) {
 export default function App() {
   const [route, setRoute] = useState<AppRoute>(() => parseHash());
   const [locale, setLocale] = useState<Locale>(() =>
-    localStorage.getItem("postdocos-locale") === "en" ? "en" : "zh",
+    localStorage.getItem("careeros-locale") === "en" ? "en" : "zh",
   );
   const [onboarding, setOnboarding] = useState<OnboardingProfile>();
   const [onboardingError, setOnboardingError] = useState("");
@@ -116,7 +116,7 @@ export default function App() {
 
   const changeLocale = (next: Locale) => {
     setLocale(next);
-    localStorage.setItem("postdocos-locale", next);
+    localStorage.setItem("careeros-locale", next);
   };
 
   if (onboardingError) {

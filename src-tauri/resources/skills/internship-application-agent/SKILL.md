@@ -5,7 +5,7 @@ description: Evidence-based industry internship discovery and eligibility review
 
 # Internship Hunter discovery contract
 
-Read `POSTDOCOS_TASK.json` first, then `input/request.json` and every available
+Read `CAREEROS_TASK.json` first, then `input/request.json` and every available
 file in `profile/`. The JSON contract is authoritative for output paths, limits,
 and field names. Write only below the current workspace's `output/` directory.
 
@@ -41,4 +41,4 @@ and field names. Write only below the current workspace's `output/` directory.
   submit a form, change an application status, or claim that the candidate has
   applied.
 - Finish only when `output/internship-search-results.json` validates exactly
-  against `resultContract` in `POSTDOCOS_TASK.json`.
+  against `resultContract` in `CAREEROS_TASK.json`.

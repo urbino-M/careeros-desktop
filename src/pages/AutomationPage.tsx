@@ -36,7 +36,7 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
     load();
     const timer = window.setInterval(load, 2000);
     let unlisten: (() => void) | undefined;
-    listen("postdocos://jobs-changed", load).then((value) => (unlisten = value));
+    listen("careeros://jobs-changed", load).then((value) => (unlisten = value));
     return () => { window.clearInterval(timer); unlisten?.(); };
   }, [historySize]);
 

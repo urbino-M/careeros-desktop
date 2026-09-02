@@ -103,7 +103,7 @@ jobs:
           set -euo pipefail
           [[ "$(uname -m)" == "arm64" ]]
           runtime_dir="$GITHUB_WORKSPACE/src-tauri/resources/runtime"
-          download_dir="$(mktemp -d "$RUNNER_TEMP/postdocos-runtime.XXXXXX")"
+          download_dir="$(mktemp -d "$RUNNER_TEMP/careeros-runtime.XXXXXX")"
           trap 'rm -rf "$download_dir"' EXIT
 
           codex_archive="$download_dir/codex.tar.gz"
@@ -202,7 +202,7 @@ jobs:
           }
 
           $runtimeDir = Join-Path $env:GITHUB_WORKSPACE "src-tauri/resources/runtime"
-          $downloadDir = Join-Path $env:RUNNER_TEMP "postdocos-runtime"
+          $downloadDir = Join-Path $env:RUNNER_TEMP "careeros-runtime"
           New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
           foreach ($name in @("codex", "typst", "codex.exe", "typst.exe")) {
             $path = Join-Path $runtimeDir $name
@@ -291,15 +291,15 @@ jobs:
           & $typstExe --version
           if ($LASTEXITCODE -ne 0) { throw "Installed typst.exe failed with exit code $LASTEXITCODE" }
 
-          $dataDir = Join-Path $env:RUNNER_TEMP "postdocos-fresh-install"
-          $env:POSTDOCOS_DATA_DIR = $dataDir
+          $dataDir = Join-Path $env:RUNNER_TEMP "careeros-fresh-install"
+          $env:CAREEROS_DATA_DIR = $dataDir
           $app = Start-Process -FilePath $appExe -PassThru
           try {
             Start-Sleep -Seconds 10
             if ($app.HasExited) {
               throw "Freshly installed CareerOS exited during startup with code $($app.ExitCode)"
             }
-            $database = Join-Path $dataDir "database/postdocos.sqlite3"
+            $database = Join-Path $dataDir "database/careeros.sqlite3"
             if (-not (Test-Path -LiteralPath $database -PathType Leaf)) {
               throw "Fresh install did not create its SQLite database: $database"
             }

@@ -5,7 +5,7 @@ description: Evidence-based opportunity search, contact research, material draft
 
 # CareerOS native research contract
 
-Always read `POSTDOCOS_TASK.json` first, then every available file in `profile/`.
+Always read `CAREEROS_TASK.json` first, then every available file in `profile/`.
 The JSON contract is authoritative for paths, limits, and output shape. Write only
 inside the current task workspace and only under `output/`.
 
@@ -89,4 +89,4 @@ inside the current task workspace and only under `output/`.
   shelved stage.
 
 Finish only after every required output file validates against the contract in
-`POSTDOCOS_TASK.json`.
+`CAREEROS_TASK.json`.

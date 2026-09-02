@@ -74,7 +74,7 @@ is the track discriminator. No schema migration is introduced.
 ## Debug Checklist
 
 1. Inspect the `internship_search` row and payload in `native_jobs`.
-2. Read `POSTDOCOS_TASK.json` and `output/internship-search-results.json` in the
+2. Read `CAREEROS_TASK.json` and `output/internship-search-results.json` in the
    job workspace.
 3. Check workflow validation warnings before persistence queries.
 4. Confirm `opportunity_type=industry_internship` and the linked target result.

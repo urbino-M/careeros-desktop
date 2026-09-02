@@ -38,11 +38,11 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 
 1. `AutomationPage.tsx` or an application-detail panel creates an `EnqueueRequest` through `src/api.ts`.
 2. `scheduler.rs` snapshots provider/model settings into `native_jobs`, rejects duplicate active keys, dispatches with bounded concurrency, and records lifecycle events, execution deadlines, lease heartbeats, and checkpoints.
-3. `materials.rs` prepares an isolated workspace and runtime input contract (`POSTDOCOS_TASK.json`); material-revision tasks snapshot the source SHA-256 in both the contract and the trusted job payload. This is separate from the developer Task Contract in `AGENTS.md`.
+3. `materials.rs` prepares an isolated workspace and runtime input contract (`CAREEROS_TASK.json`); material-revision tasks snapshot the source SHA-256 in both the contract and the trusted job payload. This is separate from the developer Task Contract in `AGENTS.md`.
 4. `codex.rs` runs or resumes the bundled Codex App Server task.
 5. `materials.rs` rejects an Agent revision if the live material no longer matches its trusted base SHA-256, then applies the revision; other jobs use `workflows.rs` to validate and import structured business results.
 6. CV/Cover Letter revisions may invoke `typst.rs` or `cover_letter.rs` to regenerate PDFs.
-7. The job moves to `needs_review`; the frontend refreshes on `postdocos://jobs-changed`.
+7. The job moves to `needs_review`; the frontend refreshes on `careeros://jobs-changed`.
 
 ### Manual Material Revision
 
@@ -143,9 +143,9 @@ Use the shape of the change to keep inspection targeted:
 
 ## Persistence and Compatibility
 
-`AppPaths` resolves the data root to `POSTDOCOS_DATA_DIR` when set, otherwise the platform application-data directory. Important persisted locations include:
+`AppPaths` resolves the data root to `CAREEROS_DATA_DIR` when set, otherwise the platform application-data directory. Important persisted locations include:
 
-- `database/postdocos.sqlite3`: SQLite application state;
+- `database/careeros.sqlite3`: SQLite application state;
 - `generated/`: target material and document outputs;
 - `profile/`: candidate source-of-truth files used in agent workspaces;
 - `workspaces/`: isolated Codex task inputs/outputs and resumable results;

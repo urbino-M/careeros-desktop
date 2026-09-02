@@ -16,7 +16,7 @@ its target platform under `src-tauri/resources/runtime/`. Release automation
 downloads the pinned official upstream asset and verifies its SHA256 before
 packaging. CareerOS invokes it as a separate process through the Codex App
 Server protocol. An explicit
-`POSTDOCOS_CODEX_BIN` override can select another user-provided binary; if the
+`CAREEROS_CODEX_BIN` override can select another user-provided binary; if the
 bundled runtime is unavailable, the development/runtime lookup also checks the
 documented data directory and common system installation paths.
 

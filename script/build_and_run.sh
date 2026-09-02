@@ -4,7 +4,6 @@ set -euo pipefail
 MODE="${1:-dev}"
 APP_NAME="CareerOS"
 PROCESS_NAME="CareerOS"
-LEGACY_APP_NAME="PostdocOS"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_VERSION="$(node -e 'const fs = require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).version)' "$ROOT_DIR/src-tauri/tauri.conf.json")"
 APP_BUNDLE="$ROOT_DIR/src-tauri/target/release/bundle/macos/$APP_NAME.app"
@@ -20,7 +19,6 @@ esac
 DMG_PATH="$ROOT_DIR/src-tauri/target/release/bundle/dmg/${APP_NAME}_${APP_VERSION}_${DMG_ARCH}.dmg"
 INSTALLED_APP_BUNDLE="/Applications/$APP_NAME.app"
 INSTALLED_APP_BINARY="$INSTALLED_APP_BUNDLE/Contents/MacOS/$PROCESS_NAME"
-LEGACY_INSTALLED_APP_BUNDLE="/Applications/$LEGACY_APP_NAME.app"
 INSTALL_BACKUP_BUNDLE=""
 INSTALL_RESTORE_DESTINATION=""
 FAILED_INSTALL_BUNDLE=""
@@ -57,7 +55,7 @@ adhoc_sign_app() {
 
 create_adhoc_dmg() (
   local staging_dir
-  staging_dir="$(mktemp -d /private/tmp/postdocos-adhoc-dmg.XXXXXX)"
+  staging_dir="$(mktemp -d /private/tmp/careeros-adhoc-dmg.XXXXXX)"
   trap 'rm -rf "$staging_dir"' EXIT
 
   /usr/bin/ditto "$APP_BUNDLE" "$staging_dir/$APP_NAME.app"
@@ -75,7 +73,7 @@ create_adhoc_dmg() (
 verify_adhoc_dmg() (
   local mount_dir
   local mounted=0
-  mount_dir="$(mktemp -d /private/tmp/postdocos-adhoc-verify.XXXXXX)"
+  mount_dir="$(mktemp -d /private/tmp/careeros-adhoc-verify.XXXXXX)"
   cleanup() {
     if [[ "$mounted" -eq 1 ]]; then
       hdiutil detach "$mount_dir" >/dev/null
@@ -131,7 +129,7 @@ install_unsigned_app() {
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   local backup_root="$ROOT_DIR/backups/installed-apps"
   local staging_dir
-  staging_dir="$(mktemp -d /private/tmp/postdocos-install.XXXXXX)"
+  staging_dir="$(mktemp -d /private/tmp/careeros-install.XXXXXX)"
   local staged_bundle="$staging_dir/$APP_NAME.app"
   INSTALL_BACKUP_BUNDLE="$backup_root/${APP_NAME}-${stamp}.app"
   FAILED_INSTALL_BUNDLE="$backup_root/${APP_NAME}-${stamp}-failed.app"
@@ -141,10 +139,6 @@ install_unsigned_app() {
   if [[ -d "$INSTALLED_APP_BUNDLE" ]]; then
     mv "$INSTALLED_APP_BUNDLE" "$INSTALL_BACKUP_BUNDLE"
     INSTALL_RESTORE_DESTINATION="$INSTALLED_APP_BUNDLE"
-  elif [[ -d "$LEGACY_INSTALLED_APP_BUNDLE" ]]; then
-    INSTALL_BACKUP_BUNDLE="$backup_root/${LEGACY_APP_NAME}-${stamp}.app"
-    mv "$LEGACY_INSTALLED_APP_BUNDLE" "$INSTALL_BACKUP_BUNDLE"
-    INSTALL_RESTORE_DESTINATION="$LEGACY_INSTALLED_APP_BUNDLE"
   else
     INSTALL_BACKUP_BUNDLE=""
     INSTALL_RESTORE_DESTINATION=""
@@ -224,7 +218,7 @@ case "$MODE" in
   --telemetry|telemetry)
     stop_app
     npm run desktop:dev &
-    /usr/bin/log stream --info --style compact --predicate 'subsystem == "com.postdocos.desktop" OR process == "CareerOS"'
+    /usr/bin/log stream --info --style compact --predicate 'subsystem == "com.careeros.desktop" OR process == "CareerOS"'
     ;;
   --debug|debug)
     stop_app

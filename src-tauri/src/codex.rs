@@ -457,7 +457,7 @@ impl CodexClient {
 }
 
 fn locate_codex_binary(paths: &AppPaths) -> Result<PathBuf> {
-    if let Some(value) = std::env::var_os("POSTDOCOS_CODEX_BIN") {
+    if let Some(value) = std::env::var_os("CAREEROS_CODEX_BIN") {
         let path = PathBuf::from(value);
         if path.is_file() {
             return Ok(path);
@@ -473,7 +473,7 @@ fn locate_codex_binary(paths: &AppPaths) -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    bail!("没有找到内置 Codex。开发模式可设置 POSTDOCOS_CODEX_BIN")
+    bail!("没有找到内置 Codex。开发模式可设置 CAREEROS_CODEX_BIN")
 }
 
 fn find_string(value: &Value, path: &[&str]) -> Option<String> {
@@ -675,7 +675,7 @@ mod tests {
         let temp = TempDir::new()?;
         let root = temp.path().to_path_buf();
         let paths = AppPaths {
-            database: root.join("database/postdocos.sqlite3"),
+            database: root.join("database/careeros.sqlite3"),
             generated: root.join("generated"),
             profile: root.join("profile"),
             workspaces: root.join("workspaces"),

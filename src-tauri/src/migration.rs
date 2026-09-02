@@ -1,5 +1,5 @@
 use crate::models::MigrationReport;
-use crate::paths::{locate_legacy_root, AppPaths};
+use crate::paths::AppPaths;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension, Transaction};
@@ -18,8 +18,7 @@ const SCHEDULER_LEASES_MIGRATION: &str = include_str!("../migrations/0011_schedu
 const LATEST_NATIVE_SCHEMA_VERSION: i64 = 11;
 
 pub fn initialize(paths: &AppPaths) -> Result<MigrationReport> {
-    let legacy_root = locate_legacy_root();
-    initialize_with_legacy_root(paths, legacy_root.as_deref())
+    initialize_with_legacy_root(paths, None)
 }
 
 fn initialize_with_legacy_root(
@@ -866,7 +865,7 @@ mod tests {
         let temp = TempDir::new()?;
         let root = temp.path().to_path_buf();
         let paths = AppPaths {
-            database: root.join("database/postdocos.sqlite3"),
+            database: root.join("database/careeros.sqlite3"),
             generated: root.join("generated"),
             profile: root.join("profile"),
             workspaces: root.join("workspaces"),
@@ -913,61 +912,4 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn schema_v7_copy_migrates_without_cross_pi_status_leakage() -> Result<()> {
-        let Some(legacy) = locate_legacy_root() else {
-            return Ok(());
-        };
-        let live_source = legacy.join("data/postdoc.db");
-        let temp = TempDir::new()?;
-        let root = temp.path().to_path_buf();
-        let source = root.join("frozen-schema-v7.sqlite3");
-        snapshot_sqlite(&live_source, &source)?;
-        let source_hash = sha256_file(&source)?;
-        let paths = AppPaths {
-            database: root.join("database/postdocos.sqlite3"),
-            generated: root.join("generated"),
-            profile: root.join("profile"),
-            workspaces: root.join("workspaces"),
-            codex_home: root.join("codex"),
-            backups: root.join("backups"),
-            cache: root.join("cache"),
-            logs: root.join("logs"),
-            runtime: root.join("runtime"),
-            data_root: root,
-        };
-        paths.ensure()?;
-        snapshot_sqlite(&source, &paths.database)?;
-        copy_tree_if_missing(&legacy.join("generated"), &paths.generated)?;
-        copy_tree_if_missing(&legacy.join("profile"), &paths.profile)?;
-        let report = initialize(&paths)?;
-        assert_eq!(report.applications, 24);
-        assert_eq!(report.opportunities, 27);
-        assert_eq!(report.legacy_jobs, 80);
-        assert_eq!(report.revisions, 102);
-        assert_eq!(report.gmail_drafts, 18);
-        assert_eq!(report.active_targets, 24);
-
-        let conn = open_migration_connection(&paths.database)?;
-        let ali: String = conn.query_row(
-            "SELECT status FROM contact_targets_v2 WHERE normalized_email='muqaibel@kfupm.edu.sa'",
-            [],
-            |row| row.get(0),
-        )?;
-        let naveed: String = conn.query_row(
-            "SELECT status FROM contact_targets_v2 WHERE normalized_email='naveediqbal@kfupm.edu.sa'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(ali, "contacted");
-        assert_eq!(naveed, "ready_to_contact");
-        let typst_sources: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM contact_target_artifacts WHERE artifact_type='cv_typst'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(typst_sources, 24);
-        assert_eq!(source_hash, sha256_file(&source)?);
-        Ok(())
-    }
 }

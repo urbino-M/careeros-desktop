@@ -1303,7 +1303,7 @@ mod tests{
         let temp=TempDir::new()?;
         let root=temp.path().to_path_buf();
         let paths=AppPaths{
-            database:root.join("database/postdocos.sqlite3"),generated:root.join("generated"),
+            database:root.join("database/careeros.sqlite3"),generated:root.join("generated"),
             profile:root.join("profile"),workspaces:root.join("workspaces"),codex_home:root.join("codex"),
             backups:root.join("backups"),cache:root.join("cache"),logs:root.join("logs"),
             runtime:PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime"),data_root:root,

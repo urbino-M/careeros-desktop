@@ -407,15 +407,10 @@ fn parse_curve_tex(source: &str) -> Result<CvData> {
 fn expand_makerubrics(source: &str, source_path: &Path) -> Result<String> {
     let maker = Regex::new(r"\\makerubric\{([^}]+)\}")?;
     let mut expanded = source.to_owned();
-    let legacy_parent = crate::paths::locate_legacy_root().and_then(|path| path.parent().map(Path::to_path_buf));
     for capture in maker.captures_iter(source) {
         let Some(name) = capture.get(1).map(|value| value.as_str()) else { continue };
         let filename = format!("{name}.tex");
-        let candidates = [
-            source_path.parent().map(|path| path.join(&filename)),
-            legacy_parent.as_ref().map(|path| path.join(&filename)),
-        ];
-        if let Some(path) = candidates.into_iter().flatten().find(|path| path.is_file()) {
+        if let Some(path) = source_path.parent().map(|path| path.join(&filename)).filter(|path| path.is_file()) {
             expanded.push('\n');
             expanded.push_str(&fs::read_to_string(path)?);
         }
@@ -446,7 +441,7 @@ fn latex_to_plain(value: &str) -> String {
 }
 
 fn locate_typst_binary(paths: &AppPaths) -> Result<PathBuf> {
-    if let Some(value) = std::env::var_os("POSTDOCOS_TYPST_BIN") {
+    if let Some(value) = std::env::var_os("CAREEROS_TYPST_BIN") {
         let path = PathBuf::from(value);
         if path.is_file() { return Ok(path) }
     }
@@ -489,41 +484,12 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn bundled_typst_compiles_a_real_imported_cv() -> Result<()> {
-        let Some(root) = crate::paths::locate_legacy_root() else { return Ok(()) };
-        let source = root.join("generated/applications/app-cityu-junwei-young-scholars-2027/cv.tex");
-        if !source.is_file() { return Ok(()) }
-        let data = parse_curve_tex(&fs::read_to_string(source)?)?;
-        let temp = tempfile::tempdir()?;
-        fs::write(temp.path().join("cv.typ"), CV_TEMPLATE)?;
-        fs::write(temp.path().join("cv-data.json"), serde_json::to_vec_pretty(&data)?)?;
-        let binary = runtime_binary(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime"),
-            "typst",
-        );
-        let output = std::process::Command::new(binary)
-            .arg("compile")
-            .arg("--root")
-            .arg(temp.path())
-            .arg(temp.path().join("cv.typ"))
-            .arg(temp.path().join("cv.pdf"))
-            .output()?;
-        if !output.status.success() {
-            bail!("{}", String::from_utf8_lossy(&output.stderr))
-        }
-        let pdf = Document::load(temp.path().join("cv.pdf"))?;
-        assert!((1..=4).contains(&pdf.get_pages().len()));
-        assert!(data.sections.len() >= 5);
-        Ok(())
-    }
-
     #[tokio::test]
     async fn preflight_rejects_a_cv_longer_than_two_pages() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let root = temp.path().to_path_buf();
         let paths = AppPaths {
-            database: root.join("database/postdocos.sqlite3"),
+            database: root.join("database/careeros.sqlite3"),
             generated: root.join("generated"),
             profile: root.join("profile"),
             workspaces: root.join("workspaces"),

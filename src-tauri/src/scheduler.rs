@@ -723,7 +723,7 @@ impl Scheduler {
 
     fn emit_changed(&self) {
         if let Some(app) = &self.app {
-            let _ = app.emit("postdocos://jobs-changed", ());
+            let _ = app.emit("careeros://jobs-changed", ());
         }
     }
 }
@@ -850,7 +850,7 @@ fn search_finalization_prompt(attempt: usize, total: usize) -> String {
         "Your previous turn ended before producing the required structured search result. \
 This is finalization turn {attempt} of {total}. Do not call web search, open URLs, or gather any new evidence. \
 Use only the evidence already present in this thread and workspace. Finish the task now: write \
-output/search-results.json so it conforms exactly to resultContract in POSTDOCOS_TASK.json, include only \
+output/search-results.json so it conforms exactly to resultContract in CAREEROS_TASK.json, include only \
 evidence-supported candidates, create all required reviewable package fields, and validate the JSON file before ending. \
 The turn is not complete until output/search-results.json exists and is valid."
     )
@@ -1250,7 +1250,7 @@ mod tests {
     fn test_paths(temp: &TempDir) -> AppPaths {
         let root = temp.path().to_path_buf();
         AppPaths {
-            database: root.join("database/postdocos.sqlite3"),
+            database: root.join("database/careeros.sqlite3"),
             generated: root.join("generated"), profile: root.join("profile"),
             workspaces: root.join("workspaces"), codex_home: root.join("codex"),
             backups: root.join("backups"), cache: root.join("cache"), logs: root.join("logs"),

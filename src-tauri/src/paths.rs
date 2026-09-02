@@ -21,25 +21,25 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn resolve(resource_dir: Option<&Path>) -> Result<Self> {
-        let data_root = if let Some(path) = std::env::var_os("POSTDOCOS_DATA_DIR") {
+        let data_root = if let Some(path) = std::env::var_os("CAREEROS_DATA_DIR") {
             PathBuf::from(path)
         } else {
             ::dirs::data_dir()
                 .context("系统应用数据目录不可用")?
-                .join("PostdocOS")
+                .join("CareerOS")
         };
         let cache = ::dirs::cache_dir()
             .context("系统缓存目录不可用")?
-            .join("PostdocOS");
+            .join("CareerOS");
         #[cfg(target_os = "macos")]
         let logs = ::dirs::home_dir()
             .context("用户目录不可用")?
-            .join("Library/Logs/PostdocOS");
+            .join("Library/Logs/CareerOS");
         #[cfg(not(target_os = "macos"))]
         let logs = data_root.join("logs");
 
         Ok(Self {
-            database: data_root.join("database/postdocos.sqlite3"),
+            database: data_root.join("database/careeros.sqlite3"),
             generated: data_root.join("generated"),
             profile: data_root.join("profile"),
             workspaces: data_root.join("workspaces"),
@@ -122,7 +122,7 @@ impl AppPaths {
 }
 
 fn locate_runtime_dir(resource_dir: Option<&Path>) -> PathBuf {
-    if let Some(path) = std::env::var_os("POSTDOCOS_RUNTIME_DIR") {
+    if let Some(path) = std::env::var_os("CAREEROS_RUNTIME_DIR") {
         return PathBuf::from(path);
     }
     if let Some(resources) = resource_dir {
@@ -160,36 +160,4 @@ fn locate_runtime_dir(resource_dir: Option<&Path>) -> PathBuf {
 
 pub fn runtime_binary(root: &Path, name: &str) -> PathBuf {
     root.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
-}
-
-pub fn locate_legacy_root() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("POSTDOCOS_LEGACY_ROOT") {
-        let path = PathBuf::from(path);
-        if is_legacy_root(&path) {
-            return Some(path);
-        }
-    }
-
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_candidate = manifest
-        .parent()
-        .and_then(Path::parent)
-        .map(|path| path.join("postdoc-os"));
-    workspace_candidate.filter(|path| is_legacy_root(path))
-}
-
-fn is_legacy_root(path: &Path) -> bool {
-    path.join("data/postdoc.db").is_file() && path.join("generated").is_dir()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn development_tree_finds_legacy_root() {
-        if let Some(root) = locate_legacy_root() {
-            assert!(root.join("data/postdoc.db").is_file());
-        }
-    }
 }

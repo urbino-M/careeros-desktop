@@ -27,7 +27,7 @@ Settings calls the typed Tauri boundary, `providers.rs` validates the remote Res
 ## Persistent Data
 
 - SQLite: `model_providers`, `provider_accounts`, `provider_models`, `task_model_defaults`, and provider/account/model columns on `native_jobs`.
-- Generated files: `$POSTDOCOS_DATA_DIR/codex/providers/<id>-config.toml` and `<id>-models.json`; both are non-secret and may be regenerated.
+- Generated files: `$CAREEROS_DATA_DIR/codex/providers/<id>-config.toml` and `<id>-models.json`; both are non-secret and may be regenerated.
 - Credentials file: `<data-root>/credentials/secrets.json`; the directory is `0700` and file is `0600` on Unix, while Windows receives an explicit current-user-only ACL. Writes use same-directory temporary files and atomic replacement. Reference: `model-provider:<id>:api-key`.
 - Codex OAuth: `<data-root>/codex/auth.json`, selected through `cli_auth_credentials_store = "file"`.
 - Provider IDs are `deepseek` for the official DeepSeek host and deterministic `relay-<url-hash>` IDs for other URLs.

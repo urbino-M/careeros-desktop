@@ -289,7 +289,7 @@ fn provider_env_key(provider_id: &str) -> String {
             }
         })
         .collect::<String>();
-    format!("POSTDOCOS_{normalized}_API_KEY")
+    format!("CAREEROS_{normalized}_API_KEY")
 }
 
 fn model_catalog(config: &ProviderRuntimeConfig) -> Value {
@@ -494,7 +494,7 @@ mod tests {
         let prepared = prepare_codex_provider(temp.path(), &config)?;
         let profile = fs::read_to_string(temp.path().join("providers/deepseek-config.toml"))?;
         assert!(profile.contains("env_key"));
-        assert!(profile.contains("POSTDOCOS_DEEPSEEK_API_KEY"));
+        assert!(profile.contains("CAREEROS_DEEPSEEK_API_KEY"));
         assert!(profile.contains("supports_websockets = false"));
         assert!(!profile.contains("sk-test-secret"));
         assert!(prepared.config_overrides.iter().any(|value| value == "model_provider=\"deepseek\""));

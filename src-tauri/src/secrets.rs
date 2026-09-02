@@ -11,9 +11,6 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 const STORE_VERSION: u32 = 1;
 const STORE_DIRECTORY: &str = "credentials";
 const STORE_FILENAME: &str = "secrets.json";
-const LEGACY_STORE_FILENAME: &str = "credentials.json";
-#[cfg(windows)]
-const LEGACY_KEYRING_SERVICE: &str = "com.postdocos.desktop";
 static STORE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 #[cfg(windows)]
 static WINDOWS_IDENTITY: OnceLock<String> = OnceLock::new();
@@ -31,12 +28,12 @@ fn store_lock() -> Result<MutexGuard<'static, ()>> {
 }
 
 fn data_root() -> Result<PathBuf> {
-    Ok(if let Some(path) = std::env::var_os("POSTDOCOS_DATA_DIR") {
+    Ok(if let Some(path) = std::env::var_os("CAREEROS_DATA_DIR") {
         PathBuf::from(path)
     } else {
         ::dirs::data_dir()
             .context("系统应用数据目录不可用")?
-            .join("PostdocOS")
+            .join("CareerOS")
     })
 }
 
@@ -44,24 +41,10 @@ fn store_path() -> Result<PathBuf> {
     ensure_storage(&data_root()?)
 }
 
-fn store_path_for_read() -> Result<PathBuf> {
-    let data_root = data_root()?;
-    let path = data_root.join(STORE_DIRECTORY).join(STORE_FILENAME);
-    if !path.exists() && data_root.join(LEGACY_STORE_FILENAME).exists() {
-        return ensure_storage(&data_root);
-    }
-    Ok(path)
-}
-
 pub fn ensure_storage(data_root: &Path) -> Result<PathBuf> {
     let directory = data_root.join(STORE_DIRECTORY);
     ensure_private_directory(&directory)?;
     let path = directory.join(STORE_FILENAME);
-    let legacy = data_root.join(LEGACY_STORE_FILENAME);
-    if !path.exists() && legacy.exists() {
-        reject_symlink(&legacy)?;
-        fs::rename(&legacy, &path).context("无法把旧凭据文件迁入私有目录")?;
-    }
     if path.exists() {
         reject_symlink(&path)?;
         ensure_private_file(&path)?;
@@ -81,20 +64,10 @@ pub fn set_secret(reference: &str, secret: &str) -> Result<()> {
 
 pub fn get_secret(reference: &str) -> Result<Option<String>> {
     let _guard = store_lock()?;
-    let path = store_path_for_read()?;
+    let path = store_path()?;
     let store = read_store(&path)?;
     if let Some(secret) = store.secrets.get(reference) {
         return Ok(Some(secret.clone()));
-    }
-
-    #[cfg(windows)]
-    if let Some(secret) = read_legacy_windows_secret(reference)? {
-        let path = store_path()?;
-        let mut store = store;
-        store.secrets.insert(reference.to_owned(), secret.clone());
-        write_store(&path, &store)?;
-        let _ = delete_legacy_windows_secret(reference);
-        return Ok(Some(secret));
     }
 
     Ok(None)
@@ -107,30 +80,7 @@ pub fn delete_secret(reference: &str) -> Result<()> {
     if store.secrets.remove(reference).is_some() {
         write_store(&path, &store)?;
     }
-    #[cfg(windows)]
-    delete_legacy_windows_secret(reference)?;
     Ok(())
-}
-
-#[cfg(windows)]
-fn read_legacy_windows_secret(reference: &str) -> Result<Option<String>> {
-    let entry = keyring::Entry::new(LEGACY_KEYRING_SERVICE, reference)
-        .context("无法访问旧版 Windows 凭据")?;
-    match entry.get_password() {
-        Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(error).context("无法读取旧版 Windows 凭据"),
-    }
-}
-
-#[cfg(windows)]
-fn delete_legacy_windows_secret(reference: &str) -> Result<()> {
-    let entry = keyring::Entry::new(LEGACY_KEYRING_SERVICE, reference)
-        .context("无法访问旧版 Windows 凭据")?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(error).context("无法删除已迁移的旧版 Windows 凭据"),
-    }
 }
 
 fn read_store(path: &Path) -> Result<SecretStore> {
@@ -352,24 +302,4 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn migrates_legacy_store_without_leaving_a_duplicate() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let legacy = temp.path().join(LEGACY_STORE_FILENAME);
-        fs::write(
-            &legacy,
-            br#"{"version":1,"secrets":{"provider:test":"value"}}"#,
-        )?;
-
-        let path = ensure_storage(temp.path())?;
-        assert!(!legacy.exists());
-        assert_eq!(
-            read_store(&path)?
-                .secrets
-                .get("provider:test")
-                .map(String::as_str),
-            Some("value")
-        );
-        Ok(())
-    }
 }
