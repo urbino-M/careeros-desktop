@@ -193,7 +193,14 @@ impl CodexManager {
             .await?;
         let thread_id = if let Some(thread_id) = request.thread_id {
             let _ = client
-                .request("thread/resume", json!({"threadId": thread_id}))
+                .request(
+                    "thread/resume",
+                    json!({
+                        "threadId": thread_id,
+                        "model": request.model,
+                        "modelProvider": request.provider_id
+                    }),
+                )
                 .await?;
             thread_id
         } else {
@@ -203,6 +210,7 @@ impl CodexManager {
                     json!({
                         "cwd": request.workspace,
                         "model": request.model,
+                        "modelProvider": request.provider_id,
                         "approvalPolicy": "never",
                         "sandbox": "workspace-write",
                         "experimentalRawEvents": false
@@ -279,7 +287,10 @@ impl CodexManager {
     ) -> Result<()> {
         let client = self.client_for_provider(provider_id, account_id).await?;
         client
-            .request("thread/resume", json!({"threadId":thread_id}))
+            .request(
+                "thread/resume",
+                json!({"threadId":thread_id,"modelProvider":provider_id}),
+            )
             .await
             .context("Codex 无法恢复待压缩线程")?;
         let mut events = client.subscribe();
@@ -346,6 +357,8 @@ impl CodexClient {
     ) -> Result<Self> {
         let binary = locate_codex_binary(paths)?;
         let mut command = Command::new(&binary);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
         for value in config_overrides {
             command.arg("-c").arg(value);
         }

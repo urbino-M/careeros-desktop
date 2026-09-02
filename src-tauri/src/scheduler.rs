@@ -182,10 +182,10 @@ impl Scheduler {
     pub fn retry(&self, job_id: &str) -> Result<()> {
         let mut conn = db::connect(&self.db_path)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let (job_type, payload_raw, active_key, last_error): (String, String, Option<String>, Option<String>) = tx.query_row(
-            "SELECT job_type,payload_json,active_key,error FROM native_jobs WHERE id=?1",
+        let (job_type, payload_raw, active_key, last_error, provider_id): (String, String, Option<String>, Option<String>, String) = tx.query_row(
+            "SELECT job_type,payload_json,active_key,error,provider_id FROM native_jobs WHERE id=?1",
             [job_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         ).context("任务不存在")?;
         if let Some(key) = active_key.as_deref() {
             let existing: Option<String> = tx.query_row(
@@ -201,9 +201,19 @@ impl Scheduler {
         }
         let mut payload: Value = serde_json::from_str(&payload_raw)?;
         let reuse_output = has_reusable_output(&self.paths, job_id, &job_type);
-        let repair_error = last_error.filter(|error| {
+        let openai_region_error = last_error
+            .as_deref()
+            .is_some_and(is_openai_region_unsupported_error);
+        let provider_route_mismatch = !reuse_output && provider_id != "openai" && openai_region_error;
+        let regional_fallback = if !reuse_output && provider_id == "openai" && openai_region_error {
+            resolve_regional_fallback_snapshot(&tx, &job_type)?
+        } else {
+            None
+        };
+        let reset_thread = provider_route_mismatch || regional_fallback.is_some();
+        let repair_error = last_error.as_ref().filter(|error| {
             reuse_output && is_search_job_type(&job_type) && is_cv_preflight_error(error)
-        });
+        }).cloned();
         if let Some(object) = payload.as_object_mut() {
             object.remove("_reuseExistingOutput");
             object.remove("_repairExistingOutputError");
@@ -213,32 +223,83 @@ impl Scheduler {
                 object.insert("_reuseExistingOutput".into(), Value::Bool(true));
             }
         }
-        let message = if repair_error.is_some() {
+        let message = if let Some((fallback_provider, _, _, _)) = regional_fallback.as_ref() {
+            format!("OpenAI 当前地区不可用；已切换到 {fallback_provider} 并等待重新执行")
+        } else if provider_route_mismatch {
+            format!("检测到旧线程错误连接 OpenAI；已清除并将用 {provider_id} 新线程")
+        } else if repair_error.is_some() {
             "等待定向修复已有检索结果"
+                .into()
         } else if reuse_output {
             "等待重新导入已有结果"
+                .into()
         } else {
             "等待重试"
+                .into()
         };
+        let (next_provider_id, next_account_id, next_model_id, next_reasoning) = regional_fallback
+            .as_ref()
+            .map(|snapshot| (
+                snapshot.0.as_str(),
+                snapshot.1.as_deref(),
+                Some(snapshot.2.as_str()),
+                Some(snapshot.3.as_str()),
+            ))
+            .unwrap_or((provider_id.as_str(), None, None, None));
         let changed = tx.execute(
             "UPDATE native_jobs
              SET status='queued', progress=0, message=?2, error=NULL, payload_json=?3,
+                 provider_id=?4,
+                 account_id=CASE WHEN ?5 THEN ?6 ELSE account_id END,
+                 model_id=CASE WHEN ?5 THEN ?7 ELSE model_id END,
+                 reasoning=CASE WHEN ?5 THEN ?8 ELSE reasoning END,
+                 thread_id=CASE WHEN ?9 THEN NULL ELSE thread_id END,
                  cancel_requested=0, attempt=attempt+1, started_at=NULL, finished_at=NULL,
                  timeout_at=NULL, heartbeat_at=NULL, lease_owner=NULL, lease_expires_at=NULL,
                  updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
              WHERE id=?1 AND status IN ('failed','cancelled','needs_review','completed')",
-            params![job_id,message,serde_json::to_string(&payload)?],
+            params![
+                job_id,
+                message,
+                serde_json::to_string(&payload)?,
+                next_provider_id,
+                regional_fallback.is_some(),
+                next_account_id,
+                next_model_id,
+                next_reasoning,
+                reset_thread,
+            ],
         )?;
         if changed == 0 {
             bail!("任务不存在，或当前状态不可重试")
         }
+        if reset_thread {
+            tx.execute("DELETE FROM native_job_runtime WHERE job_id=?1", [job_id])?;
+        }
+        let event_message = if let Some((fallback_provider, _, _, _)) = regional_fallback.as_ref() {
+            format!("任务已重新加入队列；OpenAI 地区限制后改用 {fallback_provider} 新线程")
+        } else if provider_route_mismatch {
+            format!("任务已重新加入队列；已丢弃错连 OpenAI 的旧线程并使用 {provider_id} 新线程")
+        } else if reuse_output {
+            "任务已重新加入队列；将直接校验并导入已有结果".into()
+        } else {
+            "任务已重新加入队列；将恢复原线程".into()
+        };
         insert_event(
             &tx,
             job_id,
             "retried",
             Some(0),
-            if reuse_output { "任务已重新加入队列；将直接校验并导入已有结果" } else { "任务已重新加入队列；将恢复原线程" },
-            json!({"reuseExistingOutput":reuse_output}),
+            &event_message,
+            json!({
+                "reuseExistingOutput":reuse_output,
+                "providerFallback":regional_fallback.as_ref().map(|snapshot| json!({
+                    "from":provider_id,
+                    "to":snapshot.0,
+                    "modelId":snapshot.2,
+                })),
+                "providerRouteMismatch":provider_route_mismatch,
+            }),
         )?;
         tx.commit()?;
         self.notify.notify_one();
@@ -667,6 +728,60 @@ impl Scheduler {
     }
 }
 
+fn is_openai_region_unsupported_error(error: &str) -> bool {
+    error.contains("Country, region, or territory not supported")
+        && error.contains("api.openai.com/v1/responses")
+}
+
+fn resolve_regional_fallback_snapshot(
+    conn: &rusqlite::Connection,
+    job_type: &str,
+) -> Result<Option<(String, Option<String>, String, String)>> {
+    let default_type = model_default_type(job_type);
+    let provider_id: Option<String> = conn
+        .query_row(
+            "SELECT p.id
+             FROM model_providers p
+             WHERE p.id<>'openai' AND p.enabled=1 AND p.adapter_kind!='reserved'
+               AND EXISTS(
+                   SELECT 1 FROM provider_accounts a
+                   WHERE a.provider_id=p.id AND a.enabled=1
+                     AND a.secret_keychain_ref IS NOT NULL
+               )
+               AND EXISTS(
+                   SELECT 1 FROM provider_models m
+                   WHERE m.provider_id=p.id AND m.enabled=1 AND m.supports_tools=1
+               )
+             ORDER BY
+               CASE WHEN p.id=(SELECT provider_id FROM task_model_defaults WHERE task_type=?1)
+                    THEN 0 WHEN p.id='deepseek' THEN 1 ELSE 2 END,
+               p.sort_order,p.id
+             LIMIT 1",
+            [default_type],
+            |row| row.get(0),
+        )
+        .optional()?;
+    provider_id
+        .map(|provider_id| {
+            resolve_model_snapshot(
+                conn,
+                &EnqueueRequest {
+                    job_type: job_type.to_owned(),
+                    target_type: None,
+                    target_id: None,
+                    prompt: None,
+                    payload: None,
+                    provider_id: Some(provider_id),
+                    account_id: None,
+                    model_id: None,
+                    reasoning: None,
+                    thread_id: None,
+                },
+            )
+        })
+        .transpose()
+}
+
 fn revision_base_sha256(payload: &Value) -> Result<String> {
     payload
         .get("_baseSha256")
@@ -804,18 +919,22 @@ fn timeout_seconds_for(job_type: &str) -> i64 {
     }
 }
 
-fn resolve_model_snapshot(
-    conn: &rusqlite::Connection,
-    request: &EnqueueRequest,
-) -> Result<(String, Option<String>, String, String)> {
-    let default_type = match request.job_type.as_str() {
+fn model_default_type(job_type: &str) -> &str {
+    match job_type {
         "internship_search" => "full_search",
         "full_run" | "full_search" => "full_search",
         "research_pi" => "research_pi",
         "revision_request" | "material_revision" => "material_revision",
         "reply_followup" => "reply_followup",
         _ => "maintenance",
-    };
+    }
+}
+
+fn resolve_model_snapshot(
+    conn: &rusqlite::Connection,
+    request: &EnqueueRequest,
+) -> Result<(String, Option<String>, String, String)> {
+    let default_type = model_default_type(&request.job_type);
     let defaults: (String, Option<String>, String, String) = conn.query_row(
         "SELECT provider_id, account_id, model_id, reasoning
          FROM task_model_defaults WHERE task_type=?1",
@@ -1152,6 +1271,29 @@ mod tests {
         Ok(Arc::new(Scheduler::new(paths, codex, None)))
     }
 
+    fn install_deepseek_provider(path: &Path) -> Result<()> {
+        let conn = db::connect(path)?;
+        conn.execute(
+            "INSERT INTO model_providers(
+                id,display_name,adapter_kind,connection_mode,enabled,built_in,sort_order
+             ) VALUES('deepseek','DeepSeek','deepseek_responses','native_responses',1,0,40)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO provider_accounts(
+                id,provider_id,display_name,auth_kind,secret_keychain_ref,enabled
+             ) VALUES('deepseek-active','deepseek','DeepSeek API Key','api_key','deepseek-secret',1)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO provider_models(
+                id,provider_id,model_slug,display_name,supports_reasoning,supports_tools,enabled
+             ) VALUES('deepseek:deepseek-chat','deepseek','deepseek-chat','DeepSeek Chat',1,1,1)",
+            [],
+        )?;
+        Ok(())
+    }
+
     #[test]
     fn explicit_provider_uses_that_providers_account_and_model() -> Result<()> {
         let conn = rusqlite::Connection::open_in_memory()?;
@@ -1469,6 +1611,119 @@ mod tests {
         assert!(matches!(status.as_str(), "queued" | "running"));
         assert_eq!(attempt, 1);
         assert_eq!(thread_id.as_deref(), Some("thread-preserved-on-retry"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_after_openai_region_error_uses_deepseek_and_clears_checkpoint() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let paths = scheduler.paths.clone();
+        install_deepseek_provider(&paths.database)?;
+
+        let job_id = scheduler.enqueue(EnqueueRequest {
+            job_type: "research_pi".into(),
+            target_type: Some("person".into()),
+            target_id: None,
+            prompt: Some("research".into()),
+            payload: Some(json!({"query":"Example Researcher"})),
+            provider_id: Some("openai".into()),
+            account_id: None,
+            model_id: None,
+            reasoning: None,
+            thread_id: Some("old-openai-thread".into()),
+        })?;
+        save_runtime_checkpoint(
+            &paths.database,
+            &job_id,
+            "old-openai-thread",
+            Some("old-openai-turn"),
+        )?;
+        let conn = db::connect(&paths.database)?;
+        conn.execute(
+            "UPDATE native_jobs SET status='failed',error=?2 WHERE id=?1",
+            params![
+                &job_id,
+                "Codex 线程压缩失败：403 Forbidden: Country, region, or territory not supported, url: https://api.openai.com/v1/responses",
+            ],
+        )?;
+        drop(conn);
+
+        scheduler.retry(&job_id)?;
+        let conn = db::connect(&paths.database)?;
+        let snapshot: (String, Option<String>, Option<String>, Option<String>, Option<String>, String) = conn.query_row(
+            "SELECT provider_id,account_id,model_id,reasoning,thread_id,message
+             FROM native_jobs WHERE id=?1",
+            [&job_id],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
+        )?;
+        assert_eq!(snapshot.0, "deepseek");
+        assert_eq!(snapshot.1.as_deref(), Some("deepseek-active"));
+        assert_eq!(snapshot.2.as_deref(), Some("deepseek:deepseek-chat"));
+        assert_eq!(snapshot.3.as_deref(), Some("high"));
+        assert_eq!(snapshot.4, None);
+        assert!(snapshot.5.contains("已切换到 deepseek"));
+        let runtime_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM native_job_runtime WHERE job_id=?1",
+            [&job_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(runtime_rows, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn retry_clears_a_deepseek_job_thread_that_was_routed_to_openai() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let paths = scheduler.paths.clone();
+        install_deepseek_provider(&paths.database)?;
+        let job_id = scheduler.enqueue(EnqueueRequest {
+            job_type: "research_pi".into(),
+            target_type: Some("person".into()),
+            target_id: None,
+            prompt: Some("research".into()),
+            payload: Some(json!({"query":"Example Researcher"})),
+            provider_id: Some("deepseek".into()),
+            account_id: None,
+            model_id: None,
+            reasoning: None,
+            thread_id: Some("misrouted-thread".into()),
+        })?;
+        save_runtime_checkpoint(
+            &paths.database,
+            &job_id,
+            "misrouted-thread",
+            Some("misrouted-turn"),
+        )?;
+        let conn = db::connect(&paths.database)?;
+        conn.execute(
+            "UPDATE native_jobs SET status='failed',error=?2 WHERE id=?1",
+            params![
+                &job_id,
+                "Codex 线程压缩失败：403 Forbidden: Country, region, or territory not supported, url: https://api.openai.com/v1/responses",
+            ],
+        )?;
+        drop(conn);
+
+        scheduler.retry(&job_id)?;
+        let conn = db::connect(&paths.database)?;
+        let snapshot: (String, Option<String>, Option<String>, Option<String>, String) = conn.query_row(
+            "SELECT provider_id,account_id,model_id,thread_id,message FROM native_jobs WHERE id=?1",
+            [&job_id],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+        )?;
+        assert_eq!(snapshot.0, "deepseek");
+        assert_eq!(snapshot.1.as_deref(), Some("deepseek-active"));
+        assert_eq!(snapshot.2.as_deref(), Some("deepseek:deepseek-chat"));
+        assert_eq!(snapshot.3, None);
+        assert!(snapshot.4.contains("将用 deepseek 新线程"));
+        let runtime_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM native_job_runtime WHERE job_id=?1",
+            [&job_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(runtime_rows, 0);
         Ok(())
     }
 
