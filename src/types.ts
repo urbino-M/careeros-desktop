@@ -285,7 +285,7 @@ export type AppRoute =
   | { page: "dashboard" }
   | { page: "automation" }
   | { page: "applications"; careerSystem: CareerSystem; status: ApplicationFilter }
-  | { page: "application"; targetId: string; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
+  | { page: "application"; targetId: string; careerSystem: CareerSystem; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
   | { page: "settings" };
 
 export type Locale = "zh" | "en";

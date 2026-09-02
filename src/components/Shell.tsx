@@ -18,7 +18,7 @@ interface ShellProps {
 
 function isActive(route: AppRoute, target: AppRoute, system?: CareerSystem) {
   if (target.page === "applications") {
-    return route.page === "applications" && route.careerSystem === system;
+    return (route.page === "applications" || route.page === "application") && route.careerSystem === system;
   }
   return route.page === target.page;
 }

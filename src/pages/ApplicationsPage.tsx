@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, Filter, Mail, Search, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api";
+import { InternshipPlanningPanel } from "../components/InternshipPlanningPanel";
 import { EmptyState, ErrorState, LoadingState, StatusBadge, SubmissionBadge, statusLabels } from "../components/Ui";
 import type { ApplicationFilter, AppRoute, CareerSystem, DashboardData, TargetCard } from "../types";
 
@@ -112,6 +113,8 @@ export function ApplicationsPage({
           : "PostdocOS 将每位 PI 作为独立联系目标；状态变化不会影响其他联系人。"}
       </div>
 
+      {internship && <InternshipPlanningPanel onNavigate={onNavigate} />}
+
       <div className="search-row">
         <label className="search-box">
           <Search size={18} />
@@ -157,7 +160,7 @@ export function ApplicationsPage({
                 {target.email && <div><dt>邮箱</dt><dd className="email-value">{target.email}</dd></div>}
                 <div><dt>截止</dt><dd>{target.deadline || "待确认"}</dd></div>
               </dl>
-              <button className="card-action" onClick={() => onNavigate({ page: "application", targetId: target.id })}>
+              <button className="card-action" onClick={() => onNavigate({ page: "application", targetId: target.id, careerSystem })}>
                 {internship ? "查看机会与申请清单" : "查看材料与联系记录"} <ArrowRight size={17} />
               </button>
             </article>;

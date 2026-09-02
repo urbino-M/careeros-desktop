@@ -123,6 +123,7 @@ function JobSection({ title, icon: Icon, open = false, children }: { title: stri
 function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () => void; onNavigate: (route: AppRoute) => void }) {
   const failed = job.status === "failed";
   const isNative = job.providerId !== "legacy";
+  const careerSystem = job.jobType === "internship_search" ? "internship" : "postdoc";
   const exactTarget = job.targetId?.startsWith("target") ? job.targetId : undefined;
   const resultTargets = [...new Set([...(exactTarget ? [exactTarget] : []), ...(job.resultTargetIds || [])])];
   const destination = resultDestination(job.jobType);
@@ -135,7 +136,7 @@ function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () 
       <div className="job-meta"><span>{formatLocalTime(job.createdAt)}</span><span>{job.id}</span>{job.modelId && <span>{job.providerId} · {job.accountId || "默认账号"} · {job.modelId} · {job.reasoning}</span>}{job.threadId && <span>会话 {job.threadId}</span>}</div>
       <div className="job-actions">
         {resultTargets.map((targetId, index) => (
-          <button className="button ghost" key={targetId} onClick={() => onNavigate({ page: "application", targetId, tab: destination.tab, returnPage: "automation", jobId: job.id })}>
+          <button className="button ghost" key={targetId} onClick={() => onNavigate({ page: "application", targetId, careerSystem, tab: destination.tab, returnPage: "automation", jobId: job.id })}>
             {resultTargets.length > 1 ? `${destination.label} ${index + 1}` : destination.label}
           </button>
         ))}

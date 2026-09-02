@@ -121,7 +121,7 @@ function TrackOverview({ system, data, onNavigate }: { system: CareerSystem; dat
 function PriorityItem({ target, onNavigate }: { target: TargetCard; onNavigate: (route: AppRoute) => void }) {
   const internship = target.careerTrack === "internship";
   return (
-    <button className="priority-item" onClick={() => onNavigate({ page: "application", targetId: target.id })}>
+    <button className="priority-item" onClick={() => onNavigate({ page: "application", targetId: target.id, careerSystem: target.careerTrack })}>
       <div className="score-orbit"><strong>{Math.round(target.fitScore ?? 0)}</strong><span>匹配</span></div>
       <div className="priority-copy">
         <div className="priority-title-row"><h3>{target.organization}</h3><span className="track-pill">{internship ? "Internship" : "Postdoc"}</span></div>

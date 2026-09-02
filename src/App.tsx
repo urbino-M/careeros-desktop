@@ -26,17 +26,26 @@ function isCareerSystem(value?: string): value is CareerSystem {
 
 function parseHash(): AppRoute {
   const hash = window.location.hash.replace(/^#\/?/, "");
-  const [page, value, section, origin, job] = hash.split("/");
+  const [page, value, section, origin, job, detailJob] = hash.split("/");
   if (page === "automation") return { page: "automation" };
   if (page === "settings") return { page: "settings" };
   if (page === "application" && value) {
     const allowedTabs: ApplicationTab[] = ["cv", "cover_letter", "checklist", "email_en", "email_zh", "fit", "pi", "revision", "reply", "other"];
+    const prefixed = isCareerSystem(origin);
+    const careerSystem: CareerSystem = prefixed
+      ? origin
+      : isCareerSystem(detailJob)
+        ? detailJob
+        : "postdoc";
+    const routeOrigin = prefixed ? job : origin;
+    const routeJob = prefixed ? detailJob : job;
     return {
       page: "application",
       targetId: decodeURIComponent(value),
+      careerSystem,
       tab: allowedTabs.includes(section as ApplicationTab) ? section as ApplicationTab : undefined,
-      returnPage: origin === "automation" ? "automation" : undefined,
-      jobId: job ? decodeURIComponent(job) : undefined,
+      returnPage: routeOrigin === "automation" ? "automation" : undefined,
+      jobId: routeJob ? decodeURIComponent(routeJob) : undefined,
     };
   }
   if (page === "applications") {
@@ -61,7 +70,13 @@ function routeHash(route: AppRoute) {
     case "automation": return "#/automation";
     case "settings": return "#/settings";
     case "applications": return `#/applications/${route.careerSystem}/${route.status}`;
-    case "application": return `#/application/${encodeURIComponent(route.targetId)}/${route.tab || "cv"}${route.returnPage ? `/${route.returnPage}` : route.jobId ? "/direct" : ""}${route.jobId ? `/${encodeURIComponent(route.jobId)}` : ""}`;
+    case "application": {
+      const parts = ["#/application", encodeURIComponent(route.targetId), route.tab || "cv", route.careerSystem];
+      if (route.returnPage) parts.push(route.returnPage);
+      else if (route.jobId) parts.push("direct");
+      if (route.jobId) parts.push(encodeURIComponent(route.jobId));
+      return parts.join("/");
+    }
   }
 }
 
