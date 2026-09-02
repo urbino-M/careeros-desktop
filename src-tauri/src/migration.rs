@@ -900,11 +900,11 @@ mod tests {
         assert_eq!(foreign_key_violations, 0);
         drop(conn);
 
-        let dashboard = crate::db::dashboard(&paths.database)?;
+        let dashboard = crate::db::dashboard(&paths.database, "postdoc")?;
         assert!(dashboard.metrics.iter().all(|metric| metric.value == 0));
         assert!(dashboard.regions.is_empty());
         assert!(dashboard.priority_targets.is_empty());
-        assert!(crate::db::list_targets(&paths.database, None, None, 0, 20)?.is_empty());
+        assert!(crate::db::list_targets(&paths.database, "postdoc", None, None, None, 0, 20)?.is_empty());
 
         let second = initialize_with_legacy_root(&paths, None)?;
         assert!(!second.imported);

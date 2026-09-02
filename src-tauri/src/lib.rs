@@ -48,22 +48,30 @@ fn get_app_paths(state: tauri::State<'_, AppState>) -> AppPaths {
     state.paths.clone()
 }
 
-#[tauri::command]
-fn get_dashboard(state: tauri::State<'_, AppState>) -> Result<DashboardData, String> {
-    db::dashboard(&state.paths.database).map_err(display_error)
+#[tauri::command(rename_all = "camelCase")]
+fn get_dashboard(
+    state: tauri::State<'_, AppState>,
+    career_track: Option<String>,
+) -> Result<DashboardData, String> {
+    db::dashboard(&state.paths.database, career_track.as_deref().unwrap_or("postdoc"))
+        .map_err(display_error)
 }
 
 #[tauri::command(rename_all = "camelCase")]
 fn get_contact_targets(
     state: tauri::State<'_, AppState>,
     status: Option<String>,
+    submission_status: Option<String>,
+    career_track: Option<String>,
     search: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<Vec<TargetCard>, String> {
     db::list_targets(
         &state.paths.database,
+        career_track.as_deref().unwrap_or("postdoc"),
         status.as_deref(),
+        submission_status.as_deref(),
         search.as_deref(),
         offset.unwrap_or(0),
         limit.unwrap_or(20),

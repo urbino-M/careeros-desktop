@@ -7,28 +7,62 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { api, errorMessage } from "./api";
-import type { ApplicationTab, AppRoute, Locale, OnboardingProfile, StatusFilter } from "./types";
+import type { ApplicationFilter, ApplicationTab, AppRoute, CareerSystem, Locale, OnboardingProfile } from "./types";
+
+const applicationStatuses: ApplicationFilter[] = [
+  "ready_to_contact",
+  "contacted",
+  "replied",
+  "follow_up",
+  "shelved",
+  "not_set",
+  "portal_pending",
+  "submitted",
+  "not_required",
+  "all",
+];
+
+function isCareerSystem(value?: string): value is CareerSystem {
+  return value === "postdoc" || value === "internship";
+}
 
 function parseHash(): AppRoute {
   const hash = window.location.hash.replace(/^#\/?/, "");
-  const [page, value, section, origin, job] = hash.split("/");
+  const [page, value, section, origin, job, detailJob] = hash.split("/");
   if (page === "automation") return { page: "automation" };
   if (page === "settings") return { page: "settings" };
   if (page === "application" && value) {
     const allowedTabs: ApplicationTab[] = ["cv", "cover_letter", "checklist", "email_en", "email_zh", "fit", "pi", "revision", "reply", "other"];
+    const prefixed = isCareerSystem(origin);
+    const careerSystem: CareerSystem = prefixed
+      ? origin
+      : isCareerSystem(detailJob)
+        ? detailJob
+        : "postdoc";
+    const routeOrigin = prefixed ? job : origin;
+    const routeJob = prefixed ? detailJob : job;
     return {
       page: "application",
       targetId: decodeURIComponent(value),
+      careerSystem,
       tab: allowedTabs.includes(section as ApplicationTab) ? section as ApplicationTab : undefined,
-      returnPage: origin === "automation" ? "automation" : undefined,
-      jobId: job ? decodeURIComponent(job) : undefined,
+      returnPage: routeOrigin === "automation" ? "automation" : undefined,
+      jobId: routeJob ? decodeURIComponent(routeJob) : undefined,
     };
   }
   if (page === "applications") {
-    const allowed = ["ready_to_contact", "contacted", "replied", "follow_up", "shelved", "all"];
+    const prefixed = isCareerSystem(value);
+    const careerSystem: CareerSystem = prefixed ? value : "postdoc";
+    const candidateStatus = prefixed ? section : value;
+    const view = careerSystem === "internship" && candidateStatus === "strategy" ? "strategy" : undefined;
+    const fallbackStatus: ApplicationFilter = careerSystem === "internship" ? "all" : "ready_to_contact";
     return {
       page: "applications",
-      status: allowed.includes(value) ? (value as StatusFilter) : "ready_to_contact",
+      careerSystem,
+      status: view === "strategy" ? "all" : applicationStatuses.includes(candidateStatus as ApplicationFilter)
+        ? candidateStatus as ApplicationFilter
+        : fallbackStatus,
+      view,
     };
   }
   return { page: "dashboard" };
@@ -39,8 +73,16 @@ function routeHash(route: AppRoute) {
     case "dashboard": return "#/dashboard";
     case "automation": return "#/automation";
     case "settings": return "#/settings";
-    case "applications": return `#/applications/${route.status}`;
-    case "application": return `#/application/${encodeURIComponent(route.targetId)}/${route.tab || "cv"}${route.returnPage ? `/${route.returnPage}` : route.jobId ? "/direct" : ""}${route.jobId ? `/${encodeURIComponent(route.jobId)}` : ""}`;
+    case "applications": return route.view === "strategy"
+      ? `#/applications/${route.careerSystem}/strategy`
+      : `#/applications/${route.careerSystem}/${route.status}`;
+    case "application": {
+      const parts = ["#/application", encodeURIComponent(route.targetId), route.tab || "cv", route.careerSystem];
+      if (route.returnPage) parts.push(route.returnPage);
+      else if (route.jobId) parts.push("direct");
+      if (route.jobId) parts.push(encodeURIComponent(route.jobId));
+      return parts.join("/");
+    }
   }
 }
 
@@ -90,7 +132,7 @@ export default function App() {
       {route.page === "dashboard" && <DashboardPage onNavigate={navigate} />}
       {route.page === "automation" && <AutomationPage onNavigate={navigate} />}
       {route.page === "applications" && (
-        <ApplicationsPage status={route.status} onNavigate={navigate} />
+        <ApplicationsPage careerSystem={route.careerSystem} status={route.status} view={route.view} onNavigate={navigate} />
       )}
       {route.page === "application" && (
         <ApplicationDetailPage targetId={route.targetId} initialTab={route.tab} returnPage={route.returnPage} focusJobId={route.jobId} locale={locale} onNavigate={navigate} />

@@ -3,6 +3,8 @@ import type {
   DashboardData,
   CvGenerationResult,
   CoverLetterGenerationResult,
+  CareerSystem,
+  ApplicationFilter,
   CvCustomizationSettings,
   EnqueueRequest,
   JobGroups,
@@ -15,7 +17,6 @@ import type {
   OnboardingProfile,
   ProviderInfo,
   ProviderConnectionRequest,
-  StatusFilter,
   TargetCard,
   TargetDetail,
   TaskModelDefault,
@@ -25,10 +26,12 @@ import type {
 
 export const api = {
   migration: () => invoke<MigrationReport>("get_migration_report"),
-  dashboard: () => invoke<DashboardData>("get_dashboard"),
-  targets: (status: StatusFilter, search = "", offset = 0, limit = 20) =>
+  dashboard: (careerTrack: CareerSystem) => invoke<DashboardData>("get_dashboard", { careerTrack }),
+  targets: (careerTrack: CareerSystem, status: ApplicationFilter, search = "", offset = 0, limit = 20) =>
     invoke<TargetCard[]>("get_contact_targets", {
-      status,
+      careerTrack,
+      status: careerTrack === "postdoc" ? status : null,
+      submissionStatus: careerTrack === "internship" ? status : null,
       search: search || null,
       offset,
       limit,

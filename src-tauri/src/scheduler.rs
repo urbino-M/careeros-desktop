@@ -818,6 +818,7 @@ fn has_reusable_output(paths:&AppPaths, job_id:&str, job_type:&str) -> bool {
                 && fs::read_dir(&output).ok().into_iter().flatten().flatten()
                     .any(|entry| entry.path().is_file() && entry.file_name().to_string_lossy() != "change-set.json")
         }
+        "internship_search" => output.join("internship-search-results.json").is_file(),
         "full_run" | "full_search" | "research_pi" => output.join("search-results.json").is_file(),
         "reply_followup" => output.join("reply-followup.json").is_file(),
         "checklist_refresh" => output.join("checklist.json").is_file(),
@@ -920,6 +921,7 @@ fn timeout_seconds_for(job_type: &str) -> i64 {
 
 fn model_default_type(job_type: &str) -> &str {
     match job_type {
+        "internship_search" => "full_search",
         "full_run" | "full_search" => "full_search",
         "research_pi" => "research_pi",
         "revision_request" | "material_revision" => "material_revision",
@@ -1261,7 +1263,7 @@ mod tests {
         let paths = test_paths(temp);
         paths.ensure()?;
         let conn = db::connect(&paths.database)?;
-        conn.execute_batch(include_str!("../../../postdoc-os/postdoc_os/schema.sql"))?;
+        conn.execute_batch(include_str!("../migrations/0001_legacy_foundation.sql"))?;
         conn.execute_batch(include_str!("../migrations/0008_native_desktop.sql"))?;
         conn.execute_batch(include_str!("../migrations/0011_scheduler_leases.sql"))?;
         drop(conn);

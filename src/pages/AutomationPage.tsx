@@ -2,6 +2,7 @@ import {
   Activity,
   ArrowLeft,
   Bot,
+  BriefcaseBusiness,
   Check,
   ChevronDown,
   CircleStop,
@@ -21,7 +22,7 @@ import { ModelControls, type ModelSelection } from "../components/ModelControls"
 import { ErrorState, LoadingState, StatusBadge, formatLocalTime, jobLabels } from "../components/Ui";
 import type { ApplicationTab, AppRoute, JobGroups, JobSummary } from "../types";
 
-type ComposerType = "full_search" | "research_pi" | "opportunity_health" | "follow_up_scan" | null;
+type ComposerType = "internship_search" | "full_search" | "research_pi" | "opportunity_health" | "follow_up_scan" | null;
 
 export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
   const [jobs, setJobs] = useState<JobGroups>();
@@ -44,6 +45,8 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
     return buildTaskHistory(jobs, historySize);
   }, [jobs, historySize]);
 
+  const visibleJobs = jobs;
+
   return (
     <div className="page automation-page">
       <button className="back-button" onClick={() => onNavigate({ page: "dashboard" })}>
@@ -52,12 +55,14 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
       <header className="page-header automation-header">
         <div className="eyebrow">NATIVE AGENT CONTROL</div>
         <h1>Agent 运行中心</h1>
-        <p>启动研究任务、查看实时进度，并处理需要你确认的结果。最多 5 个任务并行，第 6 个自动排队。</p>
+        <p>统一启动研究机会与 Internship 检索，查看实时进度，并处理需要你确认的结果。最多 5 个任务并行，第 6 个自动排队。</p>
         <div className="quick-actions">
-          <button className="button primary" onClick={() => setComposer("full_search")}><Plus size={17} /> 新建完整检索</button>
+          <button className="button primary" onClick={() => setComposer("full_search")}><Plus size={17} /> 寻找 Postdoc 机会</button>
+          <button className="button secondary" onClick={() => setComposer("internship_search")}><BriefcaseBusiness size={17} /> 寻找 Internship</button>
           <button className="button secondary" onClick={() => setComposer("research_pi")}><UserSearch size={17} /> 按姓名找机会</button>
           <button className="button secondary" onClick={() => setComposer("opportunity_health")}><SearchCheck size={17} /> 检查机会</button>
-          <button className="button secondary" onClick={() => onNavigate({ page: "applications", status: "all" })}><ListRestart size={17} /> 选择申请刷新清单</button>
+          <button className="button secondary" onClick={() => onNavigate({ page: "applications", careerSystem: "postdoc", status: "all" })}><ListRestart size={17} /> 查看 Postdoc 申请</button>
+          <button className="button secondary" onClick={() => onNavigate({ page: "applications", careerSystem: "internship", status: "all" })}><ListRestart size={17} /> 查看 Internship 申请</button>
           <button className="button secondary" onClick={() => setComposer("follow_up_scan")}><Clock3 size={17} /> 扫描跟进</button>
           <button className="button secondary" onClick={async () => {
             try {
@@ -74,26 +79,26 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
 
       {error && <ErrorState message={error} retry={load} />}
       {!error && !jobs && <LoadingState label="正在读取任务调度器" />}
-      {jobs && (
+      {visibleJobs && (
         <>
           <div className="worker-strip">
             <span><i className="pulse-dot" /> Worker 在线</span>
-            <span>并发 {jobs.running.length} / {jobs.capacity}</span>
-            <span>排队 {jobs.queued.length}</span>
-            <span>待审核 {jobs.needsReviewTotal}</span>
+            <span>并发 {visibleJobs.running.length} / {visibleJobs.capacity}</span>
+            <span>排队 {visibleJobs.queued.length}</span>
+            <span>待审核 {visibleJobs.needsReviewTotal}</span>
           </div>
 
-          <JobSection title={`当前运行 · ${jobs.running.length}`} icon={Activity} open>
-            {jobs.running.length ? jobs.running.map((job) => <JobCard job={job} key={job.id} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="当前没有任务在执行；调度器会自动领取队列中的下一项。" />}
+          <JobSection title={`当前运行 · ${visibleJobs.running.length}`} icon={Activity} open>
+            {visibleJobs.running.length ? visibleJobs.running.map((job) => <JobCard job={job} key={job.id} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="当前没有任务在执行；调度器会自动领取队列中的下一项。" />}
           </JobSection>
 
-          <JobSection title={`等待队列 · ${jobs.queued.length}`} icon={Clock3}>
-            {jobs.queued.length ? jobs.queued.map((job, index) => <QueueRow job={job} index={index} key={job.id} onReload={load} />) : <CompactEmpty text="队列为空。" />}
+          <JobSection title={`等待队列 · ${visibleJobs.queued.length}`} icon={Clock3}>
+            {visibleJobs.queued.length ? visibleJobs.queued.map((job, index) => <QueueRow job={job} index={index} key={job.id} onReload={load} />) : <CompactEmpty text="队列为空。" />}
           </JobSection>
 
-          <JobSection title={`任务记录 · ${jobs.recentTotal}（待处理 ${jobs.needsReviewTotal}）`} icon={History} open>
+          <JobSection title={`任务记录 · ${visibleJobs.recentTotal}（待处理 ${visibleJobs.needsReviewTotal}）`} icon={History} open>
             {taskHistory.length ? taskHistory.map((job) => <JobCard job={job} key={job.id} onReload={load} onNavigate={onNavigate} />) : <CompactEmpty text="尚无任务记录。" />}
-            {jobs.recentTotal > historySize && <button className="load-more" onClick={() => setHistorySize((value) => value + 5)}>再展开 5 条</button>}
+            {visibleJobs.recentTotal > historySize && <button className="load-more" onClick={() => setHistorySize((value) => value + 5)}>再展开 5 条</button>}
           </JobSection>
         </>
       )}
@@ -113,13 +118,14 @@ function JobSection({ title, icon: Icon, open = false, children }: { title: stri
 function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () => void; onNavigate: (route: AppRoute) => void }) {
   const failed = job.status === "failed";
   const isNative = job.providerId !== "legacy";
+  const careerSystem = job.jobType === "internship_search" ? "internship" : "postdoc";
   const exactTarget = job.targetId?.startsWith("target") ? job.targetId : undefined;
   const resultTargets = [...new Set([...(exactTarget ? [exactTarget] : []), ...(job.resultTargetIds || [])])];
   const destination = resultDestination(job.jobType);
   const finished = ["needs_review", "completed"].includes(job.status);
   return (
     <article className={`job-card ${failed ? "job-failed" : ""}`}>
-      <div className="job-card-title"><h3>{jobLabels[job.jobType] || job.jobType}</h3><StatusBadge status={job.status} /></div>
+      <div className="job-card-title"><div className="job-card-heading"><h3>{jobLabels[job.jobType] || job.jobType}</h3><span className="track-pill">{job.jobType === "internship_search" ? "Internship" : "Postdoc"}</span></div><StatusBadge status={job.status} /></div>
       {job.status === "running" ? (
         <div className="job-live-status" role="status" aria-live="polite">
           <span><i /> 实时活动</span>
@@ -129,7 +135,7 @@ function JobCard({ job, onReload, onNavigate }: { job: JobSummary; onReload: () 
       <div className="job-meta"><span>{formatLocalTime(job.createdAt)}</span><span>{job.id}</span>{job.modelId && <span>{job.providerId} · {job.accountId || "默认账号"} · {job.modelId} · {job.reasoning}</span>}{job.threadId && <span>会话 {job.threadId}</span>}</div>
       <div className="job-actions">
         {resultTargets.map((targetId, index) => (
-          <button className="button ghost" key={targetId} onClick={() => onNavigate({ page: "application", targetId, tab: destination.tab, returnPage: "automation", jobId: job.id })}>
+          <button className="button ghost" key={targetId} onClick={() => onNavigate({ page: "application", targetId, careerSystem, tab: destination.tab, returnPage: "automation", jobId: job.id })}>
             {resultTargets.length > 1 ? `${destination.label} ${index + 1}` : destination.label}
           </button>
         ))}
@@ -162,6 +168,7 @@ export function jobStatusMessage(job: JobSummary): string {
 
 function resultDestination(jobType: string): { tab: ApplicationTab; label: string } {
   switch (jobType) {
+    case "internship_search": return { tab: "fit", label: "查看 Internship 机会" };
     case "material_revision": return { tab: "revision", label: "查看修订差异" };
     case "checklist_refresh": return { tab: "checklist", label: "查看申请清单" };
     case "reply_followup":
@@ -185,6 +192,7 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const isPi = type === "research_pi";
+  const isInternship = type === "internship_search";
   const isHealth = type === "opportunity_health";
   const isScan = type === "follow_up_scan";
   const submit = async () => {
@@ -193,13 +201,15 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
     try {
       await api.enqueue({
         jobType: type,
-        targetType: isPi ? "person" : isHealth ? "verification" : isScan ? "contact_targets" : "search",
+        targetType: isPi ? "person" : isHealth ? "verification" : isScan ? "contact_targets" : isInternship ? "internship" : "search",
         targetId: undefined,
         providerId: model?.providerId,
         modelId: model?.modelId,
         reasoning: model?.reasoning,
-        payload: { query, ...(type === "full_search" ? { threshold } : {}) },
-        prompt: isPi
+        payload: { query, ...(["full_search", "internship_search"].includes(type) ? { threshold } : {}) },
+        prompt: isInternship
+          ? `Search for current industry internships matching this request: ${query}. Use official company career pages or official ATS records as primary evidence. Exclude postdoctoral, doctoral, faculty and regular full-time roles. Check hard eligibility requirements against available profile evidence; mark unknowns as uncertain. Return review-only structured opportunities and application checklists. Do not create a CV, contact anyone or submit an application.`
+          : isPi
           ? `Research this named contact or researcher for current opportunities compatible with the candidate profile: ${query}. Use primary sources, verify identity, contact route, current direction and availability, deduplicate against existing opportunities, and return structured evidence. Do not contact anyone.`
           : isHealth
             ? `Verify whether these opportunity URLs or records remain active: ${query}. Use primary sources, record the check time and evidence, and return a review-only verification result. Do not archive records or change contact status.`
@@ -214,9 +224,9 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
   return (
     <div className="composer-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
       <section className="task-composer">
-        <div className="composer-heading"><div><span className="section-index">NEW</span><h2>{isPi ? "按姓名找机会" : isHealth ? "检查机会" : isScan ? "扫描跟进" : "新建完整检索"}</h2></div><button onClick={onClose}>关闭</button></div>
-        <label className="field"><span>{isPi ? "联系人 / 研究者姓名与线索" : isHealth ? "要核验的机会、URL 或范围" : isScan ? "补充要求（可选）" : "本次检索要求"}</span><textarea className="tall" autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isPi ? "填写姓名、机构、地区或研究线索。" : isHealth ? "粘贴机会 URL，或说明要检查的机构与职位。" : isScan ? "填写跟进时间、优先级或需要排除的联系人。" : "填写目标机会类型、地区、主题、时间范围和必须满足的条件。"} /></label>
-        {type === "full_search" && <label className="field"><span>严格匹配阈值（只保留大于该分数）</span><input type="number" min={0} max={99} value={threshold} onChange={(event) => setThreshold(Math.min(99, Math.max(0, Number(event.target.value) || 0)))} /></label>}
+        <div className="composer-heading"><div><span className="section-index">NEW</span><h2>{isInternship ? "寻找 Internship" : isPi ? "按姓名找机会" : isHealth ? "检查机会" : isScan ? "扫描跟进" : "寻找 Postdoc 机会"}</h2></div><button onClick={onClose}>关闭</button></div>
+        <label className="field"><span>{isInternship ? "目标岗位、地点和硬性条件" : isPi ? "PI / 研究者姓名与线索" : isHealth ? "要核验的机会、URL 或范围" : isScan ? "补充要求（可选）" : "本次检索要求"}</span><textarea className="tall" autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isInternship ? "例如：目标岗位、地区、时间和其他硬性条件。" : isPi ? "例如：研究者姓名、机构或研究方向。" : isHealth ? "粘贴机会 URL，或说明要检查的机构与职位。" : isScan ? "例如：优先检查超过 14 天没有回复的联系人。" : "例如：目标地区、研究方向或机构范围。"} /></label>
+        {["full_search", "internship_search"].includes(type) && <label className="field"><span>严格匹配阈值（只保留大于该分数）</span><input type="number" min={0} max={99} value={threshold} onChange={(event) => setThreshold(Math.min(99, Math.max(0, Number(event.target.value) || 0)))} /></label>}
         <ModelControls taskType={isPi ? "research_pi" : isHealth || isScan ? "maintenance" : "full_search"} value={model} onChange={setModel} />
         <div className="composer-safety">任务会建立独立 Codex 线程；重试恢复原线程。任何邮件发送和申请提交仍需你手动确认。</div>
         {error && <div className="inline-notice error">{error}</div>}

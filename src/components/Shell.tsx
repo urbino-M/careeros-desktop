@@ -6,7 +6,7 @@ import {
   Settings,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { AppRoute, Locale } from "../types";
+import type { AppRoute, CareerSystem, Locale } from "../types";
 
 interface ShellProps {
   route: AppRoute;
@@ -16,28 +16,11 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-const navItems: Array<{
-  page: AppRoute["page"];
-  label: string;
-  icon: typeof Home;
-  route: AppRoute;
-}> = [
-  { page: "dashboard", label: "仪表盘", icon: Home, route: { page: "dashboard" } },
-  { page: "automation", label: "Agent 运行中心", icon: Bot, route: { page: "automation" } },
-  {
-    page: "applications",
-    label: "申请中心",
-    icon: BriefcaseBusiness,
-    route: { page: "applications", status: "ready_to_contact" },
-  },
-  { page: "settings", label: "设置", icon: Settings, route: { page: "settings" } },
-];
-
-function isActive(route: AppRoute, page: AppRoute["page"]) {
-  if (page === "applications") {
-    return route.page === "applications" || route.page === "application";
+function isActive(route: AppRoute, target: AppRoute, system?: CareerSystem) {
+  if (target.page === "applications") {
+    return (route.page === "applications" || route.page === "application") && route.careerSystem === system;
   }
-  return route.page === page;
+  return route.page === target.page;
 }
 
 export function Shell({
@@ -47,6 +30,20 @@ export function Shell({
   onNavigate,
   children,
 }: ShellProps) {
+  const navItems: Array<{ label: string; icon: typeof Home; route: AppRoute }> = [
+    { label: "仪表盘", icon: Home, route: { page: "dashboard" } },
+    { label: "Agent 运行中心", icon: Bot, route: { page: "automation" } },
+    { label: "设置", icon: Settings, route: { page: "settings" } },
+  ];
+  const applicationItems: Array<{
+    label: string;
+    system: CareerSystem;
+    icon: typeof Home;
+    route: Extract<AppRoute, { page: "applications" }>;
+  }> = [
+    { label: "Postdoc 申请", system: "postdoc", icon: BriefcaseBusiness, route: { page: "applications", careerSystem: "postdoc", status: "ready_to_contact" } },
+    { label: "Internship 申请", system: "internship", icon: BriefcaseBusiness, route: { page: "applications", careerSystem: "internship", status: "all" } },
+  ];
   const startDragging = (event: React.MouseEvent<HTMLElement>) => {
     if (event.button === 0) void getCurrentWindow().startDragging();
   };
@@ -60,7 +57,7 @@ export function Shell({
         <div className="brand-lockup">
           <div className="brand-mark">P</div>
           <div>
-            <div className="brand-kicker">研究机会决策系统</div>
+            <div className="brand-kicker">研究与职业机会决策系统</div>
             <div className="brand-name">PostdocOS</div>
           </div>
         </div>
@@ -68,12 +65,21 @@ export function Shell({
         <nav className="primary-nav" aria-label="主导航">
           <div className="nav-heading">工作台</div>
           {navItems.slice(0, 2).map((item) => (
-            <NavButton key={item.page} {...item} active={isActive(route, item.page)} onNavigate={onNavigate} />
+            <NavButton key={item.label} {...item} active={isActive(route, item.route)} onNavigate={onNavigate} />
           ))}
           <div className="nav-heading">申请</div>
-          <NavButton {...navItems[2]} active={isActive(route, "applications")} onNavigate={onNavigate} />
+          {applicationItems.map((item) => (
+            <NavButton
+              key={item.label}
+              label={item.label}
+              icon={item.icon}
+              route={item.route}
+              active={isActive(route, item.route, item.system)}
+              onNavigate={onNavigate}
+            />
+          ))}
           <div className="nav-heading">系统</div>
-          <NavButton {...navItems[3]} active={isActive(route, "settings")} onNavigate={onNavigate} />
+          <NavButton {...navItems[2]} active={isActive(route, navItems[2].route)} onNavigate={onNavigate} />
         </nav>
 
         <div className="sidebar-footer">
