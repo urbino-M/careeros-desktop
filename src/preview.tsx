@@ -133,10 +133,12 @@ const jobs = {
 const provider = {
   id: "openai",
   displayName: "OpenAI / Codex",
+  adapterKind: "internal_gateway",
   connectionMode: "internal_gateway",
+  configured: true,
   enabled: true,
   models: [
-    { id: "gpt-5", slug: "gpt-5", displayName: "GPT-5", enabled: true, supportsReasoning: true, supportsTools: true },
+    { id: "gpt-5", slug: "gpt-5", displayName: "GPT-5", enabled: true, supportsReasoning: true, supportsTools: true, supportsVision: true, reasoningLevels: ["low", "medium", "high"] },
   ],
 };
 
@@ -217,6 +219,7 @@ mockIPC((command, payload) => {
   if (command === "get_jobs") return jobs;
   if (command === "get_model_providers") return [provider];
   if (command === "get_task_model_defaults") return defaults;
+  if (command === "get_cv_customization") return { schemaVersion: 1, enabled: false, emphasize: "", exclude: "", instructions: "" };
   if (command === "get_migration_report") {
     return { imported: true, applications: 20, opportunities: 20, legacyJobs: 4, revisions: 7, gmailDrafts: 0, activeTargets: 20, hiddenTombstones: 0 };
   }
