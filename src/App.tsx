@@ -7,7 +7,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { api, errorMessage } from "./api";
-import type { ApplicationFilter, ApplicationTab, AppRoute, CareerSystem, Locale, OnboardingProfile } from "./types";
+import type { ApplicationFilter, ApplicationTab, AppRoute, AutomationComposer, CareerSystem, Locale, OnboardingProfile } from "./types";
 
 const applicationStatuses: ApplicationFilter[] = [
   "ready_to_contact",
@@ -29,8 +29,10 @@ function isCareerSystem(value?: string): value is CareerSystem {
 function parseHash(): AppRoute {
   const hash = window.location.hash.replace(/^#\/?/, "");
   const [page, value, section, origin, job, detailJob] = hash.split("/");
-  if (page === "automation") return { page: "automation" };
-  if (page === "settings") return { page: "settings" };
+  if (page === "automation") {
+    return { page: "automation", composer: value === "internship_search" ? value as AutomationComposer : undefined };
+  }
+  if (page === "settings") return { page: "settings", focus: value === "search-channels" ? value : undefined };
   if (page === "application" && value) {
     const allowedTabs: ApplicationTab[] = ["cv", "cover_letter", "checklist", "email_en", "email_zh", "fit", "pi", "revision", "reply", "other"];
     const prefixed = isCareerSystem(origin);
@@ -71,8 +73,8 @@ function parseHash(): AppRoute {
 function routeHash(route: AppRoute) {
   switch (route.page) {
     case "dashboard": return "#/dashboard";
-    case "automation": return "#/automation";
-    case "settings": return "#/settings";
+    case "automation": return route.composer ? `#/automation/${route.composer}` : "#/automation";
+    case "settings": return route.focus ? `#/settings/${route.focus}` : "#/settings";
     case "applications": return route.view === "strategy"
       ? `#/applications/${route.careerSystem}/strategy`
       : `#/applications/${route.careerSystem}/${route.status}`;
@@ -130,14 +132,14 @@ export default function App() {
   return (
     <Shell route={route} locale={locale} onLocale={changeLocale} onNavigate={navigate}>
       {route.page === "dashboard" && <DashboardPage onNavigate={navigate} />}
-      {route.page === "automation" && <AutomationPage onNavigate={navigate} />}
+      {route.page === "automation" && <AutomationPage initialComposer={route.composer} onNavigate={navigate} />}
       {route.page === "applications" && (
         <ApplicationsPage careerSystem={route.careerSystem} status={route.status} view={route.view} onNavigate={navigate} />
       )}
       {route.page === "application" && (
         <ApplicationDetailPage targetId={route.targetId} initialTab={route.tab} returnPage={route.returnPage} focusJobId={route.jobId} locale={locale} onNavigate={navigate} />
       )}
-      {route.page === "settings" && <SettingsPage onRestartOnboarding={async () => {
+      {route.page === "settings" && <SettingsPage focusSection={route.focus} onRestartOnboarding={async () => {
         const saved = await api.saveOnboardingProfile({ ...onboarding, completed: false, currentStep: 0 });
         setOnboarding(saved);
       }} />}

@@ -5,7 +5,6 @@ import type {
   InternshipProfile,
   SearchCapabilities,
   SearchChannel,
-  SearchSetupPlan,
   SearchSetupResult,
   CvGenerationResult,
   CoverLetterGenerationResult,
@@ -82,14 +81,14 @@ export const api = {
     invoke<OnboardingProfile>("save_onboarding_profile", { value }),
   importOnboardingCv: (path: string) =>
     invoke<string>("import_onboarding_cv", { path }),
+  importInternshipCv: (path: string) =>
+    invoke<string>("import_internship_cv", { path }),
   internshipProfile: () => invoke<InternshipProfile>("get_internship_profile"),
   saveInternshipProfile: (value: InternshipProfile) =>
     invoke<InternshipProfile>("save_internship_profile", { value }),
   searchCapabilities: () => invoke<SearchCapabilities>("get_search_capabilities"),
-  previewSearchSetup: (channels?: SearchChannel[]) =>
-    invoke<SearchSetupPlan>("preview_search_setup", { channels: channels ?? null }),
-  setupSearchCapabilities: (channels: SearchChannel[], confirmed = true) =>
-    invoke<SearchSetupResult>("setup_search_capabilities", { channels, confirmed }),
+  setupSearchCapabilities: (channels: SearchChannel[]) =>
+    invoke<SearchSetupResult>("setup_search_capabilities", { channels }),
   beginSearchChannelAuth: (channel: SearchChannel) =>
     invoke<AuthGuide>("begin_search_channel_auth", { channel }),
   jobs: (pageSize = 5) => invoke<JobGroups>("get_jobs", { pageSize }),

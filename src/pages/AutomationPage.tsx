@@ -20,15 +20,15 @@ import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "../api";
 import { ModelControls, type ModelSelection } from "../components/ModelControls";
 import { ErrorState, LoadingState, StatusBadge, formatLocalTime, jobLabels } from "../components/Ui";
-import type { ApplicationTab, AppRoute, JobGroups, JobSummary } from "../types";
+import type { ApplicationTab, AppRoute, AutomationComposer, InternshipProfile, JobGroups, JobSummary } from "../types";
 
 type ComposerType = "internship_search" | "full_search" | "research_pi" | "opportunity_health" | "follow_up_scan" | null;
 
-export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
+export function AutomationPage({ initialComposer, onNavigate }: { initialComposer?: AutomationComposer; onNavigate: (route: AppRoute) => void }) {
   const [jobs, setJobs] = useState<JobGroups>();
   const [error, setError] = useState("");
   const [historySize, setHistorySize] = useState(5);
-  const [composer, setComposer] = useState<ComposerType>(null);
+  const [composer, setComposer] = useState<ComposerType>(initialComposer ?? null);
   const [notice, setNotice] = useState("");
   const load = () => api.jobs(historySize).then(setJobs).catch((value) => setError(errorMessage(value)));
 
@@ -39,6 +39,10 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
     listen("careeros://jobs-changed", load).then((value) => (unlisten = value));
     return () => { window.clearInterval(timer); unlisten?.(); };
   }, [historySize]);
+
+  useEffect(() => {
+    if (initialComposer) setComposer(initialComposer);
+  }, [initialComposer]);
 
   const taskHistory = useMemo(() => {
     if (!jobs) return [];
@@ -195,6 +199,17 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
   const isInternship = type === "internship_search";
   const isHealth = type === "opportunity_health";
   const isScan = type === "follow_up_scan";
+
+  useEffect(() => {
+    if (!isInternship) return;
+    let active = true;
+    void api.internshipProfile()
+      .then((profile) => {
+        if (active) setQuery((current) => current.trim() ? current : buildInternshipSearchQuery(profile));
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [isInternship]);
   const submit = async () => {
     if (!isScan && !query.trim()) return;
     setBusy(true); setError("");
@@ -226,6 +241,7 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
       <section className="task-composer">
         <div className="composer-heading"><div><span className="section-index">NEW</span><h2>{isInternship ? "寻找 Internship" : isPi ? "按姓名找机会" : isHealth ? "检查机会" : isScan ? "扫描跟进" : "寻找 Postdoc 机会"}</h2></div><button onClick={onClose}>关闭</button></div>
         <label className="field"><span>{isInternship ? "目标岗位、地点和硬性条件" : isPi ? "PI / 研究者姓名与线索" : isHealth ? "要核验的机会、URL 或范围" : isScan ? "补充要求（可选）" : "本次检索要求"}</span><textarea className="tall" autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isInternship ? "例如：目标岗位、地区、时间和其他硬性条件。" : isPi ? "例如：研究者姓名、机构或研究方向。" : isHealth ? "粘贴机会 URL，或说明要检查的机构与职位。" : isScan ? "例如：优先检查超过 14 天没有回复的联系人。" : "例如：目标地区、研究方向或机构范围。"} /></label>
+        {isInternship && <div className="composer-profile-note">已根据独立 Internship 画像预填；你可以直接修改，本次修改不会改变已保存画像。</div>}
         {["full_search", "internship_search"].includes(type) && <label className="field"><span>严格匹配阈值（只保留大于该分数）</span><input type="number" min={0} max={99} value={threshold} onChange={(event) => setThreshold(Math.min(99, Math.max(0, Number(event.target.value) || 0)))} /></label>}
         <ModelControls taskType={isPi ? "research_pi" : isHealth || isScan ? "maintenance" : "full_search"} value={model} onChange={setModel} />
         <div className="composer-safety">任务会建立独立 Codex 线程；重试恢复原线程。任何邮件发送和申请提交仍需你手动确认。</div>
@@ -234,4 +250,20 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
       </section>
     </div>
   );
+}
+
+export function buildInternshipSearchQuery(profile: InternshipProfile): string {
+  const fields = [
+    ["目标岗位 / 技能", profile.targetRoles],
+    ["目标行业", profile.industries],
+    ["目标地区", profile.regions],
+    ["工作方式", profile.workMode],
+    ["开始时间", profile.startDate],
+    ["实习时长", profile.duration],
+    ["工作许可", profile.workAuthorization],
+    ["在读状态", profile.enrollmentStatus],
+    ["限制条件", profile.constraints],
+  ].filter(([, value]) => value.trim());
+  if (fields.length === 0) return "寻找符合当前 Internship 画像的行业实习机会。";
+  return `请寻找符合以下条件的行业 Internship：\n${fields.map(([label, value]) => `${label}：${value}`).join("\n")}`;
 }

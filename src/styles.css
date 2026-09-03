@@ -221,9 +221,24 @@ body::before {
 .profile-field input, .profile-field textarea { width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 5px; background: #0c303b; color: var(--text); outline: none; font: inherit; font-size: 11px; }
 .profile-field input:focus, .profile-field textarea:focus { border-color: var(--line-bright); box-shadow: 0 0 0 2px rgba(72,205,208,.08); }
 .profile-field textarea { min-height: 66px; resize: vertical; line-height: 1.5; }
+.internship-cv-dropzone { display: grid; grid-template-columns: auto 1fr auto; gap: 13px; align-items: center; min-height: 84px; padding: 13px 15px; border: 1px dashed rgba(72,205,208,.38); border-radius: 6px; background: rgba(9,44,54,.72); transition: 140ms ease; }
+.internship-cv-dropzone:hover, .internship-cv-dropzone.is-dragging { border-color: var(--accent); background: rgba(72,205,208,.12); box-shadow: 0 0 0 3px rgba(72,205,208,.08); }
+.internship-cv-drop-icon { display: grid; place-items: center; width: 39px; height: 39px; color: var(--accent-strong); border: 1px solid rgba(72,205,208,.3); background: rgba(72,205,208,.09); }
+.internship-cv-drop-copy { display: grid; gap: 4px; min-width: 0; }
+.internship-cv-drop-copy strong { color: var(--text); font-size: 12px; }
+.internship-cv-drop-copy span, .internship-cv-drop-copy small { color: var(--muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.internship-cv-drop-copy small { color: var(--muted-2); }
+.internship-cv-actions { display: flex; align-items: center; gap: 9px; }
+.internship-cv-actions .button { white-space: nowrap; }
 .planning-editor-actions, .channel-health-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .channel-health-actions { justify-content: flex-end; }
 .channel-health-panel { margin-top: 0; }
+.channel-summary-strip { display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: center; margin: 0 12px 12px; padding: 12px 15px; border: 1px solid rgba(72,205,208,.2); background: rgba(72,205,208,.06); }
+.channel-summary-title { display: flex; align-items: center; gap: 9px; color: var(--accent-strong); }
+.channel-summary-title > div { display: grid; gap: 3px; }
+.channel-summary-title span { color: var(--muted-2); font-size: 9px; letter-spacing: .08em; }
+.channel-summary-title strong { color: var(--text); font-size: 12px; white-space: nowrap; }
+.channel-summary-strip p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .channel-health-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
 .channel-health-item { display: grid; gap: 7px; min-width: 0; padding: 13px; border: 1px solid var(--line); background: rgba(7,31,40,.74); }
 .channel-health-item.channel-available { border-color: rgba(72,205,208,.25); }
@@ -236,12 +251,14 @@ body::before {
 .channel-state { padding: 3px 6px; border-radius: 999px; font-size: 9px; white-space: nowrap; }
 .channel-state-ready { color: var(--green); background: rgba(78,212,141,.1); }
 .channel-state-missing { color: var(--amber); background: rgba(242,173,64,.1); }
+.channel-state-pending { color: var(--accent-strong); background: rgba(72,205,208,.12); }
 .setup-plan, .auth-guide, .planning-notice { display: grid; gap: 7px; padding: 12px 13px; border: 1px solid rgba(72,205,208,.25); background: rgba(72,205,208,.07); color: #c9dcda; font-size: 10px; line-height: 1.5; }
 .setup-command-list { display: grid; gap: 6px; }
 .setup-plan code { padding: 7px 8px; color: #a9e5df; border: 1px solid rgba(72,205,208,.16); background: rgba(2,19,25,.72); font: 10px/1.45 monospace; overflow-wrap: anywhere; }
 .auth-guide { grid-template-columns: 1fr auto; align-items: center; border-color: rgba(242,173,64,.28); background: rgba(56,41,18,.2); }
 .auth-guide > div { display: grid; gap: 5px; }
 .auth-guide > div strong { color: #f1d69c; }
+.auth-guide-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .planning-notice { grid-template-columns: 18px 1fr; align-items: start; margin: 0 12px 12px; color: #d7e5e1; }
 .planning-notice svg { color: var(--amber); margin-top: 1px; }
 .internship-planning-grid { display: grid; grid-template-columns: 1.06fr .94fr 1fr; gap: 12px; padding: 12px; }
@@ -541,8 +558,10 @@ body::before {
 .composer-heading h2 { margin: 0; font: 600 28px var(--serif); }
 .composer-heading > button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .composer-safety { padding: 11px; margin: 15px 0; background: rgba(73,205,208,.08); color: var(--muted); font-size: 11px; line-height: 1.6; }
+.composer-profile-note { margin-top: -7px; color: var(--muted-2); font-size: 10px; line-height: 1.5; }
 
 .settings-section { margin-top: 30px; }
+.settings-section[id] { scroll-margin-top: 24px; }
 .settings-card-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
 .account-card { display: grid; grid-template-columns: 42px 1fr; gap: 13px; padding: 18px; border: 1px solid var(--line); background: var(--panel); }
 .settings-icon { width: 39px; height: 39px; display: grid; place-items: center; color: var(--accent); background: var(--accent-dim); border: 1px solid rgba(72,205,208,.2); }
@@ -573,6 +592,15 @@ body::before {
 .cv-customization-actions > span { color: var(--muted-2); font-size: 10px; }
 .settings-info-card { display: grid; grid-template-columns: 42px 1fr auto; gap: 13px; align-items: start; padding: 18px; border: 1px solid var(--line); background: var(--panel); }
 .gmail-settings-card { display: grid; gap: 10px; }
+.search-channels-settings { display: grid; gap: 11px; }
+.search-channels-intro { align-items: center; }
+.search-channels-notice { display: grid; grid-template-columns: 18px 1fr; align-items: start; margin: 0; }
+.search-channels-notice svg { color: var(--amber); margin-top: 1px; }
+.settings-channel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settings-channel-grid .channel-health-item { min-height: 158px; }
+.settings-channel-grid .channel-health-footer { align-items: flex-end; }
+.settings-channel-grid .channel-health-footer .button { min-height: 29px; padding: 5px 9px; font-size: 10px; }
+.settings-auth-guide { margin-top: 1px; }
 .gmail-action-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .gmail-state { color: var(--amber); font-size: 11px; }
 .oauth-guide { padding: 11px 13px; border: 1px solid rgba(242,173,64,.2); background: rgba(242,173,64,.07); color: var(--muted); font-size: 11px; line-height: 1.6; }
@@ -756,10 +784,15 @@ body::before {
   .internship-planning-grid { grid-template-columns: 1fr; }
   .internship-search-profile { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .internship-profile-fields, .channel-health-grid { grid-template-columns: 1fr; }
+  .channel-summary-strip { grid-template-columns: 1fr auto; }
+  .channel-summary-strip p { grid-column: 1 / -1; grid-row: 2; }
   .profile-field-wide { grid-column: auto; }
+  .internship-cv-dropzone { grid-template-columns: auto 1fr; }
+  .internship-cv-actions { grid-column: 2; }
   .planning-section-heading { flex-direction: column; }
   .channel-health-actions { justify-content: flex-start; }
   .auth-guide { grid-template-columns: 1fr; }
+  .auth-guide-actions { justify-content: flex-start; }
   .application-view-tabs { display: grid; grid-template-columns: repeat(2, 1fr); width: 100%; }
   .application-view-tabs button { text-align: center; }
   .internship-context-strip { grid-template-columns: 1fr; gap: 12px; }

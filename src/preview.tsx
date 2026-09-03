@@ -133,10 +133,12 @@ const jobs = {
 const provider = {
   id: "openai",
   displayName: "OpenAI / Codex",
+  adapterKind: "internal_gateway",
   connectionMode: "internal_gateway",
+  configured: true,
   enabled: true,
   models: [
-    { id: "gpt-5", slug: "gpt-5", displayName: "GPT-5", enabled: true, supportsReasoning: true, supportsTools: true },
+    { id: "gpt-5", slug: "gpt-5", displayName: "GPT-5", enabled: true, supportsReasoning: true, supportsTools: true, supportsVision: true, reasoningLevels: ["low", "medium", "high"] },
   ],
 };
 
@@ -186,6 +188,7 @@ mockIPC((command, payload) => {
       updatedAt: "2026-09-02T08:00:00Z",
     };
   }
+  if (command === "import_internship_cv") return "uploads/internship-cv-preview.pdf";
   if (command === "save_internship_profile") return payloadValue(payload, "value");
   if (command === "get_search_capabilities") {
     return {
@@ -201,10 +204,7 @@ mockIPC((command, payload) => {
       warnings: [],
     };
   }
-  if (command === "preview_search_setup") {
-    return { checkedAt: "2026-09-02T08:00:00Z", channels: ["exa", "linkedin", "facebook", "twitter"], commands: ["npm install --global --prefix \"<CareerOS user tools>\" @jackwener/opencli", "npm install --global --prefix \"<CareerOS user tools>\" mcporter"], manualSteps: ["首次使用社交渠道时在自己的浏览器完成登录。"] };
-  }
-  if (command === "setup_search_capabilities") return { completed: true, messages: ["预览环境未执行安装。"], capabilities: { checkedAt: "2026-09-02T08:00:00Z", channels: [], warnings: [] } };
+  if (command === "setup_search_capabilities") return { completed: true, messages: ["已完成用户级渠道设置（演示环境）。"], capabilities: { checkedAt: "2026-09-02T08:00:00Z", channels: [], warnings: [] } };
   if (command === "begin_search_channel_auth") return { channel: payloadValue(payload, "channel"), title: "准备登录态", url: "https://example.com/login", instructions: ["请在自己的浏览器完成登录。"] };
   if (command === "get_dashboard") {
     return dashboards[payloadValue(payload, "careerTrack") === "internship" ? "internship" : "postdoc"];
@@ -219,6 +219,7 @@ mockIPC((command, payload) => {
   if (command === "get_jobs") return jobs;
   if (command === "get_model_providers") return [provider];
   if (command === "get_task_model_defaults") return defaults;
+  if (command === "get_cv_customization") return { schemaVersion: 1, enabled: false, emphasize: "", exclude: "", instructions: "" };
   if (command === "get_migration_report") {
     return { imported: true, applications: 20, opportunities: 20, legacyJobs: 4, revisions: 7, gmailDrafts: 0, activeTargets: 20, hiddenTombstones: 0 };
   }

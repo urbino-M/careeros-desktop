@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { JobSummary } from "../types";
-import { buildTaskHistory, jobStatusMessage } from "./AutomationPage";
+import { buildInternshipSearchQuery, buildTaskHistory, jobStatusMessage } from "./AutomationPage";
 
 function job(id: string, status: string, createdAt: string, error?: string): JobSummary {
   return {
@@ -40,5 +40,36 @@ describe("automation task history", () => {
 
     expect(jobStatusMessage(failed)).toContain("重新运行");
     expect(jobStatusMessage(failed)).toContain("恢复原线程");
+  });
+});
+
+describe("internship task composer", () => {
+  it("builds an editable search request from the independent Internship profile", () => {
+    expect(buildInternshipSearchQuery({
+      schemaVersion: 1,
+      targetRoles: "ML Engineer Intern",
+      industries: "AI",
+      regions: "Singapore",
+      workMode: "hybrid",
+      startDate: "2027 summer",
+      duration: "12 weeks",
+      workAuthorization: "待确认",
+      enrollmentStatus: "硕士在读",
+      constraints: "no relocation",
+      rssFeeds: [],
+    })).toContain("目标岗位 / 技能：ML Engineer Intern");
+    expect(buildInternshipSearchQuery({
+      schemaVersion: 1,
+      targetRoles: "",
+      industries: "",
+      regions: "",
+      workMode: "",
+      startDate: "",
+      duration: "",
+      workAuthorization: "",
+      enrollmentStatus: "",
+      constraints: "",
+      rssFeeds: [],
+    })).toBe("寻找符合当前 Internship 画像的行业实习机会。");
   });
 });

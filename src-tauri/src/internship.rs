@@ -10,6 +10,7 @@ pub const INTERNSHIP_PROFILE_FILE: &str = "internship.json";
 const MAX_FIELD_CHARS: usize = 4_000;
 const MAX_CV_PATH_CHARS: usize = 500;
 const MAX_RSS_FEEDS: usize = 20;
+const MAX_CV_BYTES: u64 = 25 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +95,37 @@ pub fn save(paths: &AppPaths, mut profile: InternshipProfile) -> Result<Internsh
     fs::write(&temporary, serde_json::to_vec_pretty(&profile)?)?;
     fs::rename(&temporary, &live)?;
     Ok(profile)
+}
+
+pub fn import_cv(paths: &AppPaths, source: &Path) -> Result<String> {
+    let source = source
+        .canonicalize()
+        .with_context(|| format!("无法读取 CV 文件：{}", source.display()))?;
+    if !source.is_file() {
+        bail!("请选择一个 CV 文件");
+    }
+    let extension = source
+        .extension()
+        .and_then(|item| item.to_str())
+        .map(str::to_lowercase)
+        .context("CV 文件缺少扩展名")?;
+    if !matches!(extension.as_str(), "pdf" | "docx" | "md" | "txt") {
+        bail!("CV 仅支持 PDF、DOCX、Markdown 或纯文本");
+    }
+    if source.metadata()?.len() > MAX_CV_BYTES {
+        bail!("CV 文件不能超过 25 MB");
+    }
+    let uploads = paths.profile.join("uploads");
+    fs::create_dir_all(&uploads)?;
+    let filename = format!(
+        "internship-cv-{}.{}",
+        Utc::now().format("%Y%m%dT%H%M%SZ"),
+        extension
+    );
+    let destination = uploads.join(&filename);
+    fs::copy(&source, &destination)
+        .with_context(|| format!("无法导入 CV：{}", source.display()))?;
+    Ok(format!("uploads/{filename}"))
 }
 
 fn validate(mut profile: InternshipProfile) -> Result<InternshipProfile> {
@@ -232,5 +264,20 @@ mod tests {
         assert!(!is_safe_relative_path("../candidate.pdf"));
         assert!(!is_safe_relative_path("/tmp/candidate.pdf"));
         assert!(is_safe_relative_path("uploads/candidate.pdf"));
+    }
+
+    #[test]
+    fn internship_cv_import_copies_supported_file_without_deleting_source() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = test_paths(temp.path());
+        paths.ensure()?;
+        let original = temp.path().join("candidate.PDF");
+        fs::write(&original, b"sample cv")?;
+
+        let imported = import_cv(&paths, &original)?;
+
+        assert!(original.is_file());
+        assert!(paths.profile.join(imported).is_file());
+        Ok(())
     }
 }
