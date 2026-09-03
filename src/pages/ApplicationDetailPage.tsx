@@ -21,7 +21,7 @@ import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { api, errorMessage } from "../api";
 import { ModelControls, type ModelSelection } from "../components/ModelControls";
-import { ErrorState, LoadingState, StatusBadge, formatLocalTime, submissionStatusLabels } from "../components/Ui";
+import { ErrorState, LoadingState, StatusBadge, SubmissionBadge, VerificationBadge, formatLocalTime, searchChannelLabels, submissionStatusLabels } from "../components/Ui";
 import type { ApplicationTab, AppRoute, ArtifactItem, DiffEntry, GmailDraftInfo, GmailStatus, Locale, SubmissionStatus, TargetDetail } from "../types";
 
 type DetailTab = ApplicationTab;
@@ -103,7 +103,9 @@ export function ApplicationDetailPage({
           : {
             page: "applications",
             careerSystem: internship ? "internship" : "postdoc",
-            status: internship ? target.submissionStatus : target.status,
+            status: internship
+              ? target.verificationStatus === "unverified" ? "unverified" : target.submissionStatus
+              : target.status,
           },
       )}>
         <ArrowLeft size={17} /> {returnPage === "automation" ? "返回 Agent 运行中心" : "返回申请列表"}
@@ -115,12 +117,14 @@ export function ApplicationDetailPage({
           <h1>{target.organization}</h1>
           <p className="rail-role">{target.title}</p>
           {!internship && <StatusBadge status={target.status} />}
+          {internship && <div className="rail-verification-badges"><VerificationBadge status={target.verificationStatus} /><SubmissionBadge status={target.submissionStatus} /></div>}
           <dl className="rail-facts">
             <div><dt>{internship ? "申请方式" : "PI / 联系人"}</dt><dd>{target.name}</dd></div>
             {!internship && <div><dt>联系邮箱</dt><dd>{target.email || "待核验"}</dd></div>}
             <div><dt>匹配评分</dt><dd>{Math.round(target.fitScore ?? 0)} / 100</dd></div>
             <div><dt>截止日期</dt><dd>{target.deadline || "待确认"}</dd></div>
             <div><dt>地区</dt><dd>{[target.region, target.country].filter(Boolean).join(" · ") || "待确认"}</dd></div>
+            {internship && <div><dt>来源渠道</dt><dd>{searchChannelLabels[target.sourceChannel] || target.sourceChannel} · {target.sourceBackend}</dd></div>}
           </dl>
           {target.sourceUrl && (
             <button className="button secondary wide" onClick={() => openUrl(target.sourceUrl!)}>
@@ -151,12 +155,16 @@ export function ApplicationDetailPage({
           </div>}
           <label className="rail-submission-control">
             <span>申请投递标记</span>
-            <select value={target.submissionStatus} onChange={(event) => changeSubmissionStatus(event.target.value as SubmissionStatus)}>
+            <select disabled={internship && target.verificationStatus === "unverified"} value={target.submissionStatus} onChange={(event) => changeSubmissionStatus(event.target.value as SubmissionStatus)}>
               {(Object.entries(submissionStatusLabels) as [SubmissionStatus, string][]).map(([value, label]) => (
                 <option value={value} key={value}>{label}</option>
               ))}
             </select>
-            <small>{internship ? "这里只记录投递进度；系统不会自动提交。" : "仅显示为卡片标签，不创建新的申请分类。"}</small>
+            <small>{internship
+              ? target.verificationStatus === "unverified"
+                ? "待核验机会不能标记为待投递或已投递；请先在官方 Web / ATS 页面确认。"
+                : "这里只记录投递进度；系统不会自动提交。"
+              : "仅显示为卡片标签，不创建新的申请分类。"}</small>
           </label>
           <p className="identity-note">ID: {target.id}<br />{internship ? "机会、清单和投递标记绑定此申请记录。" : "状态、材料和草稿都绑定此联系人。"}</p>
         </aside>
@@ -911,9 +919,21 @@ function OtherPanel({ detail }: { detail: TargetDetail }) {
     cover_letter_text: "Cover Letter 可读文本",
   };
   return <div className="content-section">
+    {detail.target.careerTrack === "internship" && <SourcesPanel sources={detail.sources} />}
     <div className="content-title"><FileText size={21} /><div><h3>源文件与辅助材料</h3><p>CV 页面只负责预览与审核；当前可编辑源数据和辅助文件集中保存在这里。</p></div></div>
     <div className="file-grid">{items.map((item) => <FileTile item={item} label={labels[item.artifactType] || `${item.artifactType} · ${item.language}`} key={`${item.artifactType}-${item.language}`} />)}</div>
   </div>;
+}
+
+function SourcesPanel({ sources }: { sources: TargetDetail["sources"] }) {
+  return <section className="source-evidence-panel">
+    <div className="content-title"><ExternalLink size={21} /><div><h3>来源与核验证据</h3><p>保留每个渠道、后端、检查时间和证据类型；官方 Web / ATS 主证据才会成为已核验机会。</p></div></div>
+    {sources.length === 0 ? <p className="muted-copy">当前没有可展示的来源证据。</p> : <div className="source-evidence-list">{sources.map((source, index) => <article key={`${source.url}-${index}`}>
+      <div><strong>{source.title}</strong><span>{searchChannelLabels[source.channel] || source.channel} · {source.backend} · {source.evidenceType}</span></div>
+      <a href={source.url} onClick={(event) => { event.preventDefault(); void openUrl(source.url); }}>{source.url}<ExternalLink size={12} /></a>
+      <small>检查时间：{formatLocalTime(source.checkedAt)}</small>
+    </article>)}</div>}
+  </section>;
 }
 
 function RevisionLocations({ value }: { value: string }) {

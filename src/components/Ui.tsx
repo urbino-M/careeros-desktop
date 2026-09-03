@@ -1,5 +1,5 @@
 import { AlertTriangle, LoaderCircle } from "lucide-react";
-import type { ContactStatus, SubmissionStatus } from "../types";
+import type { ContactStatus, SearchChannel, SubmissionStatus, VerificationStatus } from "../types";
 
 export const statusLabels: Record<ContactStatus, string> = {
   ready_to_contact: "待处理",
@@ -14,6 +14,20 @@ export const submissionStatusLabels: Record<SubmissionStatus, string> = {
   portal_pending: "官网待投递",
   submitted: "已投递",
   not_required: "无需投递",
+};
+
+export const verificationStatusLabels: Record<VerificationStatus, string> = {
+  verified: "已核验",
+  unverified: "待核验",
+};
+
+export const searchChannelLabels: Record<SearchChannel, string> = {
+  web_ats: "官方 Web / ATS",
+  exa: "Exa",
+  rss: "RSS",
+  linkedin: "LinkedIn",
+  facebook: "Facebook",
+  twitter: "Twitter / X",
 };
 
 export const jobLabels: Record<string, string> = {
@@ -39,6 +53,10 @@ export function StatusBadge({ status }: { status: string }) {
 
 export function SubmissionBadge({ status }: { status: SubmissionStatus }) {
   return <span className={`submission-badge submission-${status}`}>{submissionStatusLabels[status]}</span>;
+}
+
+export function VerificationBadge({ status }: { status: VerificationStatus }) {
+  return <span className={`verification-badge verification-${status}`}>{verificationStatusLabels[status]}</span>;
 }
 
 export function translateJobStatus(status: string) {

@@ -3,6 +3,7 @@ use crate::db;
 use crate::materials;
 use crate::models::JobSummary;
 use crate::paths::AppPaths;
+use crate::search_channels;
 use crate::typst;
 use crate::workflows;
 use anyhow::{bail, Context, Result};
@@ -478,13 +479,27 @@ impl Scheduler {
             persist_revision_base_sha256(&self.db_path, &job.id, &prepared.base_sha256)?;
             (prepared.prompt_suffix, Some(prepared.base_sha256))
         } else {
-            (materials::prepare_general_workspace(
+            let contract = materials::prepare_general_workspace(
                 &self.paths,
                 &workspace,
                 job.target_id.as_deref(),
                 &job.job_type,
                 &payload,
-            )?, None)
+            )?;
+            if job.job_type == "internship_search" {
+                update_progress(
+                    &self.db_path,
+                    &job.id,
+                    6,
+                    "正在并行检查 Internship 搜索渠道",
+                )?;
+                let manifest = search_channels::run(&self.paths, &payload).await?;
+                fs::write(
+                    workspace.join("input/channel-results.json"),
+                    serde_json::to_vec_pretty(&manifest)?,
+                )?;
+            }
+            (contract, None)
         };
         update_progress(&self.db_path, &job.id, 8, "正在启动 Codex")?;
         let model_slug: String = db::connect(&self.db_path)?.query_row(
@@ -512,7 +527,7 @@ impl Scheduler {
             );
             update_activity(&self.db_path, &job.id, &message)?;
             self.emit_changed();
-            search_finalization_prompt(finalization_turns, MAX_SEARCH_FINALIZATION_TURNS)
+            search_finalization_prompt(&job.job_type, finalization_turns, MAX_SEARCH_FINALIZATION_TURNS)
         } else {
             format!("{prompt}{contract}")
         };
@@ -539,13 +554,14 @@ impl Scheduler {
                 job,
                 &workspace,
                 &model_slug,
-                search_finalization_prompt(finalization_turns, MAX_SEARCH_FINALIZATION_TURNS),
+                search_finalization_prompt(&job.job_type, finalization_turns, MAX_SEARCH_FINALIZATION_TURNS),
                 Some(result.thread_id.clone()),
             ).await?;
         }
         if is_search_job && !has_reusable_output(&self.paths, &job.id, &job.job_type) {
             bail!(
-                "模型连续结束 turn，但没有生成 output/search-results.json；该模型或 Responses API 在长工具链后未完成结构化结果交付"
+                "模型连续结束 turn，但没有生成 {}；该模型或 Responses API 在长工具链后未完成结构化结果交付",
+                search_output_path(&job.job_type)
             )
         }
         let mut output_result = json!({
@@ -829,7 +845,7 @@ fn has_reusable_output(paths:&AppPaths, job_id:&str, job_type:&str) -> bool {
 }
 
 fn is_search_job_type(job_type: &str) -> bool {
-    matches!(job_type, "full_run" | "full_search" | "research_pi")
+    matches!(job_type, "full_run" | "full_search" | "research_pi" | "internship_search")
 }
 
 fn is_cv_preflight_error(error: &str) -> bool {
@@ -845,14 +861,23 @@ fn load_job_attempt(path: &Path, job_id: &str) -> Result<i64> {
     )?)
 }
 
-fn search_finalization_prompt(attempt: usize, total: usize) -> String {
+fn search_output_path(job_type: &str) -> &'static str {
+    if job_type == "internship_search" {
+        "output/internship-search-results.json"
+    } else {
+        "output/search-results.json"
+    }
+}
+
+fn search_finalization_prompt(job_type: &str, attempt: usize, total: usize) -> String {
+    let output_path = search_output_path(job_type);
     format!(
         "Your previous turn ended before producing the required structured search result. \
 This is finalization turn {attempt} of {total}. Do not call web search, open URLs, or gather any new evidence. \
 Use only the evidence already present in this thread and workspace. Finish the task now: write \
-output/search-results.json so it conforms exactly to resultContract in CAREEROS_TASK.json, include only \
+{output_path} so it conforms exactly to resultContract in CAREEROS_TASK.json, include only \
 evidence-supported candidates, create all required reviewable package fields, and validate the JSON file before ending. \
-The turn is not complete until output/search-results.json exists and is valid."
+The turn is not complete until {output_path} exists and is valid."
     )
 }
 
@@ -897,7 +922,7 @@ fn active_key_for(request: &EnqueueRequest, payload: &Value) -> Result<Option<St
         return Ok(Some(format!("{job_type}:{target_type}:{target_id}")))
     }
     match job_type {
-        "full_search" | "research_pi" | "opportunity_health" => {
+        "full_search" | "research_pi" | "internship_search" | "opportunity_health" => {
             let query = payload.get("query").and_then(Value::as_str).unwrap_or("").trim();
             let normalized_query = query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
             let digest = format!("{:x}", Sha256::digest(normalized_query.as_bytes()));
@@ -910,7 +935,7 @@ fn active_key_for(request: &EnqueueRequest, payload: &Value) -> Result<Option<St
 
 fn timeout_seconds_for(job_type: &str) -> i64 {
     match job_type {
-        "full_run" | "full_search" | "research_pi" => 2 * 60 * 60,
+        "full_run" | "full_search" | "research_pi" | "internship_search" => 2 * 60 * 60,
         "revision_request" | "material_revision" => 60 * 60,
         "reply_followup" | "checklist_refresh" | "follow_up_scan"
         | "opportunity_health" | "pi_verification" => 45 * 60,
@@ -1377,10 +1402,12 @@ mod tests {
 
     #[test]
     fn search_finalization_stops_new_research_and_requires_the_contract_file() -> Result<()> {
-        let prompt = search_finalization_prompt(1, MAX_SEARCH_FINALIZATION_TURNS);
+        let prompt = search_finalization_prompt("full_search", 1, MAX_SEARCH_FINALIZATION_TURNS);
         assert!(prompt.contains("Do not call web search"));
         assert!(prompt.contains("output/search-results.json"));
         assert!(prompt.contains("validate the JSON file"));
+        assert!(search_finalization_prompt("internship_search", 1, MAX_SEARCH_FINALIZATION_TURNS)
+            .contains("output/internship-search-results.json"));
 
         let temp = TempDir::new()?;
         let paths = test_paths(&temp);

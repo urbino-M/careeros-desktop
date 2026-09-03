@@ -160,7 +160,7 @@ export function buildTaskHistory(jobs: Pick<JobGroups, "needsReview" | "recent">
 
 export function jobStatusMessage(job: JobSummary): string {
   if (job.status !== "failed") return job.message || "任务正在处理。";
-  if (job.error?.includes("Agent 没有生成") && job.error.includes("output/search-results.json")) {
+  if (job.error?.includes("Agent 没有生成") && (job.error.includes("output/search-results.json") || job.error.includes("output/internship-search-results.json"))) {
     return "模型线程已结束，但没有生成可导入的完整检索结果。点击“重新运行”会恢复原线程继续完成。";
   }
   return job.error || "任务失败，展开技术详情查看原因。";
@@ -208,7 +208,7 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
         reasoning: model?.reasoning,
         payload: { query, ...(["full_search", "internship_search"].includes(type) ? { threshold } : {}) },
         prompt: isInternship
-          ? `Search for current industry internships matching this request: ${query}. Use official company career pages or official ATS records as primary evidence. Exclude postdoctoral, doctoral, faculty and regular full-time roles. Check hard eligibility requirements against available profile evidence; mark unknowns as uncertain. Return review-only structured opportunities and application checklists. Do not create a CV, contact anyone or submit an application.`
+          ? `Search for current industry internships matching this request: ${query}. Combine the normalized results from input/channel-results.json across official Web / ATS, Exa, RSS, LinkedIn, Facebook, and Twitter / X. Use official company career pages or official ATS records as primary evidence; keep opportunities supported only by Exa, RSS, or social channels unverified. Exclude postdoctoral, doctoral, faculty and regular full-time roles. Check hard eligibility requirements against the independent Internship profile; missing facts are uncertain, not a reason to stop discovery. Return no more than 20 discovered and 10 saved review-only opportunities with application checklists. Do not create a CV, contact anyone or submit an application.`
           : isPi
           ? `Research this named contact or researcher for current opportunities compatible with the candidate profile: ${query}. Use primary sources, verify identity, contact route, current direction and availability, deduplicate against existing opportunities, and return structured evidence. Do not contact anyone.`
           : isHealth

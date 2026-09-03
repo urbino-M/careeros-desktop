@@ -1,5 +1,106 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchChannel {
+    #[serde(rename = "web_ats")]
+    WebAts,
+    #[serde(rename = "exa")]
+    Exa,
+    #[serde(rename = "rss")]
+    Rss,
+    #[serde(rename = "linkedin")]
+    LinkedIn,
+    #[serde(rename = "facebook")]
+    Facebook,
+    #[serde(rename = "twitter")]
+    Twitter,
+}
+
+impl Default for SearchChannel {
+    fn default() -> Self { Self::WebAts }
+}
+
+impl SearchChannel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::WebAts => "web_ats",
+            Self::Exa => "exa",
+            Self::Rss => "rss",
+            Self::LinkedIn => "linkedin",
+            Self::Facebook => "facebook",
+            Self::Twitter => "twitter",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::WebAts => "官方 Web / ATS",
+            Self::Exa => "Exa",
+            Self::Rss => "RSS",
+            Self::LinkedIn => "LinkedIn",
+            Self::Facebook => "Facebook",
+            Self::Twitter => "Twitter / X",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "exa" => Self::Exa,
+            "rss" => Self::Rss,
+            "linkedin" | "linked_in" => Self::LinkedIn,
+            "facebook" => Self::Facebook,
+            "twitter" | "x" => Self::Twitter,
+            _ => Self::WebAts,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationStatus {
+    Verified,
+    Unverified,
+}
+
+impl Default for VerificationStatus {
+    fn default() -> Self { Self::Verified }
+}
+
+impl VerificationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Unverified => "unverified",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("unverified") {
+            Self::Unverified
+        } else {
+            Self::Verified
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceEvidence {
+    pub title: String,
+    pub url: String,
+    pub checked_at: String,
+    #[serde(default = "default_evidence_type")]
+    pub evidence_type: String,
+    #[serde(default)]
+    pub channel: SearchChannel,
+    #[serde(default = "default_backend")]
+    pub backend: String,
+}
+
+fn default_evidence_type() -> String { "primary".into() }
+fn default_backend() -> String { "legacy".into() }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationReport {
@@ -77,6 +178,9 @@ pub struct TargetCard {
     pub source_url: Option<String>,
     pub updated_at: String,
     pub career_track: String,
+    pub verification_status: VerificationStatus,
+    pub source_channel: SearchChannel,
+    pub source_backend: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +265,79 @@ pub struct TargetDetail {
     pub checklist: Vec<ChecklistItem>,
     pub replies: Vec<ReplyItem>,
     pub revisions: Vec<RevisionItem>,
+    pub sources: Vec<SourceEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelHealth {
+    pub channel: SearchChannel,
+    pub backend: String,
+    pub available: bool,
+    pub authenticated: bool,
+    pub status: String,
+    pub message: String,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCapabilities {
+    pub checked_at: String,
+    pub channels: Vec<ChannelHealth>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCandidate {
+    pub title: String,
+    pub organization: Option<String>,
+    pub description: Option<String>,
+    pub url: String,
+    pub published_at: Option<String>,
+    pub location: Option<String>,
+    pub source_title: Option<String>,
+    pub evidence_type: String,
+    pub channel: SearchChannel,
+    pub backend: String,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelResults {
+    pub channel: SearchChannel,
+    pub backend: String,
+    pub checked_at: String,
+    pub candidates: Vec<SearchCandidate>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchSetupPlan {
+    pub checked_at: String,
+    pub channels: Vec<SearchChannel>,
+    pub commands: Vec<String>,
+    pub manual_steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchSetupResult {
+    pub completed: bool,
+    pub messages: Vec<String>,
+    pub capabilities: SearchCapabilities,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthGuide {
+    pub channel: SearchChannel,
+    pub title: String,
+    pub url: Option<String>,
+    pub instructions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -88,12 +88,12 @@ export function DashboardPage({ onNavigate }: { onNavigate: (route: AppRoute) =>
 
 function TrackOverview({ system, data, onNavigate }: { system: CareerSystem; data: DashboardData; onNavigate: (route: AppRoute) => void }) {
   const internship = system === "internship";
-  const metrics = (internship ? ["all", "high_fit", "portal_pending"] : ["all", "high_fit", "ready_to_contact"])
+  const metrics = (internship ? ["all", "high_fit", "unverified"] : ["all", "high_fit", "ready_to_contact"])
     .map((key) => getMetric(data, key));
   const Icon = internship ? BriefcaseBusiness : FlaskConical;
   const title = internship ? "Internship 申请" : "Postdoc 申请";
   const description = internship
-    ? "官方职位核验、资格判断与官网投递跟踪。"
+    ? "多渠道发现、官方来源核验、资格判断与官网投递跟踪。"
     : "PI / 实验室检索、材料准备与联系跟进。";
   return (
     <section className={`career-overview-panel ${internship ? "internship" : "postdoc"}`}>
