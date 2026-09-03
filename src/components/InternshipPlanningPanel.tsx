@@ -1,24 +1,21 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowRight,
-  Check,
   CheckCircle2,
   CircleAlert,
-  ExternalLink,
+  FileUp,
   GitBranch,
-  KeyRound,
+  Globe2,
   Radar,
-  RefreshCw,
   Save,
   ShieldCheck,
   Sparkles,
   Target,
-  Wrench,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../api";
-import { searchChannelLabels } from "./Ui";
-import type { AppRoute, ChannelHealth, InternshipProfile, SearchCapabilities, SearchSetupPlan } from "../types";
+import type { AppRoute, InternshipProfile, SearchCapabilities } from "../types";
 
 const emptyProfile: InternshipProfile = {
   schemaVersion: 1,
@@ -102,10 +99,11 @@ export function InternshipPlanningSummary({ onNavigate }: { onNavigate: (route: 
 export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
   const [profile, setProfile] = useState<InternshipProfile>(emptyProfile);
   const [capabilities, setCapabilities] = useState<SearchCapabilities>();
-  const [setupPlan, setSetupPlan] = useState<SearchSetupPlan>();
-  const [authGuide, setAuthGuide] = useState<{ title: string; url?: string; instructions: string[] }>();
+  const [cvFileName, setCvFileName] = useState("");
+  const [cvDragActive, setCvDragActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const cvDropZone = useRef<HTMLDivElement>(null);
 
   const load = async () => {
     setBusy(true);
@@ -113,6 +111,7 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
     try {
       const [nextProfile, nextCapabilities] = await Promise.all([api.internshipProfile(), api.searchCapabilities()]);
       setProfile(nextProfile);
+      setCvFileName(nextProfile.cvPath ? "已导入 CV" : "");
       setCapabilities(nextCapabilities);
     } catch (value) {
       setNotice(errorMessage(value));
@@ -122,6 +121,51 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
   };
 
   useEffect(() => { void load(); }, []);
+
+  const importCv = useCallback(async (path: string, displayName?: string) => {
+    if (!path) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const cvPath = await api.importInternshipCv(path);
+      setProfile((current) => ({ ...current, cvPath }));
+      setCvFileName(displayName || "已导入 CV");
+      setNotice("CV 已复制到本机资料目录；原文件未改动。点击“保存 Internship 画像”后会用于搜索。")
+    } catch (value) {
+      setNotice(errorMessage(value));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const dropZone = cvDropZone.current;
+    let unlisten: (() => void) | undefined;
+    const register = async () => {
+      try {
+        unlisten = await getCurrentWindow().onDragDropEvent((event) => {
+          const payload = event.payload;
+          if (payload.type === "leave") {
+            setCvDragActive(false);
+            return;
+          }
+          if (payload.type === "enter" || payload.type === "over") {
+            setCvDragActive(Boolean(dropZone && isDropInside(payload.position, dropZone.getBoundingClientRect())));
+            return;
+          }
+          const inside = Boolean(dropZone && isDropInside(payload.position, dropZone.getBoundingClientRect()));
+          setCvDragActive(false);
+          if (inside && payload.paths.length > 0) {
+            void importCv(payload.paths[0], fileNameFromPath(payload.paths[0]));
+          }
+        });
+      } catch {
+        // The browser preview has no Tauri file-drop event; its HTML5 fallback remains available.
+      }
+    };
+    void register();
+    return () => { unlisten?.(); };
+  }, [importCv]);
 
   const patch = (value: Partial<InternshipProfile>) => setProfile((current) => ({ ...current, ...value }));
 
@@ -139,53 +183,29 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
     }
   };
 
-  const previewSetup = async () => {
-    setBusy(true);
-    setNotice("");
-    try {
-      setSetupPlan(await api.previewSearchSetup());
-      setNotice("已生成安装 dry-run；确认后才会执行用户级安装或配置。")
-    } catch (value) {
-      setNotice(errorMessage(value));
-    } finally {
-      setBusy(false);
-    }
+  const chooseCv = async () => {
+    const selected = await openDialog({ multiple: false, directory: false, filters: [{ name: "CV", extensions: ["pdf", "docx", "md", "txt"] }] });
+    if (!selected || Array.isArray(selected)) return;
+    void importCv(selected, fileNameFromPath(selected));
   };
 
-  const executeSetup = async () => {
-    if (!setupPlan) return previewSetup();
-    const summary = [...setupPlan.commands, ...setupPlan.manualSteps].join("\n");
-    if (!window.confirm(`即将执行以下用户级搜索渠道设置：\n\n${summary || "无需安装；仅刷新渠道状态。"}\n\n不使用 sudo，也不会写入项目目录。继续吗？`)) return;
-    setBusy(true);
-    setNotice("");
-    try {
-      const result = await api.setupSearchCapabilities(setupPlan.channels, true);
-      setCapabilities(result.capabilities);
-      setNotice(result.messages.join("\n"));
-      setSetupPlan(undefined);
-    } catch (value) {
-      setNotice(errorMessage(value));
-    } finally {
-      setBusy(false);
-    }
+  const removeCv = () => {
+    setProfile((current) => ({ ...current, cvPath: undefined }));
+    setCvFileName("");
+    setNotice("CV 已从当前画像移除；保存后生效，本机副本会保留。")
   };
 
-  const beginAuth = async (channel: ChannelHealth["channel"]) => {
-    setBusy(true);
-    setNotice("");
-    try {
-      const guide = await api.beginSearchChannelAuth(channel);
-      setAuthGuide(guide);
-      if (guide.url) await openUrl(guide.url);
-      setNotice(`${searchChannelLabels[channel]} 登录引导已打开；完成后回到这里刷新状态。`);
-    } catch (value) {
-      setNotice(errorMessage(value));
-    } finally {
-      setBusy(false);
-    }
+  const handleCvDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setCvDragActive(false);
+    const file = event.dataTransfer.files[0];
+    const path = (file as (File & { path?: string }) | undefined)?.path;
+    if (path) void importCv(path, file.name);
+    else if (file) setNotice("当前环境无法读取拖入文件的本地路径，请点击“选择 CV 文件”完成导入。")
   };
 
   const profilePreferencesValue = profilePreferences(profile);
+  const readyChannels = capabilities?.channels.filter((health) => health.available && (!isAuthChannel(health.channel) || health.authenticated)) ?? [];
   return (
     <section className="internship-planning" aria-label="Internship 求职策略">
       <header className="internship-planning-header">
@@ -220,10 +240,29 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
               )}
             </label>
           ))}
-          <label className="profile-field">
-            <span>可选 CV（profile 内相对路径）</span>
-            <input value={profile.cvPath ?? ""} onChange={(event) => patch({ cvPath: event.target.value || undefined })} placeholder="例如 internship-cv.pdf；不会读取 Postdoc master_profile" />
-          </label>
+          <div className="profile-field profile-field-wide">
+            <span>可选 CV</span>
+            <div
+              ref={cvDropZone}
+              className={`internship-cv-dropzone${cvDragActive ? " is-dragging" : ""}`}
+              onDragOver={(event) => { event.preventDefault(); setCvDragActive(true); }}
+              onDragLeave={() => setCvDragActive(false)}
+              onDrop={handleCvDrop}
+              role="group"
+              aria-label="Internship CV 上传区域"
+            >
+              <div className="internship-cv-drop-icon"><FileUp size={22} /></div>
+              <div className="internship-cv-drop-copy">
+                <strong>{profile.cvPath ? "已添加 Internship CV" : "拖入 CV 文件，或点击选择"}</strong>
+                <span>{profile.cvPath ? cvFileName || "已导入 CV" : "支持 PDF、DOCX、Markdown、TXT，最大 25 MB"}</span>
+                {profile.cvPath && <small>已复制到本机资料目录；原文件未改动。保存画像后用于匹配。</small>}
+              </div>
+              <div className="internship-cv-actions">
+                <button type="button" className="button secondary" disabled={busy} onClick={() => void chooseCv()}>{profile.cvPath ? "更换 CV" : "选择 CV 文件"}</button>
+                {profile.cvPath && <button type="button" className="text-button danger" disabled={busy} onClick={removeCv}>移除</button>}
+              </div>
+            </div>
+          </div>
           <label className="profile-field profile-field-wide">
             <span>RSS / Atom 地址（每行一个）</span>
             <textarea value={profile.rssFeeds.join("\n")} onChange={(event) => patch({ rssFeeds: event.target.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) })} placeholder="https://example.com/internships.xml" />
@@ -235,16 +274,11 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
         </div>
       </section>
 
-      <ChannelHealthPanel
-        capabilities={capabilities}
-        setupPlan={setupPlan}
-        busy={busy}
-        authGuide={authGuide}
-        onRefresh={() => void load()}
-        onPreview={() => void previewSetup()}
-        onSetup={() => void executeSetup()}
-        onAuth={(channel) => void beginAuth(channel)}
-      />
+      <section className="channel-summary-strip" aria-label="信息搜索渠道摘要">
+        <div className="channel-summary-title"><Globe2 size={19} /><div><span>信息搜索渠道</span><strong>{capabilities ? `${readyChannels.length} / ${capabilities.channels.length} 个渠道可用` : "正在检查渠道…"}</strong></div></div>
+        <p>搜索会自动使用所有已准备渠道；单个渠道不可用时会跳过，不影响其他来源。</p>
+        <button className="text-button" onClick={() => onNavigate({ page: "settings", focus: "search-channels" })}>管理信息搜索渠道 <ArrowRight size={15} /></button>
+      </section>
 
       {notice && <div className="planning-notice"><CircleAlert size={17} /><span>{notice}</span></div>}
 
@@ -259,7 +293,7 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
           <div className="planning-track-list">
             {(profile.targetRoles ? profile.targetRoles.split(/[\n,，]/).map((value) => value.trim()).filter(Boolean) : searchTracks).slice(0, 7).map((track, index) => <span key={track} className={index < 3 ? "priority" : ""}>{track}</span>)}
           </div>
-          <button className="button primary wide" onClick={() => onNavigate({ page: "automation" })}><Radar size={16} /> 在 Agent 中启动全面扫描 <ArrowRight size={16} /></button>
+          <button className="button primary wide" onClick={() => onNavigate({ page: "automation", composer: "internship_search" })}><Radar size={16} /> 在 Agent 中启动全面扫描 <ArrowRight size={16} /></button>
         </article>
 
         <article className="planning-card planning-resume-card">
@@ -292,61 +326,6 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
   );
 }
 
-function ChannelHealthPanel({
-  capabilities,
-  setupPlan,
-  busy,
-  authGuide,
-  onRefresh,
-  onPreview,
-  onSetup,
-  onAuth,
-}: {
-  capabilities?: SearchCapabilities;
-  setupPlan?: SearchSetupPlan;
-  busy: boolean;
-  authGuide?: { title: string; url?: string; instructions: string[] };
-  onRefresh: () => void;
-  onPreview: () => void;
-  onSetup: () => void;
-  onAuth: (channel: ChannelHealth["channel"]) => void;
-}) {
-  return (
-    <section className="channel-health-panel" aria-label="搜索渠道健康状态">
-      <div className="planning-section-heading">
-        <div><span className="planning-index">CHANNEL DOCTOR</span><h3>渠道健康与登录</h3></div>
-        <div className="channel-health-actions">
-          <button className="button ghost" disabled={busy} onClick={onRefresh}><RefreshCw size={15} /> 刷新状态</button>
-          <button className="button secondary" disabled={busy} onClick={onPreview}><Wrench size={15} /> 预览安装 dry-run</button>
-          {setupPlan && <button className="button primary" disabled={busy} onClick={onSetup}><Check size={15} /> 确认执行设置</button>}
-        </div>
-      </div>
-      <p className="planning-section-note">渠道独立检查、并行执行；单个渠道不可用不会阻断其他来源。安装只写入当前用户工具与配置目录，不使用 sudo。</p>
-      <div className="channel-health-grid">
-        {(capabilities?.channels ?? []).map((health) => {
-          const needsAuth = ["facebook", "linkedin", "twitter"].includes(health.channel);
-          const state = !health.available ? "需安装" : needsAuth && !health.authenticated ? "需登录" : "可用";
-          return (
-            <article className={`channel-health-item channel-${health.available ? "available" : "missing"}`} key={health.channel}>
-              <div className="channel-health-topline"><strong>{searchChannelLabels[health.channel]}</strong><span className={`channel-state channel-state-${health.available ? "ready" : "missing"}`}>{state}</span></div>
-              <span className="channel-backend">{health.backend}</span>
-              <p>{health.message}</p>
-              <div className="channel-health-footer"><small>检查于 {formatDate(health.checkedAt)}</small>{needsAuth && <button className="text-button" disabled={busy} onClick={() => onAuth(health.channel)}><KeyRound size={14} /> 登录引导</button>}</div>
-            </article>
-          );
-        })}
-      </div>
-      {capabilities?.channels.length === 0 && <div className="planning-section-note">正在读取渠道状态…</div>}
-      {setupPlan && <div className="setup-plan">
-        <strong>安装预览</strong>
-        {setupPlan.commands.length > 0 ? <div className="setup-command-list">{setupPlan.commands.map((command) => <code key={command}>{command}</code>)}</div> : <span>没有需要执行的安装命令。</span>}
-        {setupPlan.manualSteps.map((step) => <span key={step}>· {step}</span>)}
-      </div>}
-      {authGuide && <div className="auth-guide"><div><strong>{authGuide.title}</strong>{authGuide.instructions.map((instruction) => <span key={instruction}>· {instruction}</span>)}</div>{authGuide.url && <button className="button ghost" onClick={() => void openUrl(authGuide.url!)}><ExternalLink size={14} /> 再次打开</button>}</div>}
-    </section>
-  );
-}
-
 function profilePreferences(profile?: InternshipProfile) {
   return [
     { label: "地点", value: profile?.regions || "待设置" },
@@ -356,7 +335,17 @@ function profilePreferences(profile?: InternshipProfile) {
   ];
 }
 
-function formatDate(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+function isAuthChannel(channel: string) {
+  return ["facebook", "linkedin", "twitter"].includes(channel);
+}
+
+function isDropInside(position: { x: number; y: number }, rect: DOMRect) {
+  const ratio = window.devicePixelRatio || 1;
+  const x = position.x / ratio;
+  const y = position.y / ratio;
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function fileNameFromPath(path: string) {
+  return path.split(/[\\/]/).pop() || "已导入 CV";
 }

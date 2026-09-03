@@ -23,7 +23,7 @@ use base64::Engine;
 use models::{
     AuthGuide, DashboardData, GmailDraftInfo, GmailOAuthStart, GmailStatus, InboundReplyRequest,
     JobGroups, MigrationReport, ProviderInfo, ReplyItem, SearchCapabilities, SearchChannel,
-    SearchSetupPlan, SearchSetupResult, TargetCard, TargetDetail, TaskModelDefault,
+    SearchSetupResult, TargetCard, TargetDetail, TaskModelDefault,
 };
 use paths::AppPaths;
 use scheduler::{EnqueueRequest, Scheduler};
@@ -274,6 +274,14 @@ fn import_onboarding_cv(
     onboarding::import_cv(&state.paths, std::path::Path::new(&path)).map_err(display_error)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn import_internship_cv(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    internship::import_cv(&state.paths, std::path::Path::new(&path)).map_err(display_error)
+}
+
 #[tauri::command]
 fn get_internship_profile(
     state: tauri::State<'_, AppState>,
@@ -297,20 +305,11 @@ fn get_search_capabilities(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn preview_search_setup(
-    state: tauri::State<'_, AppState>,
-    channels: Option<Vec<SearchChannel>>,
-) -> Result<SearchSetupPlan, String> {
-    search_channels::preview_setup(&state.paths, channels).map_err(display_error)
-}
-
-#[tauri::command(rename_all = "camelCase")]
 async fn setup_search_capabilities(
     state: tauri::State<'_, AppState>,
     channels: Option<Vec<SearchChannel>>,
-    confirmed: bool,
 ) -> Result<SearchSetupResult, String> {
-    search_channels::setup(&state.paths, channels, confirmed)
+    search_channels::setup(&state.paths, channels)
         .await
         .map_err(display_error)
 }
@@ -498,10 +497,10 @@ pub fn run() {
             get_onboarding_profile,
             save_onboarding_profile,
             import_onboarding_cv,
+            import_internship_cv,
             get_internship_profile,
             save_internship_profile,
             get_search_capabilities,
-            preview_search_setup,
             setup_search_capabilities,
             begin_search_channel_auth,
             get_jobs,

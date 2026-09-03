@@ -316,15 +316,6 @@ pub struct ChannelResults {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SearchSetupPlan {
-    pub checked_at: String,
-    pub channels: Vec<SearchChannel>,
-    pub commands: Vec<String>,
-    pub manual_steps: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SearchSetupResult {
     pub completed: bool,
     pub messages: Vec<String>,

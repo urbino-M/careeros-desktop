@@ -206,13 +206,6 @@ export interface SearchCapabilities {
   warnings: string[];
 }
 
-export interface SearchSetupPlan {
-  checkedAt: string;
-  channels: SearchChannel[];
-  commands: string[];
-  manualSteps: string[];
-}
-
 export interface SearchSetupResult {
   completed: boolean;
   messages: string[];
@@ -305,6 +298,8 @@ export interface InternshipProfile {
   updatedAt?: string;
 }
 
+export type AutomationComposer = "internship_search";
+
 export interface JobSummary {
   id: string;
   jobType: string;
@@ -390,9 +385,9 @@ export type ApplicationView = "opportunities" | "strategy";
 
 export type AppRoute =
   | { page: "dashboard" }
-  | { page: "automation" }
+  | { page: "automation"; composer?: AutomationComposer }
   | { page: "applications"; careerSystem: CareerSystem; status: ApplicationFilter; view?: ApplicationView }
   | { page: "application"; targetId: string; careerSystem: CareerSystem; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
-  | { page: "settings" };
+  | { page: "settings"; focus?: "search-channels" };
 
 export type Locale = "zh" | "en";

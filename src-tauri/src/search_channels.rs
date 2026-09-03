@@ -1,7 +1,7 @@
 use crate::internship;
 use crate::models::{
     AuthGuide, ChannelHealth, ChannelResults, SearchCandidate, SearchCapabilities, SearchChannel,
-    SearchSetupPlan, SearchSetupResult,
+    SearchSetupResult,
 };
 use crate::paths::AppPaths;
 use anyhow::{bail, Context, Result};
@@ -47,6 +47,12 @@ pub struct ChannelSearchManifest {
     pub health: Vec<ChannelHealth>,
     pub results: Vec<ChannelResults>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SearchSetupPlan {
+    channels: Vec<SearchChannel>,
+    manual_steps: Vec<String>,
 }
 
 #[async_trait]
@@ -144,7 +150,7 @@ pub async fn run(paths: &AppPaths, payload: &Value) -> Result<ChannelSearchManif
     })
 }
 
-pub fn preview_setup(
+fn setup_plan(
     paths: &AppPaths,
     requested: Option<Vec<SearchChannel>>,
 ) -> Result<SearchSetupPlan> {
@@ -163,43 +169,7 @@ pub fn preview_setup(
                 .map(|item| item.channel.clone())
                 .collect()
         });
-    let tool_dir = paths.data_root.join(NPM_TOOL_DIR);
-    let mut commands = Vec::new();
     let mut manual_steps = Vec::new();
-    let has_opencli = find_executable(paths, "opencli").is_some();
-    let has_mcporter = find_executable(paths, "mcporter").is_some();
-    let has_twitter = find_twitter_cli(paths).is_some();
-    let needs_uv = channels.iter().any(|channel| {
-        matches!(channel, SearchChannel::LinkedIn)
-            || (matches!(channel, SearchChannel::Twitter) && !has_opencli && !has_twitter)
-    });
-
-    if channels.contains(&SearchChannel::Facebook) && !has_opencli {
-        commands.push(format!(
-            "npm install --global --prefix {} @jackwener/opencli",
-            quote_path(&tool_dir)
-        ));
-    }
-    if channels.iter().any(|channel| matches!(channel, SearchChannel::Exa | SearchChannel::LinkedIn))
-        && !has_mcporter
-    {
-        commands.push(format!(
-            "npm install --global --prefix {} mcporter",
-            quote_path(&tool_dir)
-        ));
-    }
-    if needs_uv && find_executable(paths, "uv").is_none() {
-        commands.push("python3 -m pip install --user uv".into());
-    }
-    if channels.contains(&SearchChannel::Twitter) && !has_opencli && !has_twitter {
-        commands.push("uv tool install twitter-cli".into());
-    }
-    if channels.contains(&SearchChannel::Exa) {
-        commands.push("mcporter config add exa https://mcp.exa.ai/mcp --scope home".into());
-    }
-    if channels.contains(&SearchChannel::LinkedIn) {
-        commands.push("mcporter config add linkedin --command uvx --scope home -- mcp-server-linkedin@latest".into());
-    }
     if channels.contains(&SearchChannel::Facebook) {
         manual_steps.push("首次使用 Facebook 前，在自己的 Chrome 中安装 OpenCLI 扩展并保持已登录；CareerOS 不代填密码。".into());
     }
@@ -207,15 +177,13 @@ pub fn preview_setup(
         manual_steps.push("首次使用 LinkedIn 时打开登录引导，在自己的浏览器完成登录并允许上游 MCP 复用会话。".into());
     }
     if channels.contains(&SearchChannel::Twitter) {
-        manual_steps.push("首次使用 Twitter / X 时在自己的浏览器登录，或按 twitter-cli 文档自行配置本地 Token/Cookie；CareerOS 不读取或保存它们。".into());
+        manual_steps.push("首次使用 Twitter / X 时优先在自己的 Chrome 中登录并保持 OpenCLI 可用；若使用 twitter-cli 备选后端，则按上游工具自行配置本地认证。CareerOS 不读取或保存凭据。".into());
     }
     if channels.contains(&SearchChannel::Rss) {
         manual_steps.push("RSS 不需要登录；请在 Internship 画像中填写每行一个 RSS/Atom 地址。".into());
     }
     Ok(SearchSetupPlan {
-        checked_at: Utc::now().to_rfc3339(),
         channels,
-        commands,
         manual_steps,
     })
 }
@@ -223,19 +191,15 @@ pub fn preview_setup(
 pub async fn setup(
     paths: &AppPaths,
     requested: Option<Vec<SearchChannel>>,
-    confirmed: bool,
 ) -> Result<SearchSetupResult> {
-    if !confirmed {
-        bail!("执行搜索渠道安装前需要用户确认 dry-run 计划");
-    }
-    let plan = preview_setup(paths, requested).map_err(|error| anyhow::anyhow!(error))?;
+    let plan = setup_plan(paths, requested).map_err(|error| anyhow::anyhow!(error))?;
     let mut messages = Vec::new();
     let mut completed = true;
     let tool_dir = paths.data_root.join(NPM_TOOL_DIR);
     let tool_dir_display = tool_dir.display().to_string();
     let selected = &plan.channels;
 
-    if selected.contains(&SearchChannel::Facebook)
+    if selected.iter().any(|channel| matches!(channel, SearchChannel::Facebook | SearchChannel::Twitter))
         && find_executable(paths, "opencli").is_none()
     {
         if let Some(npm) = find_executable(paths, "npm") {
@@ -392,7 +356,7 @@ pub fn auth_guide(channel: SearchChannel) -> Result<AuthGuide> {
         SearchChannel::LinkedIn => AuthGuide {
             channel,
             title: "准备 LinkedIn 登录态".into(),
-            url: Some("https://www.linkedin.com/jobs/".into()),
+            url: Some("https://www.linkedin.com/login/".into()),
             instructions: vec![
                 "在自己的浏览器完成 LinkedIn 登录，并按上游 MCP 的引导保存会话。".into(),
                 "CareerOS 不代替登录，也不读取或保存账号凭据。".into(),
@@ -401,7 +365,7 @@ pub fn auth_guide(channel: SearchChannel) -> Result<AuthGuide> {
         SearchChannel::Twitter => AuthGuide {
             channel,
             title: "准备 Twitter / X 登录态".into(),
-            url: Some("https://x.com/home".into()),
+            url: Some("https://x.com/i/flow/login".into()),
             instructions: vec![
                 "优先在自己的 Chrome 中登录 Twitter / X 并保持浏览器会话。".into(),
                 "也可以自行按 twitter-cli 文档配置本地 Token/Cookie；CareerOS 不读取、打印或保存它们。".into(),
@@ -1101,10 +1065,6 @@ fn find_executable(paths: &AppPaths, name: &str) -> Option<PathBuf> {
         candidates.push(home.join("Library/Python/3.13/bin").join(name));
     }
     candidates.into_iter().find(|candidate| candidate.is_file())
-}
-
-fn quote_path(path: &Path) -> String {
-    format!("\"{}\"", path.display())
 }
 
 fn canonical_url(value: &str) -> String {

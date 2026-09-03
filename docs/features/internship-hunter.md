@@ -44,7 +44,7 @@ ATS evidence remains the Codex web-search route.
 |---|---|---|
 | Search channels | `src-tauri/src/search_channels.rs`; `src-tauri/src/models.rs` | Capability checks, adapters, preferred/fallback backends, parallel search, normalization, and provenance |
 | Internship profile | `src-tauri/src/internship.rs`; `src/components/InternshipPlanningPanel.tsx` | Independent `profile/internship.json`, optional profile-local CV, RSS feeds, and strategy UI |
-| Setup/auth commands | `src-tauri/src/lib.rs`; `src/api.ts`; `src/types.ts` | Dry-run, confirmed user-level installation, channel health, and browser login guidance without credential handling |
+| Setup/auth commands | `src-tauri/src/lib.rs`; `src/api.ts`; `src/types.ts` | One-click user-level installation, channel health, and browser login guidance without credential handling |
 | Runtime contract | `src-tauri/resources/skills/internship-application-agent/SKILL.md`; `src-tauri/src/materials.rs` | Channel-result input, evidence rules, workspace files, and output contract |
 | Domain import | `src-tauri/src/workflows.rs` | Result validation, cross-channel deduplication, verification classification, checklist and evidence persistence |
 | Persistence | `src-tauri/migrations/0012_search_channels.sql`; `src-tauri/src/migration.rs`; `src-tauri/src/db.rs` | Verification status, source channel/backend, filtered list/detail queries, and unverified submission protection |
@@ -71,19 +71,22 @@ ATS evidence remains the Codex web-search route.
 
 ## Setup and login
 
-The strategy page exposes `get_search_capabilities`,
-`preview_search_setup`, `setup_search_capabilities`, and
-`begin_search_channel_auth`. Setup is always previewed first and requires an
-explicit user confirmation. The fixed setup flow installs OpenCLI, mcporter,
-`uv`, or `twitter-cli` into user-level locations and writes only user-level
-mcporter configuration; it never uses `sudo` or writes the project directory.
+The settings page exposes `get_search_capabilities`,
+`setup_search_capabilities`, and `begin_search_channel_auth` through the
+“管理信息搜索渠道” section. A user action on “一键启用” directly installs
+OpenCLI, mcporter, `uv`, or `twitter-cli` into user-level locations and writes
+only user-level mcporter configuration; it never uses `sudo` or writes the
+project directory. The strategy page shows only a compact channel summary and
+links back to this settings section.
 
-CareerOS does not automate login and never reads, prints, or stores passwords,
-browser cookies, or tokens. Facebook, LinkedIn, and Twitter / X may reuse the
-user's existing browser session. Twitter may also be configured by the user
-through the upstream CLI's local authentication. When a session is missing,
-CareerOS opens a centralized login guide and reports that the user must finish
-the browser step.
+CareerOS does not enter credentials and never reads, prints, or stores
+passwords, browser cookies, or tokens. Facebook, LinkedIn, and Twitter / X may
+reuse the user's existing browser session. Twitter may also be configured by
+the user through the upstream CLI's local authentication. When a session is
+missing, clicking “连接渠道” opens the centralized browser login guide and
+CareerOS polls the safe channel health result for up to 60 seconds. If the
+upstream cannot expose a verifiable authenticated state, the UI asks the user
+to click “立即检查” instead of claiming that login succeeded.
 
 ## Persistent data and contracts
 
