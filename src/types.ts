@@ -13,7 +13,9 @@ export type SubmissionStatus =
 
 export type StatusFilter = ContactStatus | "all";
 export type CareerSystem = "postdoc" | "internship";
-export type ApplicationFilter = StatusFilter | SubmissionStatus;
+export type SearchChannel = "web_ats" | "exa" | "rss" | "linkedin" | "facebook" | "twitter";
+export type VerificationStatus = "verified" | "unverified";
+export type ApplicationFilter = StatusFilter | SubmissionStatus | VerificationStatus;
 
 export interface MigrationReport {
   imported: boolean;
@@ -60,6 +62,9 @@ export interface TargetCard {
   sourceUrl?: string;
   updatedAt: string;
   careerTrack: "postdoc" | "internship";
+  verificationStatus: VerificationStatus;
+  sourceChannel: SearchChannel;
+  sourceBackend: string;
 }
 
 export interface DashboardData {
@@ -173,6 +178,52 @@ export interface TargetDetail {
   checklist: ChecklistItem[];
   replies: ReplyItem[];
   revisions: RevisionItem[];
+  sources: SourceEvidence[];
+}
+
+export interface SourceEvidence {
+  title: string;
+  url: string;
+  checkedAt: string;
+  evidenceType: "primary" | "secondary" | "inferred" | string;
+  channel: SearchChannel;
+  backend: string;
+}
+
+export interface ChannelHealth {
+  channel: SearchChannel;
+  backend: string;
+  available: boolean;
+  authenticated: boolean;
+  status: string;
+  message: string;
+  checkedAt: string;
+}
+
+export interface SearchCapabilities {
+  checkedAt: string;
+  channels: ChannelHealth[];
+  warnings: string[];
+}
+
+export interface SearchSetupPlan {
+  checkedAt: string;
+  channels: SearchChannel[];
+  commands: string[];
+  manualSteps: string[];
+}
+
+export interface SearchSetupResult {
+  completed: boolean;
+  messages: string[];
+  capabilities: SearchCapabilities;
+}
+
+export interface AuthGuide {
+  channel: SearchChannel;
+  title: string;
+  url?: string;
+  instructions: string[];
 }
 
 export interface ProviderModelInfo {
@@ -235,6 +286,22 @@ export interface OnboardingProfile {
   constraints: string;
   preferredLanguage: "zh" | "en" | "bilingual";
   cvSourceFile?: string;
+  updatedAt?: string;
+}
+
+export interface InternshipProfile {
+  schemaVersion: number;
+  targetRoles: string;
+  industries: string;
+  regions: string;
+  workMode: string;
+  startDate: string;
+  duration: string;
+  workAuthorization: string;
+  enrollmentStatus: string;
+  constraints: string;
+  cvPath?: string;
+  rssFeeds: string[];
   updatedAt?: string;
 }
 

@@ -180,7 +180,7 @@ body::before {
 .button.danger, .danger { color: var(--red); }
 
 .status-tabs { display: grid; grid-template-columns: repeat(6, 1fr); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
-.status-tabs.internship-tabs { grid-template-columns: repeat(5, 1fr); }
+.status-tabs.internship-tabs { grid-template-columns: repeat(6, 1fr); }
 .status-tabs button { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; border: 0; border-right: 1px solid var(--line); background: rgba(6,27,35,.7); cursor: pointer; }
 .status-tabs button:last-child { border-right: 0; }
 .status-tabs button span { min-width: 21px; padding: 2px 6px; border-radius: 10px; background: rgba(118,156,160,.13); font-size: 10px; color: var(--muted); }
@@ -210,6 +210,40 @@ body::before {
 .internship-search-profile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 18px; align-content: start; padding: 2px 0 0 18px; border-left: 1px solid var(--line); }
 .internship-search-profile-item { display: grid; gap: 4px; min-width: 0; }
 .internship-search-profile-item strong { color: #d7e6e2; font-size: 11px; }
+.internship-profile-editor, .channel-health-panel { display: grid; gap: 15px; margin: 12px; padding: 18px; border: 1px solid var(--line); background: rgba(4,25,32,.54); }
+.planning-section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.planning-section-heading h3 { margin: 5px 0 0; font: 600 20px/1.15 var(--serif); }
+.planning-section-note { color: var(--muted-2); font-size: 10px; line-height: 1.55; }
+.internship-profile-fields { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+.profile-field { display: grid; gap: 7px; min-width: 0; }
+.profile-field-wide { grid-column: 1 / -1; }
+.profile-field > span { color: #bfd0cf; font-size: 10px; font-weight: 650; letter-spacing: .04em; }
+.profile-field input, .profile-field textarea { width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 5px; background: #0c303b; color: var(--text); outline: none; font: inherit; font-size: 11px; }
+.profile-field input:focus, .profile-field textarea:focus { border-color: var(--line-bright); box-shadow: 0 0 0 2px rgba(72,205,208,.08); }
+.profile-field textarea { min-height: 66px; resize: vertical; line-height: 1.5; }
+.planning-editor-actions, .channel-health-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.channel-health-actions { justify-content: flex-end; }
+.channel-health-panel { margin-top: 0; }
+.channel-health-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
+.channel-health-item { display: grid; gap: 7px; min-width: 0; padding: 13px; border: 1px solid var(--line); background: rgba(7,31,40,.74); }
+.channel-health-item.channel-available { border-color: rgba(72,205,208,.25); }
+.channel-health-topline, .channel-health-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.channel-health-topline strong { color: #d8e5e2; font-size: 12px; }
+.channel-backend { color: var(--accent); font: 9px monospace; overflow-wrap: anywhere; }
+.channel-health-item p { min-height: 34px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.channel-health-footer small { color: var(--muted-2); font-size: 9px; }
+.channel-health-footer .text-button { padding: 0; font-size: 10px; }
+.channel-state { padding: 3px 6px; border-radius: 999px; font-size: 9px; white-space: nowrap; }
+.channel-state-ready { color: var(--green); background: rgba(78,212,141,.1); }
+.channel-state-missing { color: var(--amber); background: rgba(242,173,64,.1); }
+.setup-plan, .auth-guide, .planning-notice { display: grid; gap: 7px; padding: 12px 13px; border: 1px solid rgba(72,205,208,.25); background: rgba(72,205,208,.07); color: #c9dcda; font-size: 10px; line-height: 1.5; }
+.setup-command-list { display: grid; gap: 6px; }
+.setup-plan code { padding: 7px 8px; color: #a9e5df; border: 1px solid rgba(72,205,208,.16); background: rgba(2,19,25,.72); font: 10px/1.45 monospace; overflow-wrap: anywhere; }
+.auth-guide { grid-template-columns: 1fr auto; align-items: center; border-color: rgba(242,173,64,.28); background: rgba(56,41,18,.2); }
+.auth-guide > div { display: grid; gap: 5px; }
+.auth-guide > div strong { color: #f1d69c; }
+.planning-notice { grid-template-columns: 18px 1fr; align-items: start; margin: 0 12px 12px; color: #d7e5e1; }
+.planning-notice svg { color: var(--amber); margin-top: 1px; }
 .internship-planning-grid { display: grid; grid-template-columns: 1.06fr .94fr 1fr; gap: 12px; padding: 12px; }
 .planning-card { min-width: 0; display: grid; align-content: start; gap: 14px; padding: 18px; border: 1px solid var(--line); background: rgba(4,25,32,.64); }
 .planning-card-heading { display: flex; align-items: flex-start; gap: 10px; }
@@ -282,12 +316,16 @@ body::before {
 .submission-portal_pending { color: var(--amber); background: rgba(242,173,64,.1); }
 .submission-submitted { color: var(--green); background: rgba(78,212,141,.1); }
 .submission-not_required { color: #aeb9b8; background: rgba(128,145,147,.1); }
+.verification-badge { display: inline-flex; width: fit-content; padding: 4px 8px; border-radius: 5px; border: 1px solid currentColor; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.verification-verified { color: var(--green); background: rgba(78,212,141,.1); }
+.verification-unverified { color: var(--amber); background: rgba(242,173,64,.1); }
 
 .back-button { display: inline-flex; gap: 8px; align-items: center; margin-bottom: 26px; padding: 9px 12px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
 .detail-layout { display: grid; grid-template-columns: 280px minmax(0,1fr); gap: 30px; }
 .opportunity-rail { align-self: start; position: sticky; top: 30px; padding-right: 26px; border-right: 1px solid var(--line); }
 .opportunity-rail h1 { margin: 10px 0 13px; font: 600 37px/1.08 var(--serif); overflow-wrap: anywhere; }
 .rail-role { color: #d1dcdb; line-height: 1.55; }
+.rail-verification-badges { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .rail-facts { display: grid; gap: 17px; margin: 30px 0; }
 .rail-facts div { display: grid; gap: 5px; }
 .rail-facts dt { color: var(--muted-2); font-size: 11px; }
@@ -307,6 +345,12 @@ body::before {
 .material-tabs button.selected { color: var(--accent); border-bottom-color: var(--accent); }
 .material-body { min-height: 480px; padding-top: 24px; }
 .content-section { display: grid; gap: 18px; }
+.source-evidence-panel { display: grid; gap: 14px; padding: 18px; border: 1px solid rgba(242,173,64,.28); background: rgba(56,41,18,.2); }
+.source-evidence-list { display: grid; gap: 9px; }
+.source-evidence-list article { display: grid; gap: 5px; padding: 11px 12px; border: 1px solid var(--line); background: rgba(4,25,32,.6); }
+.source-evidence-list article > div { display: flex; justify-content: space-between; gap: 12px; }
+.source-evidence-list article span, .source-evidence-list article small { color: var(--muted-2); font-size: 10px; }
+.source-evidence-list article a { display: flex; align-items: center; gap: 5px; color: #70b6e9; font-size: 11px; overflow-wrap: anywhere; }
 .artifact-stack { display: grid; gap: 22px; }
 .content-title { display: flex; gap: 12px; align-items: flex-start; }
 .content-title > svg { color: var(--accent); margin-top: 2px; }
@@ -683,6 +727,7 @@ body::before {
   .career-overview-grid { grid-template-columns: 1fr; }
   .internship-planning-header { grid-template-columns: 1fr; }
   .internship-search-profile { grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 14px 0 0; border-top: 1px solid var(--line); border-left: 0; }
+  .channel-health-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .internship-context-strip { grid-template-columns: 1fr auto; }
   .internship-context-profile { grid-column: 1 / -1; grid-row: 2; }
   .dashboard-grid { grid-template-columns: 1fr; }
@@ -710,6 +755,11 @@ body::before {
   .career-overview-metrics { grid-template-columns: repeat(3, 1fr); }
   .internship-planning-grid { grid-template-columns: 1fr; }
   .internship-search-profile { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .internship-profile-fields, .channel-health-grid { grid-template-columns: 1fr; }
+  .profile-field-wide { grid-column: auto; }
+  .planning-section-heading { flex-direction: column; }
+  .channel-health-actions { justify-content: flex-start; }
+  .auth-guide { grid-template-columns: 1fr; }
   .application-view-tabs { display: grid; grid-template-columns: repeat(2, 1fr); width: 100%; }
   .application-view-tabs button { text-align: center; }
   .internship-context-strip { grid-template-columns: 1fr; gap: 12px; }

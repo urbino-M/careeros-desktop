@@ -1,8 +1,8 @@
 use crate::models::{
     ArtifactItem, ChecklistItem, DashboardData, DashboardMetric, JobGroups, JobSummary,
     InboundReplyRequest, ProviderInfo, ProviderModelInfo, RegionCount, ReplyItem,
-    ProviderRuntimeConfig, ProviderRuntimeModel, RevisionItem, TargetCard, TargetDetail,
-    TaskModelDefault,
+    ProviderRuntimeConfig, ProviderRuntimeModel, RevisionItem, SearchChannel, SourceEvidence,
+    TargetCard, TargetDetail, TaskModelDefault, VerificationStatus,
 };
 use crate::paths::AppPaths;
 use crate::providers::ProviderDiscovery;
@@ -104,15 +104,27 @@ pub fn dashboard(path: &Path, career_track: &str) -> Result<DashboardData> {
                  FROM contact_targets_v2 t
                  LEFT JOIN opportunities o ON o.id=t.opportunity_id
                  WHERE t.archived_at IS NULL AND t.submission_status=?2
+                   AND COALESCE(o.verification_status,'verified')='verified'
                    AND ?1='internship'
                    AND o.opportunity_type='industry_internship'",
                 params![career_track, submission_status],
                 |row| row.get(0),
             )?)
         };
+        let unverified: i64 = conn.query_row(
+            "SELECT COUNT(*)
+             FROM contact_targets_v2 t
+             LEFT JOIN opportunities o ON o.id=t.opportunity_id
+             WHERE t.archived_at IS NULL AND ?1='internship'
+               AND o.opportunity_type='industry_internship'
+               AND COALESCE(o.verification_status,'verified')='unverified'",
+            [career_track],
+            |row| row.get(0),
+        )?;
         vec![
             DashboardMetric { key: "all".into(), label: "申请机会".into(), value: total, helper: "只显示行业 Internship".into() },
             DashboardMetric { key: "high_fit".into(), label: "高匹配".into(), value: high_fit, helper: "评分 ≥ 85".into() },
+            DashboardMetric { key: "unverified".into(), label: "待核验".into(), value: unverified, helper: "来自社交、Exa 或 RSS，不能直接投递".into() },
             DashboardMetric { key: "portal_pending".into(), label: "待投递".into(), value: submission_count("portal_pending")?, helper: "已核验，等待官网投递".into() },
             DashboardMetric { key: "submitted".into(), label: "已投递".into(), value: submission_count("submitted")?, helper: "等待面试或后续通知".into() },
             DashboardMetric { key: "not_set".into(), label: "未开始".into(), value: submission_count("not_set")?, helper: "还没有记录投递动作".into() },
@@ -173,6 +185,7 @@ pub fn dashboard(path: &Path, career_track: &str) -> Result<DashboardData> {
         career_track,
         if career_track == "postdoc" { Some("ready_to_contact") } else { None },
         if career_track == "internship" { Some("portal_pending") } else { None },
+        if career_track == "internship" { Some("verified") } else { None },
         None,
         0,
         4,
@@ -254,6 +267,7 @@ pub fn list_targets(
     career_track: &str,
     status: Option<&str>,
     submission_status: Option<&str>,
+    verification_status: Option<&str>,
     search: Option<&str>,
     offset: usize,
     limit: usize,
@@ -261,8 +275,19 @@ pub fn list_targets(
     validate_career_track(career_track)?;
     validate_status_filter(status)?;
     validate_submission_status_filter(submission_status)?;
+    validate_verification_status_filter(verification_status)?;
     let conn = connect(path)?;
-    list_targets_with_conn(&conn, career_track, status, submission_status, search, offset, limit.clamp(1, 100), false)
+    list_targets_with_conn(
+        &conn,
+        career_track,
+        status,
+        submission_status,
+        verification_status,
+        search,
+        offset,
+        limit.clamp(1, 100),
+        false,
+    )
 }
 
 fn list_targets_with_conn(
@@ -270,6 +295,7 @@ fn list_targets_with_conn(
     career_track: &str,
     status: Option<&str>,
     submission_status: Option<&str>,
+    verification_status: Option<&str>,
     search: Option<&str>,
     offset: usize,
     limit: usize,
@@ -278,8 +304,10 @@ fn list_targets_with_conn(
     validate_career_track(career_track)?;
     validate_status_filter(status)?;
     validate_submission_status_filter(submission_status)?;
+    validate_verification_status_filter(verification_status)?;
     let status = status.filter(|value| *value != "all");
     let submission_status = submission_status.filter(|value| *value != "all");
+    let verification_status = verification_status.filter(|value| *value != "all");
     let search = search.map(str::trim).filter(|value| !value.is_empty());
     let pattern = search.map(|value| format!("%{}%", value.to_lowercase()));
     let order = if high_fit_first {
@@ -292,7 +320,9 @@ fn list_targets_with_conn(
                 t.organization, t.title, o.country, o.region, t.fit_score,
                 t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
                 t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at,
-                CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END
+                CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END,
+                COALESCE(o.verification_status,'verified'), COALESCE(o.source_channel,'web_ats'),
+                COALESCE(o.source_backend,'legacy')
          FROM contact_targets_v2 t
          LEFT JOIN opportunities o ON o.id=t.opportunity_id
          WHERE t.archived_at IS NULL
@@ -308,12 +338,21 @@ fn list_targets_with_conn(
            AND (?3 IS NULL OR t.submission_status=?3)
            AND (?4 IS NULL OR lower(t.name) LIKE ?4 OR lower(t.organization) LIKE ?4
                 OR lower(t.title) LIKE ?4 OR lower(COALESCE(t.email,'')) LIKE ?4)
+           AND (?5 IS NULL OR COALESCE(o.verification_status,'verified')=?5)
          ORDER BY {order}
-         LIMIT ?5 OFFSET ?6"
+         LIMIT ?6 OFFSET ?7"
     );
     let mut statement = conn.prepare(&sql)?;
     let rows = statement.query_map(
-        params![career_track, status, submission_status, pattern, limit as i64, offset as i64],
+        params![
+            career_track,
+            status,
+            submission_status,
+            pattern,
+            verification_status,
+            limit as i64,
+            offset as i64,
+        ],
         target_from_row,
     )?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -327,7 +366,9 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
                     t.organization, t.title, o.country, o.region, t.fit_score,
                     t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
                     t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at,
-                    CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END
+                    CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END,
+                    COALESCE(o.verification_status,'verified'), COALESCE(o.source_channel,'web_ats'),
+                    COALESCE(o.source_backend,'legacy')
              FROM contact_targets_v2 t
              LEFT JOIN opportunities o ON o.id=t.opportunity_id
              WHERE t.id=?1 AND t.archived_at IS NULL",
@@ -446,6 +487,29 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
+    let mut sources_statement = conn.prepare(
+        "SELECT title, url, checked_at, evidence_type,
+                COALESCE(source_channel,'web_ats'), COALESCE(backend,'legacy')
+         FROM native_source_evidence
+         WHERE (entity_type='opportunity' AND entity_id=(
+                    SELECT opportunity_id FROM contact_targets_v2 WHERE id=?1
+                ))
+            OR (entity_type='contact_target' AND entity_id=?1)
+         ORDER BY checked_at DESC, id DESC",
+    )?;
+    let sources = sources_statement
+        .query_map([target_id], |row| {
+            Ok(SourceEvidence {
+                title: row.get(0)?,
+                url: row.get(1)?,
+                checked_at: row.get(2)?,
+                evidence_type: row.get(3)?,
+                channel: SearchChannel::parse(&row.get::<_, String>(4)?),
+                backend: row.get(5)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
     Ok(TargetDetail {
         target,
         summary,
@@ -456,6 +520,7 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
         checklist,
         replies,
         revisions,
+        sources,
     })
 }
 
@@ -490,6 +555,24 @@ pub fn update_submission_status(path: &Path, target_id: &str, status: &str) -> R
         bail!("未知投递状态：{status}")
     }
     let conn = connect(path)?;
+    if matches!(status, "portal_pending" | "submitted") {
+        let verification: Option<String> = conn
+            .query_row(
+                "SELECT COALESCE(o.verification_status,'verified')
+                 FROM contact_targets_v2 t
+                 LEFT JOIN opportunities o ON o.id=t.opportunity_id
+                 WHERE t.id=?1 AND t.archived_at IS NULL",
+                [target_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(verification) = verification else {
+            bail!("联系目标不存在，投递状态未更新")
+        };
+        if verification == "unverified" {
+            bail!("该机会尚未核验，不能标记为待投递或已投递；请先打开官方 Web / ATS 来源确认")
+        }
+    }
     let changed = conn.execute(
         "UPDATE contact_targets_v2
          SET submission_status=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
@@ -966,6 +1049,9 @@ fn target_from_row(row: &Row<'_>) -> rusqlite::Result<TargetCard> {
         source_url: row.get(14)?,
         updated_at: row.get(15)?,
         career_track: row.get(16)?,
+        verification_status: VerificationStatus::parse(&row.get::<_, String>(17)?),
+        source_channel: SearchChannel::parse(&row.get::<_, String>(18)?),
+        source_backend: row.get(19)?,
     })
 }
 
@@ -1033,6 +1119,15 @@ fn validate_submission_status_filter(status: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn validate_verification_status_filter(status: Option<&str>) -> Result<()> {
+    if let Some(value) = status {
+        if !matches!(value, "verified" | "unverified" | "all") {
+            bail!("未知核验状态：{value}")
+        }
+    }
+    Ok(())
+}
+
 fn resolve_data_path(data_root: &Path, value: &str) -> std::path::PathBuf {
     let path = std::path::PathBuf::from(value);
     if path.is_absolute() {
@@ -1089,8 +1184,14 @@ mod tests {
         let database = temp.path().join("status.sqlite3");
         let conn = connect(&database)?;
         conn.execute_batch(
-            "CREATE TABLE contact_targets_v2(
+            "CREATE TABLE opportunities(
                 id TEXT PRIMARY KEY,
+                verification_status TEXT NOT NULL DEFAULT 'verified'
+             );
+             INSERT INTO opportunities(id) VALUES('opportunity-1');
+             CREATE TABLE contact_targets_v2(
+                id TEXT PRIMARY KEY,
+                opportunity_id TEXT,
                 status TEXT NOT NULL,
                 shelved_at TEXT,
                 submission_status TEXT NOT NULL DEFAULT 'not_set',
@@ -1100,7 +1201,7 @@ mod tests {
                 archived_at TEXT,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
              );
-             INSERT INTO contact_targets_v2(id,status) VALUES('target-1','replied');",
+             INSERT INTO contact_targets_v2(id,opportunity_id,status) VALUES('target-1','opportunity-1','replied');",
         )?;
         drop(conn);
 
@@ -1116,6 +1217,15 @@ mod tests {
         assert!(shelved.is_some());
         assert_eq!(submission, "portal_pending");
         drop(conn);
+
+        let conn = connect(&database)?;
+        conn.execute(
+            "UPDATE opportunities SET verification_status='unverified' WHERE id='opportunity-1'",
+            [],
+        )?;
+        drop(conn);
+        assert!(update_submission_status(&database, "target-1", "submitted").is_err());
+        update_submission_status(&database, "target-1", "not_required")?;
 
         update_target_status(&database, "target-1", "follow_up")?;
         let conn = connect(&database)?;

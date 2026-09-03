@@ -2,7 +2,7 @@ import { ArrowLeft, ArrowRight, Filter, Mail, Search, SlidersHorizontal } from "
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api";
 import { InternshipPlanningPanel, InternshipPlanningSummary } from "../components/InternshipPlanningPanel";
-import { EmptyState, ErrorState, LoadingState, StatusBadge, SubmissionBadge, statusLabels } from "../components/Ui";
+import { EmptyState, ErrorState, LoadingState, StatusBadge, SubmissionBadge, VerificationBadge, searchChannelLabels, statusLabels } from "../components/Ui";
 import type { ApplicationFilter, AppRoute, ApplicationView, CareerSystem, DashboardData, TargetCard } from "../types";
 
 const postdocFilters: ApplicationFilter[] = [
@@ -15,6 +15,7 @@ const postdocFilters: ApplicationFilter[] = [
 ];
 
 const internshipFilters: ApplicationFilter[] = [
+  "unverified",
   "portal_pending",
   "submitted",
   "not_set",
@@ -29,6 +30,8 @@ const filterLabels: Record<ApplicationFilter, string> = {
   submitted: "已投递",
   not_required: "无需投递",
   all: "全部",
+  verified: "已核验",
+  unverified: "待核验",
 };
 
 export function ApplicationsPage({
@@ -92,7 +95,7 @@ export function ApplicationsPage({
         <div className="eyebrow">APPLICATION WORKSPACE</div>
         <h1>{internship ? "Internship 申请" : "Postdoc 申请"}</h1>
         <p>{internship
-          ? "只显示行业实习机会，并按官网投递进度管理；不会混入 PI 联系记录。"
+          ? "汇总官方 Web / ATS、Exa、RSS、LinkedIn、Facebook 和 Twitter / X 的行业实习机会；待核验来源单独展示。"
           : "只显示 Postdoc 机会，并按 PI 联系、回复和跟进状态管理；不会混入行业职位。"}</p>
       </header>
 
@@ -141,7 +144,7 @@ export function ApplicationsPage({
           <div className="status-explainer">
             <Mail size={18} />
             {internship
-              ? "CareerOS 的 Internship 轨道只保存已核验机会和申请清单，不会生成简历、联系公司或自动投递。"
+              ? "CareerOS 会保留多渠道发现结果；只有官方 Web / ATS 主证据标记为已核验，待核验机会不能直接投递。"
               : "Gmail 草稿不会改变状态；回复 Agent 完成后才进入“跟进”，明确拒绝会进入“搁置”。每位 PI 都是独立联系目标。"}
           </div>
 
@@ -179,7 +182,10 @@ export function ApplicationsPage({
                   <div className="target-card-top">
                     <div className="score"><strong>{Math.round(target.fitScore ?? 0)}</strong><span>/ 100</span></div>
                     <div className="target-card-badges">
-                      {targetInternship ? <SubmissionBadge status={target.submissionStatus} /> : <StatusBadge status={target.status} />}
+                      {targetInternship ? <>
+                        <VerificationBadge status={target.verificationStatus} />
+                        <SubmissionBadge status={target.submissionStatus} />
+                      </> : <StatusBadge status={target.status} />}
                     </div>
                   </div>
                   <h3>{target.organization}</h3>
@@ -187,6 +193,7 @@ export function ApplicationsPage({
                   <dl>
                     <div><dt>{targetInternship ? "申请方式" : "PI / 联系目标"}</dt><dd>{target.name}</dd></div>
                     <div><dt>地区</dt><dd>{[target.region, target.country].filter(Boolean).join(" · ") || "待确认"}</dd></div>
+                    {targetInternship && <div><dt>来源渠道</dt><dd>{searchChannelLabels[target.sourceChannel]} · {target.sourceBackend}</dd></div>}
                     {target.email && <div><dt>邮箱</dt><dd className="email-value">{target.email}</dd></div>}
                     <div><dt>截止</dt><dd>{target.deadline || "待确认"}</dd></div>
                   </dl>

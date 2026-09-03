@@ -2,106 +2,145 @@
 
 ## Product shape
 
-Internship Hunter is a second application track inside the unified CareerOS
-desktop workspace. The sidebar keeps one CareerOS identity and shared entries
-for the dashboard, Agent 运行中心, settings, and scheduler. Under `申请`,
-`Postdoc 申请` and `Internship 申请` are separate list entry points, so their
-opportunity records and workflow-specific status views remain distinct without
-introducing a second system selector.
+Internship Hunter is the independent Internship track inside the unified
+CareerOS desktop workspace. Its list and strategy views share the CareerOS
+shell, but the Internship search profile and submission safeguards are separate
+from Postdoc records.
 
 ## Scope
 
-Internship Hunter discovers current industry internships from official sources,
-checks hard eligibility conservatively, and saves review-only opportunity cards,
-fit analyses, and application checklists. It does not tailor a resume, contact an
-employer, or submit an application.
+Internship Hunter discovers current industry internships through official Web /
+ATS, Exa, RSS, LinkedIn, Facebook, and Twitter / X. It checks hard eligibility
+conservatively, preserves source evidence, and saves review-only opportunity
+cards, fit analyses, and application checklists. It does not tailor a resume,
+contact an employer, or submit an application.
 
 ## Architecture
 
-`AutomationPage.tsx` enqueues `internship_search`. The generic scheduler prepares
-an isolated workspace, selects the internship runtime skill, runs Codex, and
-passes `internship-search-results.json` to `workflows.rs`. The workflow validates
-and deduplicates results before storing them in the existing
-Opportunity/Application/contact-target data path. See `docs/ARCHITECTURE.md` for
-the repository-wide ownership map.
+`AutomationPage.tsx` enqueues `internship_search`. The scheduler prepares an
+isolated workspace, runs the native channel adapters before Codex, writes
+`input/channel-results.json`, selects the Internship runtime skill, and passes
+`output/internship-search-results.json` to `workflows.rs`. The workflow validates,
+deduplicates, classifies verification, and imports results through the existing
+Opportunity/Application/contact-target path.
 
-## Source Ownership
+The native channel boundary lives in `src-tauri/src/search_channels.rs`:
+
+```text
+doctor() -> ChannelHealth
+search(request) -> RawChannelResults
+normalize(raw) -> ChannelResults
+```
+
+Each adapter has its own health check and warning path. Available channels run
+in parallel; one channel failure does not discard other results. Twitter uses
+OpenCLI first and `twitter-cli` as a fallback. Exa and LinkedIn use `mcporter`;
+RSS is fetched and parsed by CareerOS; Facebook uses OpenCLI; official Web /
+ATS evidence remains the Codex web-search route.
+
+## Source ownership
 
 | Area | Primary files | Responsibility |
 |---|---|---|
-| Unified shell and application routing | `src/App.tsx`; `src/components/Shell.tsx` | Shared CareerOS navigation plus explicit Postdoc / Internship application routes |
-| Entry point | `src/pages/AutomationPage.tsx` | Search request, threshold, and review navigation |
-| Runtime contract | `src-tauri/resources/skills/internship-application-agent/SKILL.md`; `src-tauri/src/materials.rs` | Evidence rules and workspace contract |
-| Domain import | `src-tauri/src/workflows.rs` | Result schema, validation, deduplication, and import |
-| Presentation | `src/pages/DashboardPage.tsx`; `src/pages/ApplicationsPage.tsx`; `src/pages/ApplicationDetailPage.tsx` | Unified dashboard overview, shared Agent center, track-specific application filters, opportunity and checklist views |
+| Search channels | `src-tauri/src/search_channels.rs`; `src-tauri/src/models.rs` | Capability checks, adapters, preferred/fallback backends, parallel search, normalization, and provenance |
+| Internship profile | `src-tauri/src/internship.rs`; `src/components/InternshipPlanningPanel.tsx` | Independent `profile/internship.json`, optional profile-local CV, RSS feeds, and strategy UI |
+| Setup/auth commands | `src-tauri/src/lib.rs`; `src/api.ts`; `src/types.ts` | Dry-run, confirmed user-level installation, channel health, and browser login guidance without credential handling |
+| Runtime contract | `src-tauri/resources/skills/internship-application-agent/SKILL.md`; `src-tauri/src/materials.rs` | Channel-result input, evidence rules, workspace files, and output contract |
+| Domain import | `src-tauri/src/workflows.rs` | Result validation, cross-channel deduplication, verification classification, checklist and evidence persistence |
+| Persistence | `src-tauri/migrations/0012_search_channels.sql`; `src-tauri/src/migration.rs`; `src-tauri/src/db.rs` | Verification status, source channel/backend, filtered list/detail queries, and unverified submission protection |
+| Presentation | `src/pages/DashboardPage.tsx`; `src/pages/ApplicationsPage.tsx`; `src/pages/ApplicationDetailPage.tsx`; `src/components/Ui.tsx` | Channel status, verification badges, provenance, pending-verification filter, and disabled submission control |
 
-## Runtime Flow
+## Runtime flow
 
-1. The user supplies a role/location search brief and strict score threshold.
-2. The Agent returns at most 20 official-source opportunities using the exact
-   result contract.
-3. The importer rejects inactive, ineligible, malformed, weak, or unsupported
-   records and saves at most 10.
-4. Saved cards enter `portal_pending`; the user reviews evidence and manually
-   changes the submission marker.
+1. The user optionally saves the independent Internship profile. Empty fields do
+   not block searching; the Agent uses `eligibilityStatus=uncertain` when the
+   available profile evidence cannot establish a hard requirement.
+2. Before Codex starts, `search_channels::run` checks all six channels and runs
+   available adapters concurrently. It writes normalized results, channel
+   health, timestamps, backend identifiers, and warnings to
+   `input/channel-results.json`.
+3. The Agent combines the normalized results and may perform direct official
+   Web / ATS verification. It returns at most 20 discovered opportunities with
+   the exact result contract.
+4. The importer deduplicates by canonical URL, stable identifier, or a
+   conservative company-title-location key, then saves at most 10.
+5. An opportunity is `verified` only when its sources include a `web_ats` source
+   with `evidenceType=primary`. Opportunities supported only by Exa, RSS,
+   LinkedIn, Facebook, or Twitter / X are `unverified` and remain separate from
+   direct-application/submitted states.
 
-## Persistent Data
+## Setup and login
 
-The first slice reuses `opportunities`, `applications`, `contact_targets_v2`,
-`contact_target_checklist`, `contact_target_artifacts`, `native_source_evidence`,
-and `native_job_results`. `opportunities.opportunity_type=industry_internship`
-is the track discriminator. No schema migration is introduced.
+The strategy page exposes `get_search_capabilities`,
+`preview_search_setup`, `setup_search_capabilities`, and
+`begin_search_channel_auth`. Setup is always previewed first and requires an
+explicit user confirmation. The fixed setup flow installs OpenCLI, mcporter,
+`uv`, or `twitter-cli` into user-level locations and writes only user-level
+mcporter configuration; it never uses `sudo` or writes the project directory.
 
-## Contracts
+CareerOS does not automate login and never reads, prints, or stores passwords,
+browser cookies, or tokens. Facebook, LinkedIn, and Twitter / X may reuse the
+user's existing browser session. Twitter may also be configured by the user
+through the upstream CLI's local authentication. When a session is missing,
+CareerOS opens a centralized login guide and reports that the user must finish
+the browser step.
 
-- Job type: `internship_search`.
-- Output: `output/internship-search-results.json`, schema version 1.
-- UI track: `TargetCard.careerTrack`, derived from `opportunity_type`.
-- Backend list/dashboard filters: `careerTrack=postdoc|internship`; Internship
-  status tabs use `submission_status`, while Postdoc tabs use contact status.
-- Imported artifacts: bilingual `fit_analysis`; no CV or email artifacts.
+## Persistent data and contracts
 
-## Safety Rules
+- Profile: `profile/internship.json`; optional CV paths must remain inside the
+  Internship profile directory and are never copied from Postdoc's
+  `master_profile.json`.
+- Channel input: `input/channel-results.json`.
+- Agent output: `output/internship-search-results.json`, schema version 1.
+- Track discriminator: `opportunities.opportunity_type=industry_internship`.
+- Persisted provenance: `opportunities.verification_status`,
+  `opportunities.source_channel`, `opportunities.source_backend`, and the
+  matching fields in `native_source_evidence`.
+- Internship list filters use verification plus submission status; Postdoc
+  filters continue to use contact status.
+- No automatic re-verification or promotion of an unverified opportunity is
+  scheduled. The user can inspect the source and decide what to do manually.
 
-- Official employer or official ATS evidence is required.
-- The original CareerOS candidate profile is not copied into internship search
-  workspaces; candidate-specific scoring waits for Internship Hunter onboarding.
-- Unknown candidate eligibility remains `uncertain`; it is never promoted by
-  inference.
-- The feature has no email-send or application-submit path.
-- Existing postdoc records and job contracts remain unchanged.
+## Safety rules
 
-## Debug Checklist
+- Official employer or official ATS evidence is required for `verified`; a
+  secondary source alone is never upgraded by inference.
+- Unknown candidate eligibility remains `uncertain`, not favorable by default.
+- The database rejects attempts to mark an unverified opportunity as
+  `portal_pending` or `submitted`, and the detail UI disables that control.
+- No channel adapter receives credentials from CareerOS; subprocess output is
+  parsed into allow-listed normalized fields and stderr is not surfaced.
+- The feature has no email-send, message-send, automatic-submit, or automatic-
+  login path.
+- The feature does not include TikTok, Xiaohongshu, Instagram, Reddit,
+  Bilibili, or YouTube.
+
+## Debug checklist
 
 1. Inspect the `internship_search` row and payload in `native_jobs`.
-2. Read `CAREEROS_TASK.json` and `output/internship-search-results.json` in the
-   job workspace.
-3. Check workflow validation warnings before persistence queries.
-4. Confirm `opportunity_type=industry_internship` and the linked target result.
+2. Read `CAREEROS_TASK.json`, `input/channel-results.json`, and
+   `output/internship-search-results.json` in the job workspace.
+3. Check channel warnings and workflow validation errors before inspecting
+   persistence rows.
+4. Confirm `opportunity_type=industry_internship`, verification/source columns,
+   and the linked target result.
+5. For a submission-state error, verify the opportunity's
+   `verification_status` before debugging the UI.
 
 ## Validation
 
 - `npm run typecheck`
+- `npm test -- src/pages/ApplicationDetailPage.test.ts`
+- `cd src-tauri && cargo test search_channels::tests`
+- `cd src-tauri && cargo test internship::tests`
 - `cd src-tauri && cargo test workflows::tests`
+- `cd src-tauri && cargo test db::tests`
+- `cd src-tauri && cargo test scheduler::tests`
+- `cd src-tauri && cargo test migration::tests`
+- `git diff --check`
 
-## Common Change Routes
+## Out of scope
 
-| Change | Start here | Then inspect | Usually avoid |
-|---|---|---|---|
-| Search/output fields | `workflows.rs::result_contract` | Runtime skill and workflow tests | Scheduler lifecycle |
-| Discovery UI | `AutomationPage.tsx` | `Ui.tsx`, TypeScript types | SQLite |
-| Eligibility rule | Internship runtime skill | `validate_internship_opportunity` | Postdoc validation |
-
-## Known Coupling
-
-The first slice uses a synthetic `Application portal` contact target so existing
-job-result routing and application views remain usable. Track-specific pipeline
-storage should replace this compatibility seam before interview/offer stages are
-added. The two application tracks are explicit in the UI route while remaining
-inside one shared workspace; separate onboarding can be added later without
-changing the shared storage boundary.
-
-## Out of Scope
-
-Fresh-database bootstrap, resume tailoring, referrals, recruiter outreach,
-automatic submissions, interviews, offers, and a generalized CareerOS schema.
+Fresh application-stage modeling, resume tailoring, recruiter outreach, direct
+submission, automatic login, automatic re-verification, and additional social
+channels remain out of scope.

@@ -15,7 +15,8 @@ const NATIVE_MIGRATION: &str = include_str!("../migrations/0008_native_desktop.s
 const REPLY_ROUTING_MIGRATION: &str = include_str!("../migrations/0009_reply_routing_and_submission_status.sql");
 const RESPONSES_PROVIDERS_MIGRATION: &str = include_str!("../migrations/0010_responses_model_providers.sql");
 const SCHEDULER_LEASES_MIGRATION: &str = include_str!("../migrations/0011_scheduler_leases.sql");
-const LATEST_NATIVE_SCHEMA_VERSION: i64 = 11;
+const SEARCH_CHANNELS_MIGRATION: &str = include_str!("../migrations/0012_search_channels.sql");
+const LATEST_NATIVE_SCHEMA_VERSION: i64 = 12;
 
 pub fn initialize(paths: &AppPaths) -> Result<MigrationReport> {
     initialize_with_legacy_root(paths, None)
@@ -184,6 +185,7 @@ fn apply_native_schema(conn: &mut Connection) -> Result<()> {
     apply_reply_routing_schema(conn)?;
     apply_responses_provider_schema(conn)?;
     apply_scheduler_leases_schema(conn)?;
+    apply_search_channels_schema(conn)?;
     Ok(())
 }
 
@@ -234,6 +236,24 @@ fn apply_scheduler_leases_schema(conn: &mut Connection) -> Result<()> {
         tx.execute_batch(SCHEDULER_LEASES_MIGRATION)?;
         tx.execute(
             "INSERT INTO native_schema_migrations(version,name) VALUES(11,'scheduler-leases')",
+            [],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn apply_search_channels_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let applied: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=12)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !applied {
+        tx.execute_batch(SEARCH_CHANNELS_MIGRATION)?;
+        tx.execute(
+            "INSERT INTO native_schema_migrations(version,name) VALUES(12,'search-channels-and-verification')",
             [],
         )?;
     }
@@ -861,6 +881,49 @@ mod tests {
     }
 
     #[test]
+    fn schema_v12_adds_search_channel_provenance_and_is_idempotent() -> Result<()> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE native_schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL);
+             INSERT INTO native_schema_migrations(version,name) VALUES(11,'scheduler-leases');
+             CREATE TABLE opportunities(
+                 id TEXT PRIMARY KEY,
+                 opportunity_type TEXT NOT NULL DEFAULT 'industry_internship',
+                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             CREATE TABLE native_source_evidence(
+                 id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
+                 title TEXT NOT NULL, url TEXT NOT NULL, checked_at TEXT NOT NULL,
+                 evidence_type TEXT NOT NULL DEFAULT 'primary'
+             );",
+        )?;
+
+        apply_search_channels_schema(&mut conn)?;
+        apply_search_channels_schema(&mut conn)?;
+        let opportunity_columns: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('opportunities')
+             WHERE name IN ('verification_status','source_channel','source_backend')",
+            [],
+            |row| row.get(0),
+        )?;
+        let evidence_columns: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('native_source_evidence')
+             WHERE name IN ('source_channel','backend')",
+            [],
+            |row| row.get(0),
+        )?;
+        let version_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM native_schema_migrations WHERE version=12",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(opportunity_columns, 3);
+        assert_eq!(evidence_columns, 2);
+        assert_eq!(version_count, 1);
+        Ok(())
+    }
+
+    #[test]
     fn fresh_install_creates_empty_native_database_and_reopens() -> Result<()> {
         let temp = TempDir::new()?;
         let root = temp.path().to_path_buf();
@@ -903,7 +966,7 @@ mod tests {
         assert!(dashboard.metrics.iter().all(|metric| metric.value == 0));
         assert!(dashboard.regions.is_empty());
         assert!(dashboard.priority_targets.is_empty());
-        assert!(crate::db::list_targets(&paths.database, "postdoc", None, None, None, 0, 20)?.is_empty());
+        assert!(crate::db::list_targets(&paths.database, "postdoc", None, None, None, None, 0, 20)?.is_empty());
 
         let second = initialize_with_legacy_root(&paths, None)?;
         assert!(!second.imported);
