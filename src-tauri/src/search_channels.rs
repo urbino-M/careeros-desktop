@@ -19,6 +19,9 @@ use tokio::task::JoinSet;
 const MAX_DISCOVERY_RESULTS: usize = 20;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(300);
+const AUTH_CHECK_TIMEOUT: Duration = Duration::from_secs(45);
+const AUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(330);
+const OPENCLI_BRIDGE_URL: &str = "https://chromewebstore.google.com/detail/opencli/ildkmabpimmkaediidaifkhjpohdnifk";
 const NPM_TOOL_DIR: &str = "tools/npm";
 
 #[derive(Debug, Clone)]
@@ -58,18 +61,25 @@ struct SearchSetupPlan {
 #[async_trait]
 pub trait SearchChannelAdapter: Send + Sync {
     fn channel(&self) -> SearchChannel;
-    fn doctor(&self) -> ChannelHealth;
+    fn dependencies(&self) -> ChannelHealth;
+    async fn doctor(&self) -> ChannelHealth { self.dependencies() }
     async fn search(&self, request: &SearchRequest) -> Result<RawChannelResults>;
     fn normalize(&self, raw: RawChannelResults) -> Result<ChannelResults>;
 }
 
-pub fn capabilities(paths: &AppPaths) -> Result<SearchCapabilities> {
+pub async fn capabilities(paths: &AppPaths) -> Result<SearchCapabilities> {
     let profile = internship::load(paths)?;
     let request = request_from_profile(&profile, None);
-    let channels = make_adapters(paths, &request)
-        .into_iter()
-        .map(|adapter| adapter.doctor())
-        .collect();
+    let mut pending = JoinSet::new();
+    for (index, adapter) in make_adapters(paths, &request).into_iter().enumerate() {
+        pending.spawn(async move { (index, adapter.doctor().await) });
+    }
+    let mut channels = Vec::new();
+    while let Some(result) = pending.join_next().await {
+        channels.push(result.context("渠道检查任务异常结束")?);
+    }
+    channels.sort_by_key(|(index, _)| *index);
+    let channels = channels.into_iter().map(|(_, health)| health).collect();
     Ok(SearchCapabilities {
         checked_at: Utc::now().to_rfc3339(),
         channels,
@@ -87,40 +97,37 @@ pub async fn run(paths: &AppPaths, payload: &Value) -> Result<ChannelSearchManif
     let mut pending = JoinSet::new();
 
     for adapter in adapters {
-        let channel = adapter.channel();
-        let channel_health = adapter.doctor();
-        let backend = channel_health.backend.clone();
-        health.push(channel_health.clone());
-        if !channel_health.available {
-            results.push(ChannelResults {
-                channel,
-                backend,
-                checked_at: channel_health.checked_at.clone(),
-                candidates: Vec::new(),
-                warnings: vec![channel_health.message.clone()],
-            });
-            continue;
-        }
         let request = request.clone();
         pending.spawn(async move {
             let channel = adapter.channel();
-            let normalized = adapter
-                .search(&request)
-                .await
-                .and_then(|raw| adapter.normalize(raw));
-            (channel, normalized)
+            let channel_health = adapter.doctor().await;
+            let normalized = if channel_health.available && channel_health.authenticated {
+                adapter.search(&request).await.and_then(|raw| adapter.normalize(raw))
+            } else {
+                Ok(ChannelResults {
+                    channel,
+                    backend: channel_health.backend.clone(),
+                    checked_at: channel_health.checked_at.clone(),
+                    candidates: Vec::new(),
+                    warnings: vec![channel_health.message.clone()],
+                })
+            };
+            (channel_health, normalized)
         });
     }
 
     while let Some(joined) = pending.join_next().await {
         match joined {
-            Ok((channel, Ok(result))) => {
+            Ok((channel_health, Ok(result))) => {
                 for warning in &result.warnings {
-                    warnings.push(format!("{}：{}", channel.display_name(), warning));
+                    warnings.push(format!("{}：{}", channel_health.channel.display_name(), warning));
                 }
+                health.push(channel_health);
                 results.push(result);
             }
-            Ok((channel, Err(_))) => {
+            Ok((channel_health, Err(_))) => {
+                let channel = channel_health.channel.clone();
+                health.push(channel_health);
                 let message = "渠道暂时不可用，已跳过本渠道并继续其他搜索".to_owned();
                 warnings.push(format!("{}：{}", channel.display_name(), message));
                 results.push(ChannelResults {
@@ -158,7 +165,7 @@ fn setup_plan(
     let request = request_from_profile(&profile, None);
     let health = make_adapters(paths, &request)
         .into_iter()
-        .map(|adapter| adapter.doctor())
+        .map(|adapter| adapter.dependencies())
         .collect::<Vec<_>>();
     let channels = requested
         .map(unique_channels)
@@ -204,6 +211,7 @@ pub async fn setup(
     {
         if let Some(npm) = find_executable(paths, "npm") {
             if run_user_command(
+                paths,
                 &npm,
                 &["install", "--global", "--prefix", &tool_dir_display, "@jackwener/opencli"],
                 SETUP_TIMEOUT,
@@ -226,6 +234,7 @@ pub async fn setup(
     {
         if let Some(npm) = find_executable(paths, "npm") {
             if run_user_command(
+                paths,
                 &npm,
                 &["install", "--global", "--prefix", &tool_dir_display, "mcporter"],
                 SETUP_TIMEOUT,
@@ -257,7 +266,7 @@ pub async fn setup(
             } else {
                 vec!["-m", "pip", "install", "--user", "uv"]
             };
-            run_user_command(&python, &args, SETUP_TIMEOUT).await
+            run_user_command(paths, &python, &args, SETUP_TIMEOUT).await
         } else {
             false
         };
@@ -274,7 +283,7 @@ pub async fn setup(
         && find_twitter_cli(paths).is_none()
     {
         if let Some(uv) = find_executable(paths, "uv") {
-            if run_user_command(&uv, &["tool", "install", "twitter-cli"], SETUP_TIMEOUT).await {
+            if run_user_command(paths, &uv, &["tool", "install", "twitter-cli"], SETUP_TIMEOUT).await {
                 messages.push("twitter-cli 已安装到用户环境。".into());
             } else {
                 completed = false;
@@ -289,6 +298,7 @@ pub async fn setup(
     if selected.contains(&SearchChannel::Exa) {
         if let Some(mcporter) = find_executable(paths, "mcporter") {
             if run_user_command(
+                paths,
                 &mcporter,
                 &["config", "add", "exa", "https://mcp.exa.ai/mcp", "--scope", "home"],
                 SETUP_TIMEOUT,
@@ -308,6 +318,7 @@ pub async fn setup(
     if selected.contains(&SearchChannel::LinkedIn) {
         if let Some(mcporter) = find_executable(paths, "mcporter") {
             if run_user_command(
+                paths,
                 &mcporter,
                 &[
                     "config",
@@ -338,16 +349,52 @@ pub async fn setup(
     Ok(SearchSetupResult {
         completed,
         messages,
-        capabilities: capabilities(paths)?,
+        capabilities: capabilities(paths).await?,
     })
 }
 
-pub fn auth_guide(channel: SearchChannel) -> Result<AuthGuide> {
+pub async fn begin_auth(paths: &AppPaths, channel: SearchChannel) -> Result<AuthGuide> {
+    let mut guide = auth_guide(channel.clone())?;
+    if channel == SearchChannel::LinkedIn {
+        let uvx = find_executable(paths, "uvx").context("请先一键启用 LinkedIn MCP")?;
+        let output = auth_output(
+            paths, &uvx, &["mcp-server-linkedin@latest", "--login"], AUTH_LOGIN_TIMEOUT,
+        ).await.map_err(|probe| anyhow::anyhow!(probe.message()))?;
+        if !output.status.success() {
+            bail!("LinkedIn 登录未完成；请关闭遗留的 MCP 登录窗口后重试，并检查网络或浏览器下载是否受阻。");
+        }
+    } else if let Some(opencli) = find_executable(paths, "opencli") {
+        // Let OpenCLI open the browser/profile used by its search adapter.
+        // Never treat opening an arbitrary default-browser URL as authentication.
+        let output = auth_output(
+            paths, &opencli, &[channel.as_str(), "login", "--timeout", "300", "-f", "json"],
+            AUTH_LOGIN_TIMEOUT,
+        ).await.map_err(|probe| anyhow::anyhow!(probe.message()))?;
+        match output.status.code() {
+            Some(0) => {},
+            Some(69) => {
+                guide.url = Some(OPENCLI_BRIDGE_URL.into());
+                guide.instructions.insert(0, "未连接到 OpenCLI Browser Bridge。请在用于搜索的 Chrome 中安装并启用此扩展，保持 Chrome 打开；多个 Profile 时请在 OpenCLI 中选定搜索用的 Profile，然后重试连接。".into());
+            },
+            Some(75) => bail!("等待浏览器认证超时；请确认登录和安全验证已完成，然后重试连接。"),
+            Some(77) => bail!("浏览器尚未完成登录或安全验证，请重试连接。"),
+            _ => bail!("OpenCLI 登录无法完成；请检查工具版本、Chrome 和 Browser Bridge 扩展后重试。"),
+        }
+    } else if channel == SearchChannel::Twitter && find_twitter_cli(paths).is_some() {
+        guide.url = Some("https://x.com/i/flow/login".into());
+        guide.instructions.insert(0, "twitter-cli 将自行验证本地认证；请在它支持的浏览器中完成登录并允许上游工具访问会话。".into());
+    } else {
+        bail!("请先一键启用此搜索渠道");
+    }
+    Ok(guide)
+}
+
+fn auth_guide(channel: SearchChannel) -> Result<AuthGuide> {
     let guide = match channel {
         SearchChannel::Facebook => AuthGuide {
             channel,
             title: "准备 Facebook 登录态".into(),
-            url: Some("https://www.facebook.com/".into()),
+            url: None,
             instructions: vec![
                 "在自己的 Chrome 中打开 Facebook 并完成登录。".into(),
                 "保持 OpenCLI 浏览器桥接可用；CareerOS 只调用搜索命令，不读取密码、Cookie 或 Token。".into(),
@@ -356,16 +403,16 @@ pub fn auth_guide(channel: SearchChannel) -> Result<AuthGuide> {
         SearchChannel::LinkedIn => AuthGuide {
             channel,
             title: "准备 LinkedIn 登录态".into(),
-            url: Some("https://www.linkedin.com/login/".into()),
+            url: None,
             instructions: vec![
-                "在自己的浏览器完成 LinkedIn 登录，并按上游 MCP 的引导保存会话。".into(),
+                "请在 LinkedIn MCP 打开的独立浏览器中完成登录；普通浏览器的登录不会自动成为 MCP 会话。".into(),
                 "CareerOS 不代替登录，也不读取或保存账号凭据。".into(),
             ],
         },
         SearchChannel::Twitter => AuthGuide {
             channel,
             title: "准备 Twitter / X 登录态".into(),
-            url: Some("https://x.com/i/flow/login".into()),
+            url: None,
             instructions: vec![
                 "优先在自己的 Chrome 中登录 Twitter / X 并保持浏览器会话。".into(),
                 "也可以自行按 twitter-cli 文档配置本地 Token/Cookie；CareerOS 不读取、打印或保存它们。".into(),
@@ -382,11 +429,12 @@ fn make_adapters(paths: &AppPaths, request: &SearchRequest) -> Vec<Box<dyn Searc
     let twitter = find_twitter_cli(paths);
     vec![
         Box::new(WebAtsAdapter),
-        Box::new(ExaAdapter { executable: mcporter.clone() }),
+        Box::new(ExaAdapter { paths: paths.clone(), executable: mcporter.clone() }),
         Box::new(RssAdapter { feeds: request.rss_feeds.clone() }),
-        Box::new(LinkedInAdapter { executable: mcporter }),
-        Box::new(FacebookAdapter { executable: opencli.clone() }),
+        Box::new(LinkedInAdapter { paths: paths.clone(), executable: mcporter, uvx: find_executable(paths, "uvx") }),
+        Box::new(FacebookAdapter { paths: paths.clone(), executable: opencli.clone() }),
         Box::new(TwitterAdapter {
+            paths: paths.clone(),
             opencli,
             twitter,
         }),
@@ -399,7 +447,7 @@ struct WebAtsAdapter;
 impl SearchChannelAdapter for WebAtsAdapter {
     fn channel(&self) -> SearchChannel { SearchChannel::WebAts }
 
-    fn doctor(&self) -> ChannelHealth {
+    fn dependencies(&self) -> ChannelHealth {
         health(
             SearchChannel::WebAts,
             "codex_web_search",
@@ -430,13 +478,13 @@ impl SearchChannelAdapter for WebAtsAdapter {
     }
 }
 
-struct ExaAdapter { executable: Option<PathBuf> }
+struct ExaAdapter { paths: AppPaths, executable: Option<PathBuf> }
 
 #[async_trait]
 impl SearchChannelAdapter for ExaAdapter {
     fn channel(&self) -> SearchChannel { SearchChannel::Exa }
 
-    fn doctor(&self) -> ChannelHealth {
+    fn dependencies(&self) -> ChannelHealth {
         let available = self.executable.is_some();
         health(
             SearchChannel::Exa,
@@ -456,6 +504,7 @@ impl SearchChannelAdapter for ExaAdapter {
         let executable = self.executable.as_ref().context("mcporter 不可用")?;
         let params = json!({"query": request.query, "numResults": 10});
         let value = command_json(
+            &self.paths,
             executable,
             &[
                 "call".into(),
@@ -483,7 +532,7 @@ struct RssAdapter { feeds: Vec<String> }
 impl SearchChannelAdapter for RssAdapter {
     fn channel(&self) -> SearchChannel { SearchChannel::Rss }
 
-    fn doctor(&self) -> ChannelHealth {
+    fn dependencies(&self) -> ChannelHealth {
         let available = !self.feeds.is_empty();
         health(
             SearchChannel::Rss,
@@ -527,14 +576,23 @@ impl SearchChannelAdapter for RssAdapter {
     }
 }
 
-struct LinkedInAdapter { executable: Option<PathBuf> }
+struct LinkedInAdapter { paths: AppPaths, executable: Option<PathBuf>, uvx: Option<PathBuf> }
 
 #[async_trait]
 impl SearchChannelAdapter for LinkedInAdapter {
     fn channel(&self) -> SearchChannel { SearchChannel::LinkedIn }
 
-    fn doctor(&self) -> ChannelHealth {
-        let available = self.executable.is_some();
+    async fn doctor(&self) -> ChannelHealth {
+        let base = self.dependencies();
+        let Some(uvx) = self.uvx.as_ref().filter(|_| base.available) else { return base; };
+        // Resolve cached Python packages during refresh, without opening a login window.
+        let output = auth_output(&self.paths, uvx,
+            &["--offline", "mcp-server-linkedin@latest", "--status"], AUTH_CHECK_TIMEOUT).await;
+        auth_health(base, linkedin_auth_probe(output))
+    }
+
+    fn dependencies(&self) -> ChannelHealth {
+        let available = self.executable.is_some() && self.uvx.is_some();
         health(
             SearchChannel::LinkedIn,
             "mcporter:linkedin.search_jobs",
@@ -563,6 +621,7 @@ impl SearchChannelAdapter for LinkedInAdapter {
             params.insert("work_type".into(), Value::String(request.work_mode.clone()));
         }
         let value = command_json(
+            &self.paths,
             executable,
             &[
                 "call".into(),
@@ -589,13 +648,19 @@ impl SearchChannelAdapter for LinkedInAdapter {
     }
 }
 
-struct FacebookAdapter { executable: Option<PathBuf> }
+struct FacebookAdapter { paths: AppPaths, executable: Option<PathBuf> }
 
 #[async_trait]
 impl SearchChannelAdapter for FacebookAdapter {
     fn channel(&self) -> SearchChannel { SearchChannel::Facebook }
 
-    fn doctor(&self) -> ChannelHealth {
+    async fn doctor(&self) -> ChannelHealth {
+        let base = self.dependencies();
+        let Some(executable) = self.executable.as_ref() else { return base; };
+        auth_health(base, opencli_auth_probe(&self.paths, executable, "facebook").await)
+    }
+
+    fn dependencies(&self) -> ChannelHealth {
         let available = self.executable.is_some();
         health(
             SearchChannel::Facebook,
@@ -614,6 +679,7 @@ impl SearchChannelAdapter for FacebookAdapter {
     async fn search(&self, request: &SearchRequest) -> Result<RawChannelResults> {
         let executable = self.executable.as_ref().context("OpenCLI 不可用")?;
         let value = command_json(
+            &self.paths,
             executable,
             &[
                 "facebook".into(),
@@ -632,13 +698,32 @@ impl SearchChannelAdapter for FacebookAdapter {
     }
 }
 
-struct TwitterAdapter { opencli: Option<PathBuf>, twitter: Option<PathBuf> }
+struct TwitterAdapter { paths: AppPaths, opencli: Option<PathBuf>, twitter: Option<PathBuf> }
 
 #[async_trait]
 impl SearchChannelAdapter for TwitterAdapter {
     fn channel(&self) -> SearchChannel { SearchChannel::Twitter }
 
-    fn doctor(&self) -> ChannelHealth {
+    async fn doctor(&self) -> ChannelHealth {
+        let mut base = self.dependencies();
+        let mut probe = AuthProbe::CheckFailed;
+        if let Some(opencli) = &self.opencli {
+            probe = opencli_auth_probe(&self.paths, opencli, "twitter").await;
+            if probe == AuthProbe::Ready { return auth_health(base, probe); }
+        }
+        if let Some(twitter) = &self.twitter {
+            let fallback = twitter_auth_probe(auth_output(
+                &self.paths, twitter, &["status", "--json"], AUTH_CHECK_TIMEOUT,
+            ).await);
+            if fallback == AuthProbe::Ready || self.opencli.is_none() {
+                base.backend = "twitter-cli".into();
+                return auth_health(base, fallback);
+            }
+        }
+        if base.available { auth_health(base, probe) } else { base }
+    }
+
+    fn dependencies(&self) -> ChannelHealth {
         let backend = select_twitter_backend(self.opencli.is_some(), self.twitter.is_some());
         match backend {
             Some(backend) => health(
@@ -663,6 +748,7 @@ impl SearchChannelAdapter for TwitterAdapter {
     async fn search(&self, request: &SearchRequest) -> Result<RawChannelResults> {
         if let Some(opencli) = self.opencli.as_ref() {
             let value = command_json(
+                &self.paths,
                 opencli,
                 &[
                     "twitter".into(),
@@ -672,11 +758,15 @@ impl SearchChannelAdapter for TwitterAdapter {
                     "json".into(),
                 ],
             )
-            .await?;
-            return Ok(raw(SearchChannel::Twitter, "opencli:twitter", value, Vec::new()));
+            .await;
+            if let Ok(value) = value {
+                return Ok(raw(SearchChannel::Twitter, "opencli:twitter", value, Vec::new()));
+            }
+            if self.twitter.is_none() { bail!("OpenCLI Twitter 搜索失败"); }
         }
         let twitter = self.twitter.as_ref().context("Twitter 搜索工具不可用")?;
         let value = command_json(
+            &self.paths,
             twitter,
             &[
                 "search".into(),
@@ -692,6 +782,114 @@ impl SearchChannelAdapter for TwitterAdapter {
 
     fn normalize(&self, raw: RawChannelResults) -> Result<ChannelResults> {
         normalize_json(raw)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthProbe { Ready, LoginRequired, BridgeRequired, CheckTimedOut, CheckFailed }
+
+impl AuthProbe {
+    fn status(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::LoginRequired => "login_required",
+            Self::BridgeRequired => "bridge_required",
+            Self::CheckTimedOut => "check_timed_out",
+            Self::CheckFailed => "check_failed",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Ready => "已由搜索后端确认登录会话，可用于搜索。",
+            Self::LoginRequired => "未检测到有效会话；请点击连接渠道，在搜索工具打开的浏览器中完成登录。",
+            Self::BridgeRequired => "无法连接 OpenCLI Browser Bridge；请保持 Chrome 和扩展打开，并确认 OpenCLI 选中了正确的浏览器 Profile，再连接渠道。",
+            Self::CheckTimedOut => "登录状态检查超时，尚不能确认连接；请检查浏览器和网络后重试。这不代表账号已退出。",
+            Self::CheckFailed => "无法验证会话；请检查工具版本、网络或浏览器状态。首次使用 LinkedIn 请点击连接渠道以准备 MCP 浏览器。",
+        }
+    }
+}
+
+fn auth_health(mut base: ChannelHealth, probe: AuthProbe) -> ChannelHealth {
+    base.authenticated = probe == AuthProbe::Ready;
+    base.status = probe.status().into();
+    base.message = probe.message().into();
+    base.checked_at = Utc::now().to_rfc3339();
+    base
+}
+
+// Auth responses stay in memory and are reduced to allow-listed status signals.
+// Never surface upstream stdout/stderr (which may contain identity information).
+async fn auth_output(
+    paths: &AppPaths, program: &Path, args: &[&str], timeout: Duration,
+) -> std::result::Result<std::process::Output, AuthProbe> {
+    let mut command = channel_command(paths, program);
+    // The upstream's default 45-second bridge wait would consume our whole
+    // check budget before it can report BROWSER_CONNECT. Keep room for its verdict.
+    command.env("OPENCLI_BROWSER_CONNECT_TIMEOUT", "10");
+    if args.contains(&"--login") {
+        // Give the upstream browser time to close and persist before our outer deadline.
+        command.env("LOGIN_TIMEOUT", "300");
+    }
+    tokio::time::timeout(timeout, command.args(args).stdout(Stdio::piped()).stderr(Stdio::null()).output())
+        .await.map_err(|_| AuthProbe::CheckTimedOut)?
+        .map_err(|_| AuthProbe::CheckFailed)
+}
+
+async fn opencli_auth_probe(paths: &AppPaths, program: &Path, site: &str) -> AuthProbe {
+    let output = auth_output(paths, program,
+        &["auth", "status", "--site", site, "--full", "--timeout", "20", "-f", "json"],
+        AUTH_CHECK_TIMEOUT,
+    ).await;
+    let output = match output { Ok(output) => output, Err(probe) => return probe };
+    if !output.status.success() {
+        return match output.status.code() {
+            Some(69) => AuthProbe::BridgeRequired,
+            Some(77) => AuthProbe::LoginRequired,
+            Some(75) => AuthProbe::CheckTimedOut,
+            _ => AuthProbe::CheckFailed,
+        };
+    }
+    // 'auth status' can exit 0 with an error row, so exit status alone is insufficient.
+    let Ok(value) = parse_json_output(&output.stdout) else { return AuthProbe::CheckFailed; };
+    let row = value.as_array().and_then(|rows| rows.iter().find(|row| row["site"] == site));
+    let Some(row) = row else { return AuthProbe::CheckFailed; };
+    match row["status"].as_str() {
+        Some("logged_in") if row["logged_in"] == true => AuthProbe::Ready,
+        Some("not_logged_in") => AuthProbe::LoginRequired,
+        Some("error") => match row["error"].as_str().unwrap_or("").split(':').next() {
+            Some("BROWSER_CONNECT") => AuthProbe::BridgeRequired,
+            Some("AUTH_REQUIRED") => AuthProbe::LoginRequired,
+            Some("TIMEOUT") => AuthProbe::CheckTimedOut,
+            _ => AuthProbe::CheckFailed,
+        },
+        _ => AuthProbe::CheckFailed,
+    }
+}
+
+fn linkedin_auth_probe(output: std::result::Result<std::process::Output, AuthProbe>) -> AuthProbe {
+    let output = match output { Ok(output) => output, Err(probe) => return probe };
+    let text = String::from_utf8_lossy(&output.stdout);
+    // --status can exit 0 for an unverified foreign-runtime bridge. Require its
+    // explicit validation verdict, not the exit code or the presence of a profile.
+    if output.status.success() && text.lines().any(|line| line.starts_with("✅ Session is valid (profile:")) {
+        AuthProbe::Ready
+    } else if text.contains("No valid source session found") || text.contains("Session expired or invalid") {
+        AuthProbe::LoginRequired
+    } else {
+        AuthProbe::CheckFailed
+    }
+}
+
+fn twitter_auth_probe(output: std::result::Result<std::process::Output, AuthProbe>) -> AuthProbe {
+    let output = match output { Ok(output) => output, Err(probe) => return probe };
+    let Ok(value) = parse_json_output(&output.stdout) else { return AuthProbe::CheckFailed; };
+    if output.status.success() && value["ok"] == true && value["data"]["authenticated"] == true {
+        AuthProbe::Ready
+    } else if value["error"]["code"] == "not_authenticated" {
+        AuthProbe::LoginRequired
+    } else {
+        AuthProbe::CheckFailed
     }
 }
 
@@ -1006,10 +1204,10 @@ fn decode_xml(value: &str) -> String {
         .replace("&#39;", "'")
 }
 
-async fn command_json(program: &Path, args: &[String]) -> Result<Value> {
+async fn command_json(paths: &AppPaths, program: &Path, args: &[String]) -> Result<Value> {
     let output = tokio::time::timeout(
         COMMAND_TIMEOUT,
-        Command::new(program)
+        channel_command(paths, program)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1039,10 +1237,10 @@ fn parse_json_output(bytes: &[u8]) -> Result<Value> {
     bail!("搜索渠道返回了不可识别的结果")
 }
 
-async fn run_user_command(program: &Path, args: &[&str], timeout: Duration) -> bool {
+async fn run_user_command(paths: &AppPaths, program: &Path, args: &[&str], timeout: Duration) -> bool {
     let result = tokio::time::timeout(
         timeout,
-        Command::new(program)
+        channel_command(paths, program)
             .args(args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1052,19 +1250,37 @@ async fn run_user_command(program: &Path, args: &[&str], timeout: Duration) -> b
     matches!(result, Ok(Ok(status)) if status.success())
 }
 
-fn find_executable(paths: &AppPaths, name: &str) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
+// Finder-launched apps do not inherit the user's interactive shell PATH.
+// Apply the same bounded search path to discovery AND child processes.
+fn executable_dirs(paths: &AppPaths) -> Vec<PathBuf> {
+    let mut directories = vec![
+        paths.data_root.join("tools/node/bin"),
+        paths.data_root.join(NPM_TOOL_DIR).join("bin"),
+        PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin"),
+    ];
     if let Some(path) = std::env::var_os("PATH") {
-        candidates.extend(std::env::split_paths(&path).map(|directory| directory.join(name)));
+        directories.extend(std::env::split_paths(&path));
     }
-    candidates.push(paths.data_root.join(NPM_TOOL_DIR).join("bin").join(name));
     if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".local/bin").join(name));
-        candidates.push(home.join(".cargo/bin").join(name));
-        candidates.push(home.join("Library/Python/3.12/bin").join(name));
-        candidates.push(home.join("Library/Python/3.13/bin").join(name));
+        for relative in [".local/bin", ".cargo/bin", "Library/Python/3.12/bin", "Library/Python/3.13/bin"] {
+            directories.push(home.join(relative));
+        }
     }
-    candidates.into_iter().find(|candidate| candidate.is_file())
+    directories
+}
+
+fn channel_command(paths: &AppPaths, program: &Path) -> Command {
+    let mut command = Command::new(program);
+    if let Ok(path) = std::env::join_paths(executable_dirs(paths)) {
+        command.env("PATH", path);
+    }
+    command.env("UV_CACHE_DIR", paths.cache.join("uv"));
+    command.current_dir(&paths.data_root).stdin(Stdio::null()).kill_on_drop(true);
+    command
+}
+
+fn find_executable(paths: &AppPaths, name: &str) -> Option<PathBuf> {
+    executable_dirs(paths).into_iter().map(|dir| dir.join(name)).find(|path| path.is_file())
 }
 
 fn canonical_url(value: &str) -> String {
@@ -1095,6 +1311,224 @@ fn is_http_url(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn fake_cli(root: &Path, name: &str, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = root.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn facebook_existing_browser_session_is_reported_connected() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = fake_cli(temp.path(), "opencli", "printf '%s' '[{\"site\":\"facebook\",\"status\":\"logged_in\",\"logged_in\":true}]'");
+        let adapter = FacebookAdapter { paths: test_paths(temp.path()), executable: Some(executable) };
+        assert!(adapter.doctor().await.authenticated, "a successful upstream session check must reach the UI");
+    }
+
+    fn test_paths(root: &Path) -> AppPaths {
+        AppPaths {
+            data_root: root.into(), database: root.join("db"), generated: root.join("generated"),
+            profile: root.join("profile"), workspaces: root.join("workspaces"),
+            codex_home: root.join("codex"), backups: root.join("backups"),
+            cache: root.join("cache"), logs: root.join("logs"), runtime: root.join("runtime"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn login_runs_the_backend_flow_and_refresh_detects_the_new_session() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = test_paths(temp.path());
+        let bin = paths.data_root.join(NPM_TOOL_DIR).join("bin");
+        std::fs::create_dir_all(&bin)?;
+        let executable = fake_cli(&bin, "opencli", r#"
+case "$*" in
+  'facebook login --timeout 300 -f json') touch "$0.session"; exit 0;;
+  'auth status --site facebook --full --timeout 20 -f json')
+    if [ -f "$0.session" ]; then
+      printf '%s' '[{"site":"facebook","status":"logged_in","logged_in":true,"identity":"private-person"}]'
+    else
+      printf '%s' '[{"site":"facebook","status":"not_logged_in","logged_in":false}]'
+    fi;;
+  *) exit 2;;
+esac"#);
+        let adapter = FacebookAdapter { paths: paths.clone(), executable: Some(executable) };
+        assert_eq!(adapter.doctor().await.status, "login_required");
+        let guide = begin_auth(&paths, SearchChannel::Facebook).await?;
+        assert!(guide.url.is_none(), "the backend, not the system browser, opened login");
+        let health = adapter.doctor().await;
+        assert!(health.authenticated);
+        assert!(!serde_json::to_string(&health)?.contains("private-person"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencli_error_rows_are_not_success_even_with_exit_zero() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        for (code, expected) in [
+            ("BROWSER_CONNECT", AuthProbe::BridgeRequired),
+            ("TIMEOUT", AuthProbe::CheckTimedOut),
+            ("AUTH_REQUIRED", AuthProbe::LoginRequired),
+            ("UNKNOWN", AuthProbe::CheckFailed),
+        ] {
+            let script = format!("printf '%s' '[{{\"site\":\"facebook\",\"status\":\"error\",\"error\":\"{code}: private-detail\"}}]'");
+            let executable = fake_cli(temp.path(), "opencli", &script);
+            assert_eq!(opencli_auth_probe(&paths, &executable, "facebook").await, expected);
+            assert!(!auth_health(FacebookAdapter { paths: paths.clone(), executable: Some(executable) }.dependencies(), expected).message.contains("private-detail"));
+        }
+        let executable = fake_cli(temp.path(), "opencli", "printf '%s' '[{\"site\":\"twitter\",\"status\":\"logged_in\",\"logged_in\":true}]'");
+        assert_eq!(opencli_auth_probe(&paths, &executable, "facebook").await, AuthProbe::CheckFailed);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bridge_failure_returns_extension_setup_not_a_fake_login_page() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = test_paths(temp.path());
+        let bin = paths.data_root.join(NPM_TOOL_DIR).join("bin");
+        std::fs::create_dir_all(&bin)?;
+        fake_cli(&bin, "opencli", "exit 69");
+        let guide = begin_auth(&paths, SearchChannel::Facebook).await?;
+        assert_eq!(guide.url.as_deref(), Some(OPENCLI_BRIDGE_URL));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linkedin_requires_an_explicit_valid_session_not_just_exit_zero() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        for (message, exit, expected) in [
+            ("✅ Session is valid (profile: /private/session)", 0, AuthProbe::Ready),
+            ("Source cookie validity is not verified in this mode.", 0, AuthProbe::CheckFailed),
+            ("❌ Session expired or invalid (profile: /private/session)", 1, AuthProbe::LoginRequired),
+            ("❌ No valid source session found", 1, AuthProbe::LoginRequired),
+            ("unknown successful output", 0, AuthProbe::CheckFailed),
+        ] {
+            let executable = fake_cli(temp.path(), "uvx", &format!("printf '%s' '{message}'; exit {exit}"));
+            let output = auth_output(&paths, &executable, &["--offline", "mcp-server-linkedin@latest", "--status"], AUTH_CHECK_TIMEOUT).await;
+            assert_eq!(linkedin_auth_probe(output), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linkedin_login_and_status_use_the_same_upstream_session() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = test_paths(temp.path());
+        let bin = paths.data_root.join(NPM_TOOL_DIR).join("bin");
+        std::fs::create_dir_all(&bin)?;
+        let uvx = fake_cli(&bin, "uvx", r#"
+case "$*" in
+  'mcp-server-linkedin@latest --login')
+    [ "$LOGIN_TIMEOUT" = 300 ] || exit 2
+    touch "$0.session";;
+  '--offline mcp-server-linkedin@latest --status')
+    if [ -f "$0.session" ]; then
+      printf '%s' '✅ Session is valid (profile: /upstream-owned)'
+    else
+      printf '%s' '❌ No valid source session found'; exit 1
+    fi;;
+  *) exit 2;;
+esac"#);
+        let adapter = LinkedInAdapter {
+            paths: paths.clone(), executable: Some(bin.join("mcporter")), uvx: Some(uvx),
+        };
+        assert!(!adapter.doctor().await.authenticated);
+        assert!(begin_auth(&paths, SearchChannel::LinkedIn).await?.url.is_none());
+        assert!(adapter.doctor().await.authenticated);
+        Ok(())
+    }
+
+    // Opt-in only: checks the installed browser bridge without exposing account
+    // identities. Normal test/CI runs never inspect the user's browser session.
+    #[tokio::test]
+    #[ignore = "requires the user's installed OpenCLI/browser bridge"]
+    async fn live_opencli_auth_status_reports_only_safe_health() -> Result<()> {
+        let paths = AppPaths::resolve(None)?;
+        let executable = find_executable(&paths, "opencli").context("OpenCLI not installed")?;
+        let health = FacebookAdapter { paths, executable: Some(executable) }.doctor().await;
+        println!("{}", serde_json::to_string(&health)?);
+        assert!(["ready", "login_required", "bridge_required"].contains(&health.status.as_str()));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn twitter_uses_authenticated_fallback_for_health_and_search() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = test_paths(temp.path());
+        let opencli = fake_cli(temp.path(), "opencli", "exit 77");
+        let twitter = fake_cli(temp.path(), "twitter", r#"
+case "$*" in
+  'status --json') printf '%s' '{"ok":true,"data":{"authenticated":true}}';;
+  'search internship --json --max 10') printf '%s' '{"ok":true,"data":[]}';;
+  *) exit 2;;
+esac"#);
+        let adapter = TwitterAdapter { paths, opencli: Some(opencli), twitter: Some(twitter) };
+        let health = adapter.doctor().await;
+        assert!(health.authenticated);
+        assert_eq!(health.backend, "twitter-cli");
+        let result = adapter.search(&SearchRequest { query: "internship".into(), location: "".into(), work_mode: "".into(), rss_feeds: vec![] }).await?;
+        assert_eq!(result.backend, "twitter-cli");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn auth_commands_have_a_bounded_timeout() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = fake_cli(temp.path(), "slow", "exec sleep 5");
+        let result = auth_output(&test_paths(temp.path()), &executable, &[], Duration::from_millis(20)).await;
+        assert!(matches!(result, Err(AuthProbe::CheckTimedOut)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gui_subprocesses_resolve_managed_node_without_the_shell_path() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = test_paths(temp.path());
+        let bin = paths.data_root.join("tools/node/bin");
+        std::fs::create_dir_all(&bin)?;
+        fake_cli(&bin, "careeros-test-runtime", "printf '%s' 'managed-runtime'");
+        let executable = fake_cli(temp.path(), "launcher", "exec /usr/bin/env careeros-test-runtime");
+        let output = channel_command(&paths, &executable).output().await?;
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "managed-runtime");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unauthenticated_channels_do_not_run_or_block_other_search_results() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = test_paths(temp.path());
+        let bin = paths.data_root.join(NPM_TOOL_DIR).join("bin");
+        std::fs::create_dir_all(&bin)?;
+        fake_cli(&bin, "mcporter", r#"printf '%s' '{"results":[{"title":"Intern","url":"https://example.com/job"}]}'"#);
+        let opencli = fake_cli(&bin, "opencli", r#"[ "$1" = auth ] || touch "$0.search-ran"; exit 77"#);
+        fake_cli(&bin, "twitter", r#"printf '%s' '{"ok":false,"error":{"code":"not_authenticated"}}'; exit 1"#);
+        fake_cli(&bin, "uvx", "printf '%s' '❌ No valid source session found'; exit 1");
+        let capabilities = capabilities(&paths).await?;
+        assert_eq!(capabilities.channels.len(), 6);
+        assert_eq!(capabilities.channels[0].channel, SearchChannel::WebAts);
+        assert!(!capabilities.channels.iter().find(|health| health.channel == SearchChannel::Facebook).unwrap().authenticated);
+        let manifest = run(&paths, &json!({"query":"internship"})).await?;
+        assert_eq!(manifest.health.len(), 6);
+        assert_eq!(manifest.results.len(), 6);
+        let exa = manifest.results.iter().find(|result| result.channel == SearchChannel::Exa).unwrap();
+        assert_eq!(exa.candidates.len(), 1);
+        assert!(manifest.warnings.iter().any(|warning| warning.contains("Facebook")));
+        assert!(!PathBuf::from(format!("{}.search-ran", opencli.display())).exists());
+        Ok(())
+    }
 
     #[test]
     fn twitter_prefers_opencli_then_falls_back_to_twitter_cli() {

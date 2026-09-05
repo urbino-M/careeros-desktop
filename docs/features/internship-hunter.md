@@ -83,10 +83,30 @@ CareerOS does not enter credentials and never reads, prints, or stores
 passwords, browser cookies, or tokens. Facebook, LinkedIn, and Twitter / X may
 reuse the user's existing browser session. Twitter may also be configured by
 the user through the upstream CLI's local authentication. When a session is
-missing, clicking “连接渠道” opens the centralized browser login guide and
-CareerOS polls the safe channel health result for up to 60 seconds. If the
-upstream cannot expose a verifiable authenticated state, the UI asks the user
-to click “立即检查” instead of claiming that login succeeded.
+missing, “连接渠道” calls the backend's actual login flow, not an unrelated
+default-browser login URL:
+
+- Facebook / Twitter OpenCLI: `<site> login --timeout 300 -f json` opens the
+  Chrome profile used by search; `auth status --site <site> --full` verifies it.
+  A `BROWSER_CONNECT` failure opens the Browser Bridge extension guide.
+- LinkedIn MCP: `uvx mcp-server-linkedin@latest --login` opens the MCP-owned
+  browser. The corresponding cached `--status` command must explicitly report
+  a valid session; a zero exit for an unverified runtime bridge is not enough.
+- Twitter CLI fallback: `twitter status --json` must report both `ok` and
+  `data.authenticated`. Credentials remain entirely upstream-owned.
+
+Health probes are asynchronous, have a 45-second per-command deadline, and
+return distinct login-required, bridge-required, check-failed, and timed-out
+states. Twitter can try its fallback after the preferred probe fails. Search
+uses these same checks and isolates unauthenticated/unavailable channels.
+Discovery and subprocesses share the GUI-safe Node/uvx search path.
+
+Native login waits for completion (up to 300 seconds, with 30 seconds of process
+cleanup allowance) before the UI rechecks. Only manual browser/extension guides
+use polling: one request at a time, five seconds after the preceding check,
+for up to five minutes; cancellation ignores late results. Failed checks also
+consume that deadline. CareerOS only reports “已连接” after a positive backend
+verdict and retains manual check/retry controls for unconfirmed results.
 
 ## Persistent data and contracts
 

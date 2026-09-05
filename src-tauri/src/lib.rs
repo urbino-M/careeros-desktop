@@ -298,10 +298,10 @@ fn save_internship_profile(
 }
 
 #[tauri::command]
-fn get_search_capabilities(
+async fn get_search_capabilities(
     state: tauri::State<'_, AppState>,
 ) -> Result<SearchCapabilities, String> {
-    search_channels::capabilities(&state.paths).map_err(display_error)
+    search_channels::capabilities(&state.paths).await.map_err(display_error)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -315,8 +315,11 @@ async fn setup_search_capabilities(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn begin_search_channel_auth(channel: SearchChannel) -> Result<AuthGuide, String> {
-    search_channels::auth_guide(channel).map_err(display_error)
+async fn begin_search_channel_auth(
+    state: tauri::State<'_, AppState>,
+    channel: SearchChannel,
+) -> Result<AuthGuide, String> {
+    search_channels::begin_auth(&state.paths, channel).await.map_err(display_error)
 }
 
 #[tauri::command]

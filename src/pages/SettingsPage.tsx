@@ -29,7 +29,52 @@ const taskLabels: Record<string, string> = {
 };
 
 const searchAuthChannels: SearchChannel[] = ["facebook", "linkedin", "twitter"];
-const SEARCH_AUTH_TIMEOUT_MS = 60_000;
+const SEARCH_AUTH_TIMEOUT_MS = 300_000;
+
+// The backend login command waits for the actual browser session to finish.
+// Only manual bridge / twitter-cli guides need subsequent polling.
+export async function connectSearchChannel(channel: SearchChannel, onGuide: (guide: AuthGuide) => void) {
+  const guide = await api.beginSearchChannelAuth(channel);
+  onGuide(guide);
+  if (guide.url) {
+    await openUrl(guide.url);
+    return undefined;
+  }
+  return api.searchCapabilities();
+}
+
+export async function pollSearchChannelAuth(
+  channel: SearchChannel,
+  signal: AbortSignal,
+  onCheck: (value: SearchCapabilities) => void,
+  onError: (value: unknown) => void,
+) {
+  const deadline = Date.now() + SEARCH_AUTH_TIMEOUT_MS;
+  while (!signal.aborted && Date.now() < deadline) {
+    try {
+      const next = await api.searchCapabilities();
+      if (signal.aborted) return false;
+      onCheck(next);
+      if (next.channels.some((item) => item.channel === channel && item.available && item.authenticated)) return true;
+    } catch (value) {
+      if (signal.aborted) return false;
+      onError(value);
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0 || signal.aborted) break;
+    // Schedule after completion, not on an interval: slow probes never overlap.
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        window.clearTimeout(timer);
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const timer = window.setTimeout(finish, Math.min(5_000, remaining));
+      signal.addEventListener("abort", finish, { once: true });
+    });
+  }
+  return false;
+}
 
 export function SettingsPage({ onRestartOnboarding, focusSection }: { onRestartOnboarding: () => Promise<void>; focusSection?: "search-channels" }) {
   const [providers, setProviders] = useState<ProviderInfo[]>();
@@ -138,56 +183,50 @@ function SearchChannelsSettings() {
   useEffect(() => { void refresh(false); }, []);
 
   useEffect(() => {
-    if (!authPending) return;
-    let active = true;
-    const startedAt = Date.now();
-    const check = async () => {
-      try {
-        const next = await api.searchCapabilities();
-        if (!active) return;
-        setCapabilities(next);
-        const health = next.channels.find((item) => item.channel === authPending);
-        if (health?.authenticated) {
-          setAuthPending(undefined);
-          setAuthTimedOut(false);
-          setNotice(`${searchChannelLabels[authPending]} 已连接。`);
-          return;
-        }
-        if (Date.now() - startedAt >= SEARCH_AUTH_TIMEOUT_MS) {
-          setAuthPending(undefined);
-          setAuthTimedOut(true);
-          setNotice(`${searchChannelLabels[authPending]} 认证页已打开，但尚未检测到登录状态；完成认证后可点击“立即检查”。`);
-        }
-      } catch (value) {
-        if (active) setNotice(errorMessage(value));
-      }
-    };
-    void check();
-    const timer = window.setInterval(() => void check(), 2_000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [authPending]);
+    if (!authPending || authGuide?.channel !== authPending || !authGuide.url) return;
+    const controller = new AbortController();
+    void pollSearchChannelAuth(authPending, controller.signal, setCapabilities,
+      (value) => setNotice(errorMessage(value)),
+    ).then((connected) => {
+      if (controller.signal.aborted) return;
+      setAuthPending(undefined);
+      setAuthTimedOut(!connected);
+      setNotice(connected
+        ? `${searchChannelLabels[authPending]} 已连接。`
+        : `${searchChannelLabels[authPending]} 尚未确认连接；请完成浏览器登录或扩展配置后点击“立即检查”。`);
+    });
+    return () => controller.abort();
+  }, [authPending, authGuide]);
 
   const openAuth = async (channel: SearchChannel) => {
-    const guide = await api.beginSearchChannelAuth(channel);
-    setAuthGuide(guide);
+    setAuthGuide(undefined);
     setAuthTimedOut(false);
-    if (guide.url) await openUrl(guide.url);
     setAuthPending(channel);
-    setNotice(`${searchChannelLabels[channel]} 认证页已打开；完成登录后 CareerOS 会自动检查状态。`);
+    setNotice(`正在启动 ${searchChannelLabels[channel]} 的登录流程，请在工具打开的浏览器中完成认证；首次准备浏览器可能需要几分钟。`);
+    try {
+      const next = await connectSearchChannel(channel, setAuthGuide);
+      if (!next) return; // Manual guide: the serial polling effect now owns completion.
+      setCapabilities(next);
+      const health = next.channels.find((item) => item.channel === channel);
+      setAuthPending(undefined);
+      setAuthTimedOut(!health?.authenticated);
+      setNotice(health?.authenticated
+        ? `${searchChannelLabels[channel]} 已连接。`
+        : health?.message || "登录流程已结束，但尚未确认连接；请立即检查或重试连接。");
+    } catch (value) {
+      setAuthPending(undefined);
+      throw value;
+    }
   };
 
   const connect = async (channel: SearchChannel) => {
     setBusy(true);
     setNotice("");
     try {
-      let setupMessage = "";
       if (channel === "linkedin") {
         const result = await api.setupSearchCapabilities([channel]);
         setCapabilities(result.capabilities);
-        setupMessage = result.messages.filter(Boolean).join("\n");
+        const setupMessage = result.messages.filter(Boolean).join("\n");
         const health = result.capabilities.channels.find((item) => item.channel === channel);
         if (!health?.available) {
           setNotice(setupMessage || "LinkedIn 尚未准备好，请稍后重试。");
@@ -195,7 +234,6 @@ function SearchChannelsSettings() {
         }
       }
       await openAuth(channel);
-      if (setupMessage) setNotice(`${setupMessage}\nLinkedIn 认证页已打开；完成登录后 CareerOS 会自动检查状态。`);
     } catch (value) {
       setNotice(errorMessage(value));
     } finally {
@@ -214,7 +252,6 @@ function SearchChannelsSettings() {
       const messages = result.messages.filter(Boolean).join("\n");
       if (health?.available && isSearchAuthChannel(channel) && !health.authenticated) {
         await openAuth(channel);
-        setNotice(`${messages ? `${messages}\n` : ""}${searchChannelLabels[channel]} 已准备，已打开浏览器认证页；完成登录后 CareerOS 会自动检查状态。`);
       } else {
         setNotice(messages || `${searchChannelLabels[channel]} 已准备。`);
       }
@@ -236,7 +273,7 @@ function SearchChannelsSettings() {
           <p>官方 Web / ATS、Exa、RSS、LinkedIn、Facebook 和 Twitter / X 会分别检查。可用渠道并行搜索，某个渠道失败不会阻断其他渠道。</p>
           {capabilities ? <span className={readyCount === capabilities.channels.length ? "connected-label" : "gmail-state"}><CheckCircle2 size={15} /> {readyCount} / {capabilities.channels.length} 个渠道可用</span> : <span className="gmail-state">正在检查渠道…</span>}
         </div>
-        <button className="button ghost" disabled={busy} onClick={() => void refresh()}><RefreshCw size={15} className={busy ? "spinning" : ""} /> 刷新状态</button>
+        <button className="button ghost" disabled={busy || !!authPending} onClick={() => void refresh()}><RefreshCw size={15} className={busy ? "spinning" : ""} /> 刷新状态</button>
       </div>
 
       {notice && <div className="inline-notice search-channels-notice"><CircleAlert size={16} /><span>{notice}</span></div>}
@@ -253,9 +290,9 @@ function SearchChannelsSettings() {
               <p>{health.message}</p>
               <div className="channel-health-footer">
                 <small>检查于 {formatSettingsDate(health.checkedAt)}</small>
-                {!health.available && health.channel !== "rss" && <button className="button ghost" disabled={busy} onClick={() => void enable(health.channel)}>{setupPending === health.channel ? "安装中…" : "一键启用"}</button>}
+                {!health.available && health.channel !== "rss" && <button className="button ghost" disabled={busy || !!authPending} onClick={() => void enable(health.channel)}>{setupPending === health.channel ? "安装中…" : "一键启用"}</button>}
                 {!health.available && health.channel === "rss" && <small>请在 Internship 画像中添加 RSS 地址</small>}
-                {health.available && authRequired && <button className="button ghost" disabled={busy || pending} onClick={() => void connect(health.channel)}>{pending ? "等待认证…" : health.authenticated ? "重新连接" : "连接渠道"}</button>}
+                {health.available && authRequired && <button className="button ghost" disabled={busy || !!authPending} onClick={() => void connect(health.channel)}>{pending ? "等待认证…" : health.authenticated ? "重新连接" : "连接渠道"}</button>}
                 {health.available && !authRequired && <span className="connected-label"><CheckCircle2 size={14} /> 可直接使用</span>}
               </div>
             </article>
@@ -268,12 +305,13 @@ function SearchChannelsSettings() {
         <div>
           <strong>{authGuide.title}</strong>
           {authGuide.instructions.map((instruction) => <span key={instruction}>· {instruction}</span>)}
-          {authPending && <span className="gmail-state">正在等待浏览器完成认证，CareerOS 每 2 秒检查一次。</span>}
+          {authPending && <span className="gmail-state">正在等待浏览器完成认证，CareerOS 会在每次检查结束后继续确认，不会重复启动检查。</span>}
           {!authPending && authTimedOut && <span className="gmail-state">未检测到已连接状态；请确认浏览器登录成功后点击“立即检查”。</span>}
         </div>
         <div className="auth-guide-actions">
-          {authGuide.url && <button className="button ghost" onClick={() => void openUrl(authGuide.url!)}><ExternalLink size={14} /> 再次打开</button>}
-          <button className="button ghost" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} /> 立即检查</button>
+          {authGuide.url && <button className="button ghost" disabled={busy} onClick={() => void openUrl(authGuide.url!).catch((value) => setNotice(errorMessage(value)))}><ExternalLink size={14} /> 再次打开</button>}
+          {authPending && !busy && <button className="button ghost" onClick={() => { setAuthPending(undefined); setNotice("已停止等待；完成浏览器配置后可点击立即检查。"); }}>停止等待</button>}
+          <button className="button ghost" disabled={busy || !!authPending} onClick={() => void refresh()}><RefreshCw size={14} /> 立即检查</button>
         </div>
       </div>}
     </div>
@@ -392,11 +430,14 @@ function isSearchAuthChannel(channel: SearchChannel) {
   return searchAuthChannels.includes(channel);
 }
 
-function channelState(health: SearchCapabilities["channels"][number], pending: boolean) {
+export function channelState(health: SearchCapabilities["channels"][number], pending: boolean) {
   if (pending) return { label: "等待认证", tone: "pending" };
   if (!health.available) return { label: health.channel === "rss" ? "待配置" : "需准备", tone: "missing" };
+  if (health.status === "bridge_required") return { label: "需连接浏览器", tone: "missing" };
+  if (health.status === "check_timed_out") return { label: "检查超时", tone: "missing" };
+  if (health.status === "check_failed") return { label: "检查失败", tone: "missing" };
   if (isSearchAuthChannel(health.channel) && !health.authenticated) return { label: "需连接", tone: "missing" };
-  return { label: "可用", tone: "ready" };
+  return { label: isSearchAuthChannel(health.channel) ? "已连接" : "可用", tone: "ready" };
 }
 
 function formatSettingsDate(value: string) {

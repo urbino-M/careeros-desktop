@@ -215,7 +215,7 @@ export interface SearchSetupResult {
 export interface AuthGuide {
   channel: SearchChannel;
   title: string;
-  url?: string;
+  url?: string | null;
   instructions: string[];
 }
 
