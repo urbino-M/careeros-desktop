@@ -14,7 +14,35 @@ export type SubmissionStatus =
 export type StatusFilter = ContactStatus | "all";
 export type CareerSystem = "postdoc" | "internship";
 export type OpportunityCategory = "advertised" | "prospective" | "uncertain";
-export type ApplicationFilter = StatusFilter | SubmissionStatus;
+export type SearchChannel = "web_ats" | "exa" | "rss" | "linkedin" | "facebook" | "twitter";
+export type VerificationStatus = "verified" | "unverified";
+export type ApplicationFilter = StatusFilter | SubmissionStatus | VerificationStatus;
+export type AutomationComposer = "internship_search";
+
+export interface InternshipProfile {
+  schemaVersion: number;
+  targetRoles: string;
+  industries: string;
+  regions: string;
+  workMode: string;
+  startDate: string;
+  duration: string;
+  workAuthorization: string;
+  enrollmentStatus: string;
+  constraints: string;
+  cvPath?: string;
+  rssFeeds: string[];
+  updatedAt?: string;
+}
+
+export interface SourceEvidence {
+  title: string;
+  url: string;
+  checkedAt: string;
+  evidenceType: string;
+  channel: SearchChannel;
+  backend: string;
+}
 
 export interface MigrationReport {
   imported: boolean;
@@ -88,6 +116,9 @@ export interface TargetCard {
   materialStatus: "pending" | "ready";
   materialError?: string | null;
   opportunityStatus?: string | null;
+  verificationStatus?: VerificationStatus;
+  sourceChannel?: SearchChannel;
+  sourceBackend?: string;
 }
 
 export interface DashboardData {
@@ -204,6 +235,7 @@ export interface TargetDetail {
   revisions: RevisionItem[];
   recoveryJob?: JobSummary | null;
   unpublishedCv?: ArtifactItem[];
+  sources?: SourceEvidence[];
 }
 
 export interface ProviderModelInfo {
@@ -387,7 +419,7 @@ export type ApplicationView = "opportunities" | "strategy";
 
 export type AppRoute =
   | { page: "dashboard" }
-  | { page: "automation" }
+  | { page: "automation"; composer?: AutomationComposer }
   | { page: "applications"; careerSystem: CareerSystem; status: ApplicationFilter; view?: ApplicationView; category?: OpportunityCategory }
   | { page: "application"; targetId: string; careerSystem: CareerSystem; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
   | { page: "settings" };

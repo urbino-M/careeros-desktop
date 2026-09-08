@@ -17,6 +17,9 @@ const postdocTarget = {
   sourceUrl: "https://example.com/postdoc",
   updatedAt: "2026-09-02T08:00:00Z",
   careerTrack: "postdoc",
+  verificationStatus: "verified",
+  sourceChannel: "web_ats",
+  sourceBackend: "codex_web_search",
 };
 
 const internshipTarget = {
@@ -35,6 +38,9 @@ const internshipTarget = {
   sourceUrl: "https://example.com/internship",
   updatedAt: "2026-09-02T08:00:00Z",
   careerTrack: "internship",
+  verificationStatus: "verified",
+  sourceChannel: "web_ats",
+  sourceBackend: "codex_web_search",
 };
 
 const dashboards = {
@@ -55,6 +61,7 @@ const dashboards = {
     metrics: [
       { key: "all", label: "申请机会", value: 8, helper: "只显示行业 Internship" },
       { key: "high_fit", label: "高匹配", value: 3, helper: "评分 ≥ 85" },
+      { key: "unverified", label: "待核验", value: 2, helper: "公开线索尚未核验，不能直接投递" },
       { key: "portal_pending", label: "待投递", value: 4, helper: "已核验，等待官网投递" },
     ],
     regions: [
@@ -84,6 +91,9 @@ const detail = (target: typeof postdocTarget | typeof internshipTarget) => ({
     : [],
   replies: [],
   revisions: [],
+  sources: target.careerTrack === "internship"
+    ? [{ title: "Google DeepMind Careers", url: target.sourceUrl, checkedAt: "2026-09-02T08:00:00Z", evidenceType: "primary", channel: "web_ats", backend: "codex_web_search" }]
+    : [],
 });
 
 const jobs = {
@@ -123,10 +133,12 @@ const jobs = {
 const provider = {
   id: "openai",
   displayName: "OpenAI / Codex",
+  adapterKind: "internal_gateway",
   connectionMode: "internal_gateway",
+  configured: true,
   enabled: true,
   models: [
-    { id: "gpt-5", slug: "gpt-5", displayName: "GPT-5", enabled: true, supportsReasoning: true, supportsTools: true },
+    { id: "gpt-5", slug: "gpt-5", displayName: "GPT-5", enabled: true, supportsReasoning: true, supportsTools: true, supportsVision: true, reasoningLevels: ["low", "medium", "high"] },
   ],
 };
 
@@ -160,6 +172,24 @@ mockIPC((command, payload) => {
       preferredLanguage: "bilingual",
     };
   }
+  if (command === "get_internship_profile") {
+    return {
+      schemaVersion: 1,
+      targetRoles: "Research Engineer Intern, ML Engineer Intern",
+      industries: "AI / developer tools",
+      regions: "United Kingdom · Europe",
+      workMode: "hybrid / onsite",
+      startDate: "2027 summer",
+      duration: "12 weeks",
+      workAuthorization: "待确认",
+      enrollmentStatus: "博士在读",
+      constraints: "",
+      rssFeeds: [],
+      updatedAt: "2026-09-02T08:00:00Z",
+    };
+  }
+  if (command === "import_internship_cv") return "uploads/internship-cv-preview.pdf";
+  if (command === "save_internship_profile") return payloadValue(payload, "value");
   if (command === "get_dashboard") {
     return dashboards[payloadValue(payload, "careerTrack") === "internship" ? "internship" : "postdoc"];
   }
@@ -173,6 +203,7 @@ mockIPC((command, payload) => {
   if (command === "get_jobs") return jobs;
   if (command === "get_model_providers") return [provider];
   if (command === "get_task_model_defaults") return defaults;
+  if (command === "get_cv_customization") return { schemaVersion: 1, enabled: false, emphasize: "", exclude: "", instructions: "" };
   if (command === "get_migration_report") {
     return { imported: true, applications: 20, opportunities: 20, legacyJobs: 4, revisions: 7, gmailDrafts: 0, activeTargets: 20, hiddenTombstones: 0 };
   }

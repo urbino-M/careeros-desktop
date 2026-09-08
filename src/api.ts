@@ -18,6 +18,7 @@ import type {
   ManualRevisionRequest,
   MigrationReport,
   OnboardingProfile,
+  InternshipProfile,
   ProviderInfo,
   ProviderConnectionRequest,
   TargetCard,
@@ -38,7 +39,10 @@ export const api = {
       careerTrack,
       category: careerTrack === "postdoc" ? category ?? null : null,
       status: careerTrack === "postdoc" ? status : null,
-      submissionStatus: careerTrack === "internship" ? status : null,
+      submissionStatus: careerTrack === "internship" && ["not_set", "portal_pending", "submitted", "not_required"].includes(status) ? status : null,
+      verificationStatus: careerTrack === "internship"
+        ? status === "unverified" ? "unverified" : status === "all" ? null : "verified"
+        : null,
       search: search || null,
       offset,
       limit,
@@ -80,6 +84,11 @@ export const api = {
     invoke<OnboardingProfile>("save_onboarding_profile", { value }),
   importOnboardingCv: (path: string) =>
     invoke<string>("import_onboarding_cv", { path }),
+  importInternshipCv: (path: string) =>
+    invoke<string>("import_internship_cv", { path }),
+  internshipProfile: () => invoke<InternshipProfile>("get_internship_profile"),
+  saveInternshipProfile: (value: InternshipProfile) =>
+    invoke<InternshipProfile>("save_internship_profile", { value }),
   jobs: (pageSize = 5) => invoke<JobGroups>("get_jobs", { pageSize }),
   enqueue: (request: EnqueueRequest) =>
     invoke<string>("enqueue_job", { request }),

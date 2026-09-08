@@ -5,6 +5,7 @@ mod cover_letter;
 mod cv_schema;
 mod db;
 mod gmail;
+mod internship;
 mod materials;
 mod migration;
 mod models;
@@ -77,6 +78,7 @@ fn get_contact_targets(
     state: tauri::State<'_, AppState>,
     status: Option<String>,
     submission_status: Option<String>,
+    verification_status: Option<String>,
     career_track: Option<String>,
     search: Option<String>,
     offset: Option<usize>,
@@ -88,6 +90,7 @@ fn get_contact_targets(
         career_track.as_deref().unwrap_or("postdoc"),
         status.as_deref(),
         submission_status.as_deref(),
+        verification_status.as_deref(),
         search.as_deref(),
         offset.unwrap_or(0),
         limit.unwrap_or(20),
@@ -287,6 +290,29 @@ async fn import_onboarding_cv(
         .await.map_err(|error| error.to_string())?.map_err(display_error)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn import_internship_cv(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    internship::import_cv(&state.paths, std::path::Path::new(&path)).map_err(display_error)
+}
+
+#[tauri::command]
+fn get_internship_profile(
+    state: tauri::State<'_, AppState>,
+) -> Result<internship::InternshipProfile, String> {
+    internship::load(&state.paths).map_err(display_error)
+}
+
+#[tauri::command]
+fn save_internship_profile(
+    state: tauri::State<'_, AppState>,
+    value: internship::InternshipProfile,
+) -> Result<internship::InternshipProfile, String> {
+    internship::save(&state.paths, value).map_err(display_error)
+}
+
 #[tauri::command]
 fn get_jobs(
     state: tauri::State<'_, AppState>,
@@ -469,6 +495,9 @@ pub fn run() {
             get_onboarding_profile,
             save_onboarding_profile,
             import_onboarding_cv,
+            import_internship_cv,
+            get_internship_profile,
+            save_internship_profile,
             get_jobs,
             enqueue_job,
             cancel_job,

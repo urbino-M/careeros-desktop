@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Activity } from "lucide-react";
 import type { JobSummary } from "../types";
-import { buildRetryRequest, buildTaskHistory, jobCardTitle, jobPhase, jobStatusMessage, JobSection, JobCard } from "./AutomationPage";
+import { buildRetryRequest, buildTaskHistory, jobCardTitle, jobPhase, jobStatusMessage, JobSection, JobCard, buildInternshipSearchQuery } from "./AutomationPage";
 import { setUiPreferences } from "../uiPreferences";
 
 afterEach(() => setUiPreferences({ locale: "zh" }));
@@ -147,5 +147,36 @@ describe("automation task history", () => {
       modelId: "minimax:MiniMax-M2",
       reasoning: "medium",
     });
+  });
+});
+
+describe("internship task composer", () => {
+  it("builds an editable search request from the independent Internship profile", () => {
+    expect(buildInternshipSearchQuery({
+      schemaVersion: 1,
+      targetRoles: "ML Engineer Intern",
+      industries: "AI",
+      regions: "Singapore",
+      workMode: "hybrid",
+      startDate: "2027 summer",
+      duration: "12 weeks",
+      workAuthorization: "待确认",
+      enrollmentStatus: "硕士在读",
+      constraints: "no relocation",
+      rssFeeds: [],
+    })).toContain("目标岗位 / 技能：ML Engineer Intern");
+    expect(buildInternshipSearchQuery({
+      schemaVersion: 1,
+      targetRoles: "",
+      industries: "",
+      regions: "",
+      workMode: "",
+      startDate: "",
+      duration: "",
+      workAuthorization: "",
+      enrollmentStatus: "",
+      constraints: "",
+      rssFeeds: [],
+    })).toBe("寻找符合当前 Internship 画像的行业实习机会。");
   });
 });

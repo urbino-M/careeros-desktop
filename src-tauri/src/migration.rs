@@ -15,7 +15,7 @@ const NATIVE_MIGRATION: &str = include_str!("../migrations/0008_native_desktop.s
 const REPLY_ROUTING_MIGRATION: &str = include_str!("../migrations/0009_reply_routing_and_submission_status.sql");
 const RESPONSES_PROVIDERS_MIGRATION: &str = include_str!("../migrations/0010_responses_model_providers.sql");
 const SCHEDULER_LEASES_MIGRATION: &str = include_str!("../migrations/0011_scheduler_leases.sql");
-const LATEST_NATIVE_SCHEMA_VERSION: i64 = 14;
+const LATEST_NATIVE_SCHEMA_VERSION: i64 = 15;
 
 pub fn initialize(paths: &AppPaths) -> Result<MigrationReport> {
     initialize_with_legacy_root(paths, None)
@@ -193,6 +193,29 @@ fn apply_native_schema(conn: &mut Connection) -> Result<()> {
         tx.execute("INSERT INTO native_schema_migrations(version,name) VALUES(14,'opportunity-shelving')", [])?;
     }
     tx.commit()?;
+    apply_integration_schema(conn)?;
+    Ok(())
+}
+
+// v12 was released on two branches with different meanings. Keep its original
+// ledger entry intact; v15 converges the physical schema without replaying DDL.
+fn apply_integration_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let applied: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=15)", [], |r| r.get(0))?;
+    if !applied {
+        for (table, column, ddl) in [
+            ("opportunities", "verification_status", "ALTER TABLE opportunities ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'verified'"),
+            ("opportunities", "source_channel", "ALTER TABLE opportunities ADD COLUMN source_channel TEXT NOT NULL DEFAULT 'web_ats'"),
+            ("opportunities", "source_backend", "ALTER TABLE opportunities ADD COLUMN source_backend TEXT NOT NULL DEFAULT 'legacy'"),
+            ("native_source_evidence", "source_channel", "ALTER TABLE native_source_evidence ADD COLUMN source_channel TEXT NOT NULL DEFAULT 'web_ats'"),
+            ("native_source_evidence", "backend", "ALTER TABLE native_source_evidence ADD COLUMN backend TEXT NOT NULL DEFAULT 'legacy'"),
+        ] {
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)", params![table,column], |r| r.get(0))?;
+            if !exists { tx.execute_batch(ddl)?; }
+        }
+        tx.execute_batch(include_str!("../migrations/0015_reconcile_branch_schemas.sql"))?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -255,9 +278,15 @@ fn apply_discovery_material_schema(conn: &mut Connection) -> Result<()> {
     let applied: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=12)", [], |row| row.get(0),
     )?;
-    if !applied {
+    let remote_v12: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=12 AND name='search-channels-and-verification')", [], |r| r.get(0))?;
+    let material_columns: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_table_info('contact_targets_v2') WHERE name IN ('material_status','material_error')", [], |r| r.get(0))?;
+    if !applied || (remote_v12 && material_columns == 0) {
         tx.execute_batch(include_str!("../migrations/0012_discovery_material_state.sql"))?;
-        tx.execute("INSERT INTO native_schema_migrations(version,name) VALUES(12,'discovery-material-state')", [])?;
+        if !applied {
+            tx.execute("INSERT INTO native_schema_migrations(version,name) VALUES(12,'discovery-material-state')", [])?;
+        }
+    } else if material_columns != 2 {
+        bail!("数据库 v12 结构不完整，停止升级并保留迁移前备份")
     }
     tx.commit()?;
     Ok(())
@@ -968,6 +997,77 @@ mod tests {
         assert!(!second.imported);
         assert_eq!(second.applications, 0);
         assert_eq!(second.active_targets, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn branch_schemas_converge_with_backup_without_rewriting_history() -> Result<()> {
+        for variant in ["v11", "local12", "local13", "local14", "remote12"] {
+            let temp = TempDir::new()?;
+            let root = temp.path().to_path_buf();
+            let paths = AppPaths { database:root.join("database/test.sqlite3"),generated:root.join("generated"),profile:root.join("profile"),
+                workspaces:root.join("workspaces"),codex_home:root.join("codex"),backups:root.join("backups"),cache:root.join("cache"),
+                logs:root.join("logs"),runtime:root.join("runtime"),data_root:root };
+            paths.ensure()?;
+            let mut conn = open_migration_connection(&paths.database)?;
+            conn.execute_batch(LEGACY_FOUNDATION_SCHEMA)?;
+            conn.execute_batch(NATIVE_MIGRATION)?;
+            conn.execute("INSERT INTO native_schema_migrations(version,name) VALUES(8,'native-desktop-foundation')", [])?;
+            apply_reply_routing_schema(&mut conn)?;
+            apply_responses_provider_schema(&mut conn)?;
+            apply_scheduler_leases_schema(&mut conn)?;
+            if variant.starts_with("local") { apply_discovery_material_schema(&mut conn)?; }
+            if matches!(variant,"local13"|"local14") { apply_contact_status_version_schema(&mut conn)?; }
+            if variant == "local14" {
+                conn.execute_batch(include_str!("../migrations/0014_opportunity_shelving.sql"))?;
+                conn.execute("INSERT INTO native_schema_migrations(version,name) VALUES(14,'opportunity-shelving')", [])?;
+            }
+            if variant == "remote12" {
+                conn.execute_batch(include_str!("../migrations/0012_search_channels.sql"))?;
+                conn.execute("INSERT INTO native_schema_migrations(version,name) VALUES(12,'search-channels-and-verification')", [])?;
+            }
+            conn.execute_batch("INSERT INTO opportunities(id,title,organization,opportunity_type) VALUES('opp','Saved role','University','advertised_position');
+                INSERT INTO applications(id,opportunity_id,cv_path) VALUES('app','opp','generated/original.pdf');
+                INSERT INTO contact_targets_v2(id,application_id,opportunity_id,name,normalized_name,organization,title,identity_key,status,shelved_at,submission_status)
+                VALUES('contact','app','opp','Original Contact','originalcontact','University','Saved role','stable-key','replied','2026-01-01','submitted');
+                INSERT INTO native_source_evidence(id,entity_type,entity_id,title,url,checked_at) VALUES('source','opportunity','opp','Evidence','https://example.edu/job','2026-01-01');")?;
+            if variant.starts_with("local") { conn.execute("UPDATE contact_targets_v2 SET material_status='pending',material_error='retained error'", [])?; }
+            if variant == "local14" { conn.execute("UPDATE opportunities SET shelved_at='2026-01-02'", [])?; }
+            if variant == "remote12" {
+                conn.execute("UPDATE opportunities SET verification_status='unverified',source_channel='linkedin',source_backend='codex_web_search'", [])?;
+                conn.execute("UPDATE native_source_evidence SET source_channel='linkedin',backend='codex_web_search'", [])?;
+            }
+            let historical: Vec<(i64,String)> = conn.prepare("SELECT version,name FROM native_schema_migrations ORDER BY version")?
+                .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?;
+            let previous_version = historical.last().unwrap().0;
+            drop(conn);
+            fs::write(paths.generated.join("original.pdf"), b"unchanged artifact")?;
+            let report = initialize(&paths).with_context(|| format!("upgrade {variant}"))?;
+            let backup = report.backup_path.context("Existing database must have an upgrade backup")?;
+            let saved = Connection::open(backup)?;
+            assert_eq!(saved.query_row("SELECT MAX(version) FROM native_schema_migrations",[],|r|r.get::<_,i64>(0))?,previous_version);
+            let conn = open_migration_connection(&paths.database)?;
+            for (version,name) in historical {
+                assert_eq!(conn.query_row("SELECT name FROM native_schema_migrations WHERE version=?1",[version],|r|r.get::<_,String>(0))?,name);
+            }
+            let state: (String,String,String,String) = conn.query_row("SELECT status,shelved_at,submission_status,identity_key FROM contact_targets_v2 WHERE id='contact'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+            assert_eq!(state,("replied".into(),"2026-01-01".into(),"submitted".into(),"stable-key".into()));
+            if variant.starts_with("local") {
+                assert_eq!(conn.query_row("SELECT material_error FROM contact_targets_v2 WHERE id='contact'",[],|r|r.get::<_,String>(0))?,"retained error");
+            }
+            if variant == "remote12" {
+                assert_eq!(conn.query_row("SELECT verification_status FROM opportunities WHERE id='opp'",[],|r|r.get::<_,String>(0))?,"unverified");
+                assert_eq!(conn.query_row("SELECT source_channel FROM native_source_evidence WHERE id='source'",[],|r|r.get::<_,String>(0))?,"linkedin");
+            }
+            assert_eq!(conn.query_row("SELECT MAX(version) FROM native_schema_migrations",[],|r|r.get::<_,i64>(0))?,15);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get::<_,i64>(0))?,0);
+            let before:i64 = conn.query_row("SELECT status_version FROM contact_targets_v2 WHERE id='contact'",[],|r|r.get(0))?;
+            conn.execute("UPDATE contact_targets_v2 SET status='follow_up' WHERE id='contact'", [])?;
+            assert_eq!(conn.query_row("SELECT status_version FROM contact_targets_v2 WHERE id='contact'",[],|r|r.get::<_,i64>(0))?,before+1);
+            drop(conn);
+            assert!(initialize(&paths)?.backup_path.is_none(),"second upgrade must be a no-op");
+            assert_eq!(fs::read(paths.generated.join("original.pdf"))?,b"unchanged artifact");
+        }
         Ok(())
     }
 

@@ -6,7 +6,7 @@ import { t } from "../i18n";
 import { InternshipPlanningPanel, InternshipPlanningSummary } from "../components/InternshipPlanningPanel";
 import { ModelControls, type ModelSelection } from "../components/ModelControls";
 import { JobCard } from "./AutomationPage";
-import { EmptyState, ErrorState, LoadingState, StatusBadge, SubmissionBadge, statusLabels } from "../components/Ui";
+import { EmptyState, ErrorState, LoadingState, StatusBadge, SubmissionBadge, VerificationBadge, statusLabels } from "../components/Ui";
 import type { ApplicationFilter, AppRoute, ApplicationView, CareerSystem, DashboardData, DiscoveredOpportunity, DiscoveredOpportunityPage, EnqueueRequest, OpportunityCategory, TargetCard } from "../types";
 
 export const opportunityCategoryLabels: Record<OpportunityCategory, string> = {
@@ -164,6 +164,7 @@ const postdocFilters: ApplicationFilter[] = [
 ];
 
 const internshipFilters: ApplicationFilter[] = [
+  "unverified",
   "portal_pending",
   "submitted",
   "not_set",
@@ -178,6 +179,8 @@ const filterLabels: Record<ApplicationFilter, string> = {
   submitted: "已投递",
   not_required: "无需投递",
   all: "全部",
+  verified: "已核验",
+  unverified: "待核验",
 };
 
 export function ApplicationsPage({
@@ -380,7 +383,7 @@ export function ApplicationsPage({
                     <div className="score"><strong>{Math.round(target.fitScore ?? 0)}</strong><span>/ 100</span></div>
                     <div className="target-card-badges">
                       {!targetInternship && target.materialStatus === "pending" && <span className="badge">{t("材料待完成")}</span>}
-                      {targetInternship ? <SubmissionBadge status={target.submissionStatus} /> : <StatusBadge status={target.status} />}
+                      {targetInternship ? <><VerificationBadge status={target.verificationStatus ?? "verified"} /><SubmissionBadge status={target.submissionStatus} /></> : <StatusBadge status={target.status} />}
                     </div>
                   </div>
                   <h3>{target.organization}</h3>

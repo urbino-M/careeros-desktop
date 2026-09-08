@@ -245,6 +245,30 @@ body::before {
 .internship-search-profile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 18px; align-content: start; padding: 2px 0 0 18px; border-left: 1px solid var(--line); }
 .internship-search-profile-item { display: grid; gap: 4px; min-width: 0; }
 .internship-search-profile-item strong { color: #d7e6e2; font-size: 11px; }
+.internship-profile-editor { display: grid; gap: 15px; margin: 12px; padding: 18px; border: 1px solid var(--line); background: rgba(4,25,32,.54); }
+.planning-section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.planning-section-heading h3 { margin: 5px 0 0; font: 600 20px/1.15 var(--serif); }
+.planning-section-note { color: var(--muted-2); font-size: 10px; line-height: 1.55; }
+.internship-profile-fields { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+.profile-field { display: grid; gap: 7px; min-width: 0; }
+.profile-field-wide { grid-column: 1 / -1; }
+.profile-field > span { color: #bfd0cf; font-size: 10px; font-weight: 650; letter-spacing: .04em; }
+.profile-field input, .profile-field textarea { width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 5px; background: #0c303b; color: var(--text); outline: none; font: inherit; font-size: 11px; }
+.profile-field input:focus, .profile-field textarea:focus { border-color: var(--line-bright); box-shadow: 0 0 0 2px rgba(72,205,208,.08); }
+.profile-field textarea { min-height: 66px; resize: vertical; line-height: 1.5; }
+.internship-cv-dropzone { display: grid; grid-template-columns: auto 1fr auto; gap: 13px; align-items: center; min-height: 84px; padding: 13px 15px; border: 1px dashed rgba(72,205,208,.38); border-radius: 6px; background: rgba(9,44,54,.72); transition: 140ms ease; }
+.internship-cv-dropzone:hover, .internship-cv-dropzone.is-dragging { border-color: var(--accent); background: rgba(72,205,208,.12); box-shadow: 0 0 0 3px rgba(72,205,208,.08); }
+.internship-cv-drop-icon { display: grid; place-items: center; width: 39px; height: 39px; color: var(--accent-strong); border: 1px solid rgba(72,205,208,.3); background: rgba(72,205,208,.09); }
+.internship-cv-drop-copy { display: grid; gap: 4px; min-width: 0; }
+.internship-cv-drop-copy strong { color: var(--text); font-size: 12px; }
+.internship-cv-drop-copy span, .internship-cv-drop-copy small { color: var(--muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.internship-cv-drop-copy small { color: var(--muted-2); }
+.internship-cv-actions { display: flex; align-items: center; gap: 9px; }
+.internship-cv-actions .button { white-space: nowrap; }
+.planning-editor-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.planning-notice { display: grid; gap: 7px; padding: 12px 13px; border: 1px solid rgba(72,205,208,.25); background: rgba(72,205,208,.07); color: #c9dcda; font-size: 10px; line-height: 1.5; }
+.planning-notice { grid-template-columns: 18px 1fr; align-items: start; margin: 0 12px 12px; color: #d7e5e1; }
+.planning-notice svg { color: var(--amber); margin-top: 1px; }
 .internship-planning-grid { display: grid; grid-template-columns: 1.06fr .94fr 1fr; gap: 12px; padding: 12px; }
 .planning-card { min-width: 0; display: grid; align-content: start; gap: 14px; padding: 18px; border: 1px solid var(--line); background: rgba(4,25,32,.64); }
 .planning-card-heading { display: flex; align-items: flex-start; gap: 10px; }
@@ -317,12 +341,16 @@ body::before {
 .submission-portal_pending { color: var(--amber); background: rgba(242,173,64,.1); }
 .submission-submitted { color: var(--green); background: rgba(78,212,141,.1); }
 .submission-not_required { color: #aeb9b8; background: rgba(128,145,147,.1); }
+.verification-badge { display: inline-flex; width: fit-content; padding: 4px 8px; border-radius: 5px; border: 1px solid currentColor; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.verification-verified { color: var(--green); background: rgba(78,212,141,.1); }
+.verification-unverified { color: var(--amber); background: rgba(242,173,64,.1); }
 
 .back-button { display: inline-flex; gap: 8px; align-items: center; margin-bottom: 26px; padding: 9px 12px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
 .detail-layout { display: grid; grid-template-columns: 280px minmax(0,1fr); gap: 30px; }
 .opportunity-rail { align-self: start; position: sticky; top: 30px; padding-right: 26px; border-right: 1px solid var(--line); }
 .opportunity-rail h1 { margin: 10px 0 13px; font: 600 37px/1.08 var(--serif); overflow-wrap: anywhere; }
 .rail-role { color: #d1dcdb; line-height: 1.55; }
+.rail-verification-badges { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .rail-facts { display: grid; gap: 17px; margin: 30px 0; }
 .rail-facts div { display: grid; gap: 5px; }
 .rail-facts dt { color: var(--muted-2); font-size: 11px; }
@@ -585,6 +613,7 @@ body::before {
 .retry-task-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 17px; }
 
 .settings-section { margin-top: 30px; }
+.settings-section[id] { scroll-margin-top: 24px; }
 .settings-card-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
 .account-card { display: grid; grid-template-columns: 42px 1fr; gap: 13px; padding: 18px; border: 1px solid var(--line); background: var(--panel); }
 .settings-icon { width: 39px; height: 39px; display: grid; place-items: center; color: var(--accent); background: var(--accent-dim); border: 1px solid rgba(72,205,208,.2); }
@@ -807,6 +836,11 @@ body::before {
   .career-overview-metrics { grid-template-columns: repeat(3, 1fr); }
   .internship-planning-grid { grid-template-columns: 1fr; }
   .internship-search-profile { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .internship-profile-fields { grid-template-columns: 1fr; }
+  .profile-field-wide { grid-column: auto; }
+  .internship-cv-dropzone { grid-template-columns: auto 1fr; }
+  .internship-cv-actions { grid-column: 2; }
+  .planning-section-heading { flex-direction: column; }
   .application-view-tabs { display: grid; grid-template-columns: repeat(2, 1fr); width: 100%; }
   .application-view-tabs button { text-align: center; }
   .internship-context-strip { grid-template-columns: 1fr; gap: 12px; }

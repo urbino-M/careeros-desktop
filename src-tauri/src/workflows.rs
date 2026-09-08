@@ -1,5 +1,5 @@
 use crate::db;
-use crate::models::JobSummary;
+use crate::models::{JobSummary, SearchChannel, SourceEvidence, VerificationStatus};
 use crate::paths::AppPaths;
 use crate::typst;
 use anyhow::{bail, Context, Result};
@@ -182,16 +182,6 @@ struct FitDimension {
     uncertainty: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceEvidence {
-    title: String,
-    url: String,
-    checked_at: String,
-    #[serde(default = "default_evidence_type")]
-    evidence_type: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChecklistOutput {
@@ -268,7 +258,6 @@ struct VerificationOutput {
 fn default_priority() -> i64 { 100 }
 fn default_sort() -> i64 { 100 }
 fn default_origin() -> String { "verified".into() }
-fn default_evidence_type() -> String { "primary".into() }
 fn protocol_version() -> u8 { 1 }
 
 fn opportunity_contract() -> Value {
@@ -323,8 +312,11 @@ pub fn result_contract(job_type: &str) -> Value {
             "rules": [
                 "Use exact camelCase keys shown below; do not emit snake_case alternatives.",
                 "Return current industry internships only; exclude postdoctoral, doctoral, faculty and full-time roles.",
-                "Use eligibilityStatus=uncertain when the supplied evidence cannot establish candidate eligibility.",
-                "Score against the requested search brief; do not use unverified candidate facts.",
+                "Use eligibilityStatus=uncertain when the supplied evidence or Internship profile cannot establish candidate eligibility.",
+                "Use Codex web search for public recruitment information, including accessible LinkedIn and Twitter / X posts; verify against official company careers pages or official ATS records.",
+                "Do not install or invoke channel tools, connect social accounts, or bypass login restrictions. State any access or freshness limits instead of claiming complete coverage.",
+                "Preserve source channel, backend=codex_web_search, checkedAt and evidenceType for every source. Label social sources by their platform; only an inspected official Web/ATS page may be primary, never a public post or search snippet.",
+                "Score against the requested search brief; missing profile information makes eligibility uncertain rather than blocking discovery.",
                 "Do not create a CV, outreach email, Gmail draft or application submission."
             ],
             "limits": {"discovery": 20, "saved": 10},
@@ -333,8 +325,8 @@ pub fn result_contract(job_type: &str) -> Value {
                 "opportunities": [{
                     "opportunityKind": "industry_internship",
                     "externalId": "optional stable source id",
-                    "sourceUrl": "verified official job URL",
-                    "sourceTitle": "official source title",
+                    "sourceUrl": "public source URL",
+                    "sourceTitle": "source title",
                     "title": "internship title",
                     "organization": "company or organization",
                     "department": "optional team",
@@ -342,7 +334,7 @@ pub fn result_contract(job_type: &str) -> Value {
                     "region": "optional region",
                     "location": "optional exact or remote location",
                     "deadline": "ISO date or null",
-                    "summary": "verified role summary",
+                    "summary": "source-grounded role summary with uncertainties noted",
                     "keywords": ["keyword"],
                     "active": true,
                     "eligibilityStatus": "eligible|uncertain|ineligible",
@@ -351,7 +343,7 @@ pub fn result_contract(job_type: &str) -> Value {
                     "fitAnalysis": "complete reviewable Markdown",
                     "fitAnalysisZh": "complete Chinese reviewable Markdown",
                     "verifiedAt": "UTC ISO-8601",
-                    "sources": [{"title":"official source","url":"https://...","checkedAt":"UTC ISO-8601","evidenceType":"primary"}],
+                    "sources": [{"title":"source","url":"https://...","checkedAt":"UTC ISO-8601","evidenceType":"primary|secondary|inferred","channel":"web_ats|exa|rss|linkedin|facebook|twitter","backend":"codex_web_search"}],
                     "checklist": [{"itemType":"eligibility_confirmation","required":true,"status":"ready|review|missing","origin":"verified|inferred","evidence":"text","sourceUrl":"https://...","note":"optional","sortOrder":10}]
                 }]
             }
@@ -995,6 +987,7 @@ fn upsert_internship_target(
     value: &FoundInternshipOpportunity,
 ) -> Result<ImportedTarget> {
     validate_internship_opportunity(value)?;
+    let (mut verification_status, mut source_channel, mut source_backend) = internship_verification(value);
     let normalized_checklist = normalize_checklist_items(&value.checklist)?;
     let identity = internship_opportunity_identity(value);
     let conn = db::connect(&paths.database)?;
@@ -1009,13 +1002,39 @@ fn upsert_internship_target(
         )
         .optional()?
     {
+        let (stored_status, stored_channel, stored_backend): (String, String, String) = tx
+            .query_row(
+                "SELECT COALESCE(verification_status,'verified'),
+                        COALESCE(source_channel,'web_ats'),
+                        COALESCE(source_backend,'legacy')
+                 FROM opportunities WHERE id=?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        if verification_status == VerificationStatus::Unverified
+            && VerificationStatus::parse(&stored_status) == VerificationStatus::Verified
+        {
+            verification_status = VerificationStatus::Verified;
+            source_channel = SearchChannel::parse(&stored_channel);
+            source_backend = stored_backend;
+        }
         tx.execute(
             "UPDATE opportunities
              SET last_verified_at=?2,fit_score=MAX(COALESCE(fit_score,0),?3),
                  status='open',opportunity_type='industry_internship',summary=?4,deadline=?5,
+                 verification_status=?6,source_channel=?7,source_backend=?8,
                  updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
              WHERE id=?1",
-            params![id, value.verified_at, value.fit_score, value.summary, value.deadline],
+            params![
+                id,
+                value.verified_at,
+                value.fit_score,
+                value.summary,
+                value.deadline,
+                verification_status.as_str(),
+                source_channel.as_str(),
+                source_backend,
+            ],
         )?;
         id
     } else {
@@ -1024,8 +1043,8 @@ fn upsert_internship_target(
             "INSERT INTO opportunities(
                 id,identity_key,title,organization,department,country,region,opportunity_type,status,
                 deadline,source_url,source_title,discovered_at,last_verified_at,summary,keywords_json,
-                fit_score,priority,notes
-             ) VALUES(?1,?2,?3,?4,?5,?6,?7,'industry_internship','open',?8,?9,?10,?11,?11,?12,?13,?14,'review',?15)",
+                fit_score,priority,notes,verification_status,source_channel,source_backend
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,'industry_internship','open',?8,?9,?10,?11,?11,?12,?13,?14,'review',?15,?16,?17,?18)",
             params![
                 id,
                 identity,
@@ -1042,6 +1061,9 @@ fn upsert_internship_target(
                 serde_json::to_string(&value.keywords)?,
                 value.fit_score,
                 value.external_id,
+                verification_status.as_str(),
+                source_channel.as_str(),
+                source_backend,
             ],
         )?;
         id
@@ -1059,10 +1081,10 @@ fn upsert_internship_target(
         tx.execute(
             "UPDATE contact_targets_v2
              SET fit_score=?2,source_url=?3,submission_status=CASE
-                    WHEN submission_status='not_set' THEN 'portal_pending' ELSE submission_status END,
+                    WHEN submission_status='not_set' AND ?4='verified' THEN 'portal_pending' ELSE submission_status END,
                  updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
              WHERE id=?1",
-            params![target_id, value.fit_score, value.source_url],
+            params![target_id, value.fit_score, value.source_url, verification_status.as_str()],
         )?;
         (target_id, application_id)
     } else {
@@ -1086,7 +1108,7 @@ fn upsert_internship_target(
                 id,application_id,opportunity_id,pi_id,name,normalized_name,email,normalized_email,
                 organization,title,fit_score,priority,status,submission_status,source_url,identity_key
              ) VALUES(?1,?2,?3,NULL,'Application portal','applicationportal',NULL,NULL,?4,?5,?6,100,
-                      'ready_to_contact','portal_pending',?7,?8)",
+                      'ready_to_contact',?7,?8,?9)",
             params![
                 target_id,
                 application_id,
@@ -1094,6 +1116,7 @@ fn upsert_internship_target(
                 value.organization,
                 value.title,
                 value.fit_score,
+                if verification_status == VerificationStatus::Verified { "portal_pending" } else { "not_set" },
                 value.source_url,
                 format!("{opportunity_id}::applicationportal"),
             ],
@@ -1647,11 +1670,42 @@ fn normalize_checklist_items(items:&[ChecklistOutput])->Result<Vec<ChecklistOutp
 fn record_sources(conn:&Connection,entity_type:&str,entity_id:&str,sources:&[SourceEvidence])->Result<()> {
     for source in sources {
         validate_source(source)?;
-        let digest=format!("{:x}",Sha256::digest(format!("{entity_type}:{entity_id}:{}",canonical_url(&source.url)).as_bytes()));
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(
+                format!("{entity_type}:{entity_id}:{}", canonical_url(&source.url)).as_bytes(),
+            )
+        );
+        let source_id = format!("source:{}", &digest[..24]);
         conn.execute(
-            "INSERT OR IGNORE INTO native_source_evidence(id,entity_type,entity_id,title,url,checked_at,evidence_type)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![format!("source:{}",&digest[..24]),entity_type,entity_id,source.title,source.url,source.checked_at,source.evidence_type],
+            "INSERT OR IGNORE INTO native_source_evidence(
+                id,entity_type,entity_id,title,url,checked_at,evidence_type,source_channel,backend
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                source_id,
+                entity_type,
+                entity_id,
+                source.title,
+                source.url,
+                source.checked_at,
+                source.evidence_type,
+                source.channel.as_str(),
+                source.backend,
+            ],
+        )?;
+        conn.execute(
+            "UPDATE native_source_evidence
+             SET title=?2,url=?3,checked_at=?4,evidence_type=?5,source_channel=?6,backend=?7
+             WHERE id=?1 AND julianday(?4) >= COALESCE(julianday(checked_at),0)",
+            params![
+                source_id,
+                source.title,
+                source.url,
+                source.checked_at,
+                source.evidence_type,
+                source.channel.as_str(),
+                source.backend,
+            ],
         )?;
     }
     Ok(())
@@ -1698,7 +1752,7 @@ fn validate_internship_opportunity(value: &FoundInternshipOpportunity) -> Result
         bail!("职位或公司为空")
     }
     if !is_http_url(&value.source_url) {
-        bail!("缺少有效的官方职位 URL")
+        bail!("缺少有效的职位来源 URL")
     }
     if value.verified_at.trim().is_empty() {
         bail!("缺少核验时间")
@@ -1725,10 +1779,7 @@ fn validate_internship_opportunity(value: &FoundInternshipOpportunity) -> Result
     }
     normalize_checklist_items(&value.checklist)?;
     if value.sources.is_empty() {
-        bail!("缺少官方来源证据")
-    }
-    if !value.sources.iter().any(|source| source.evidence_type == "primary") {
-        bail!("缺少官方主来源证据")
+        bail!("缺少来源证据")
     }
     for source in &value.sources {
         validate_source(source)?;
@@ -1954,7 +2005,34 @@ fn validate_source(value:&SourceEvidence)->Result<()> {
     if !matches!(value.evidence_type.as_str(),"primary"|"secondary"|"inferred") {
         bail!("来源证据类型无效：{}",value.evidence_type)
     }
+    if value.backend.trim().is_empty() {
+        bail!("来源缺少后端标识")
+    }
     Ok(())
+}
+
+fn internship_verification(value: &FoundInternshipOpportunity) -> (VerificationStatus, SearchChannel, String) {
+    value
+        .sources
+        .iter()
+        .find(|source| {
+            source.channel == SearchChannel::WebAts && source.evidence_type == "primary"
+        })
+        .map(|source| {
+            (
+                VerificationStatus::Verified,
+                source.channel.clone(),
+                source.backend.clone(),
+            )
+        })
+        .unwrap_or_else(|| {
+            let source = &value.sources[0];
+            (
+                VerificationStatus::Unverified,
+                source.channel.clone(),
+                source.backend.clone(),
+            )
+        })
 }
 
 fn opportunity_identity(value:&FoundOpportunity)->String {
@@ -2292,6 +2370,12 @@ The exact team size, future funding, preferred start date, and use of one specia
         assert!(internship["rules"]
             .as_array()
             .is_some_and(|rules| rules.iter().any(|rule| rule.as_str().is_some_and(|text| text.contains("Do not create a CV")))));
+        let rules = internship["rules"].to_string();
+        assert!(rules.contains("Codex web search"));
+        assert!(rules.contains("Do not install or invoke channel tools"));
+        assert!(rules.contains("never a public post or search snippet"));
+        assert!(!rules.contains("channel-results.json"));
+        assert_eq!(internship["required"]["opportunities"][0]["sources"][0]["backend"], "codex_web_search");
         let search = result_contract("research_pi");
         assert_eq!(search["required"]["schemaVersion"], 1);
         assert_eq!(search["required"]["opportunities"][0]["contacts"][0]["materials"]["cvData"]["schemaVersion"], 1);
@@ -2364,6 +2448,8 @@ The exact team size, future funding, preferred start date, and use of one specia
                 url: "https://company.example/jobs/intern-1".into(),
                 checked_at: "2026-09-01T00:00:00Z".into(),
                 evidence_type: "primary".into(),
+                channel: SearchChannel::WebAts,
+                backend: "codex_web_search".into(),
             }],
             checklist: vec![ChecklistOutput {
                 item_type: "graduation_window".into(),
@@ -2377,6 +2463,17 @@ The exact team size, future funding, preferred start date, and use of one specia
             }],
         };
         assert!(validate_internship_opportunity(&value).is_ok());
+        let (verification, channel, backend) = internship_verification(&value);
+        assert_eq!(verification, VerificationStatus::Verified);
+        assert_eq!(channel, SearchChannel::WebAts);
+        assert_eq!(backend, "codex_web_search");
+        value.sources[0].channel = SearchChannel::Twitter;
+        value.sources[0].backend = "twitter-cli".into();
+        value.sources[0].evidence_type = "secondary".into();
+        let (verification, channel, backend) = internship_verification(&value);
+        assert_eq!(verification, VerificationStatus::Unverified);
+        assert_eq!(channel, SearchChannel::Twitter);
+        assert_eq!(backend, "twitter-cli");
         value.eligibility_status = "ineligible".into();
         assert!(validate_internship_opportunity(&value).is_err());
     }
@@ -2458,6 +2555,7 @@ The exact team size, future funding, preferred start date, and use of one specia
         conn.execute_batch(include_str!("../migrations/0012_discovery_material_state.sql"))?;
         conn.execute_batch(include_str!("../migrations/0009_reply_routing_and_submission_status.sql"))?;
         conn.execute_batch(include_str!("../migrations/0014_opportunity_shelving.sql"))?;
+        conn.execute_batch(include_str!("../migrations/0012_search_channels.sql"))?;
         conn.execute("INSERT INTO native_jobs(id,job_type,status,provider_id,payload_json) VALUES('job-test','full_search','running','openai','{}')",[])?;
         drop(conn);
         let cv=json!({"schemaVersion":1,"name":"Alex Morgan","authorName":"Morgan, A.","tagline":"Targeted profile","contact":"candidate@example.org","affiliations":"Example Institute","sections":[{"title":"Research Profile","entries":[{"key":"Focus","body":"Verified target-relevant research."}]}]});
@@ -2480,7 +2578,7 @@ The exact team size, future funding, preferred start date, and use of one specia
             title:"Postdoctoral Fellow".into(),organization:"Example University".into(),department:None,country:Some("UK".into()),
             region:Some("Europe".into()),opportunity_type:Some("formal_postdoc".into()),deadline:None,summary:"Verified role".into(),
             keywords:vec![],career_level_eligible:true,availability:Some("open".into()),eligibility_status:None,verified_at:"2026-08-31T00:00:00Z".into(),
-            sources:vec![SourceEvidence{title:"Official".into(),url:"https://example.edu/jobs/1".into(),checked_at:"2026-08-31T00:00:00Z".into(),evidence_type:"primary".into()}],contacts:vec![],
+            sources:vec![SourceEvidence{title:"Official".into(),url:"https://example.edu/jobs/1".into(),checked_at:"2026-08-31T00:00:00Z".into(),evidence_type:"primary".into(),channel:SearchChannel::WebAts,backend:"legacy".into()}],contacts:vec![],
         };
         let mut invalid_materials = materials.clone();
         invalid_materials.cv_data = json!({"schemaVersion":1,"name":"Alex Morgan"});

@@ -2,7 +2,7 @@ use crate::models::{
     ArtifactItem, ChecklistItem, DashboardData, DashboardMetric, JobGroups, JobSummary,
     InboundReplyRequest, JobEvent, ProviderInfo, ProviderModelInfo, RegionCount, ReplyItem,
     ProviderRuntimeConfig, ProviderRuntimeModel, RevisionItem, TargetCard, TargetDetail,
-    TaskModelDefault, DiscoveredOpportunityPage, DiscoveredOpportunity, OpportunityContact,
+    SourceEvidence, SearchChannel, VerificationStatus, TaskModelDefault, DiscoveredOpportunityPage, DiscoveredOpportunity, OpportunityContact,
 };
 use crate::paths::AppPaths;
 use crate::providers::ProviderDiscovery;
@@ -113,15 +113,27 @@ pub fn dashboard(path: &Path, career_track: &str) -> Result<DashboardData> {
                  FROM contact_targets_v2 t
                  LEFT JOIN opportunities o ON o.id=t.opportunity_id
                  WHERE t.archived_at IS NULL AND t.submission_status=?2
+                   AND COALESCE(o.verification_status,'verified')='verified'
                    AND ?1='internship'
                    AND o.opportunity_type='industry_internship'",
                 params![career_track, submission_status],
                 |row| row.get(0),
             )?)
         };
+        let unverified: i64 = conn.query_row(
+            "SELECT COUNT(*)
+             FROM contact_targets_v2 t
+             LEFT JOIN opportunities o ON o.id=t.opportunity_id
+             WHERE t.archived_at IS NULL AND ?1='internship'
+               AND o.opportunity_type='industry_internship'
+               AND COALESCE(o.verification_status,'verified')='unverified'",
+            [career_track],
+            |row| row.get(0),
+        )?;
         vec![
             DashboardMetric { key: "all".into(), label: "申请机会".into(), value: total, helper: "只显示行业 Internship".into() },
             DashboardMetric { key: "high_fit".into(), label: "高匹配".into(), value: high_fit, helper: "评分 ≥ 85".into() },
+            DashboardMetric { key: "unverified".into(), label: "待核验".into(), value: unverified, helper: "来自社交、Exa 或 RSS，不能直接投递".into() },
             DashboardMetric { key: "portal_pending".into(), label: "待投递".into(), value: submission_count("portal_pending")?, helper: "已核验，等待官网投递".into() },
             DashboardMetric { key: "submitted".into(), label: "已投递".into(), value: submission_count("submitted")?, helper: "等待面试或后续通知".into() },
             DashboardMetric { key: "not_set".into(), label: "未开始".into(), value: submission_count("not_set")?, helper: "还没有记录投递动作".into() },
@@ -182,6 +194,7 @@ pub fn dashboard(path: &Path, career_track: &str) -> Result<DashboardData> {
         career_track,
         if career_track == "postdoc" { Some("ready_to_contact") } else { None },
         None,
+        if career_track == "internship" { Some("verified") } else { None },
         None,
         0,
         4,
@@ -374,7 +387,7 @@ pub(crate) fn opportunity_shelved(conn: &Connection, id: &str) -> Result<bool> {
 
 #[cfg(test)]
 pub fn list_targets(path: &Path, career_track: &str, status: Option<&str>, submission_status: Option<&str>, search: Option<&str>, offset: usize, limit: usize) -> Result<Vec<TargetCard>> {
-    list_targets_by_category(path, career_track, status, submission_status, search, offset, limit, None)
+    list_targets_by_category(path, career_track, status, submission_status, None, search, offset, limit, None)
 }
 
 pub fn list_targets_by_category(
@@ -382,6 +395,7 @@ pub fn list_targets_by_category(
     career_track: &str,
     status: Option<&str>,
     submission_status: Option<&str>,
+    verification_status: Option<&str>,
     search: Option<&str>,
     offset: usize,
     limit: usize,
@@ -390,8 +404,9 @@ pub fn list_targets_by_category(
     validate_career_track(career_track)?;
     validate_status_filter(status)?;
     validate_submission_status_filter(submission_status)?;
+    validate_verification_status_filter(verification_status)?;
     let conn = connect(path)?;
-    list_targets_with_conn(&conn, career_track, status, submission_status, search, offset, limit.clamp(1, 100), false, category)
+    list_targets_with_conn(&conn, career_track, status, submission_status, verification_status, search, offset, limit.clamp(1, 100), false, category)
 }
 
 fn list_targets_with_conn(
@@ -399,6 +414,7 @@ fn list_targets_with_conn(
     career_track: &str,
     status: Option<&str>,
     submission_status: Option<&str>,
+    verification_status: Option<&str>,
     search: Option<&str>,
     offset: usize,
     limit: usize,
@@ -408,8 +424,10 @@ fn list_targets_with_conn(
     validate_career_track(career_track)?;
     validate_status_filter(status)?;
     validate_submission_status_filter(submission_status)?;
+    validate_verification_status_filter(verification_status)?;
     let status = status.filter(|value| *value != "all");
     let submission_status = submission_status.filter(|value| *value != "all");
+    let verification_status = verification_status.filter(|value| *value != "all");
     let search = search.map(str::trim).filter(|value| !value.is_empty());
     let pattern = search.map(|value| format!("%{}%", value.to_lowercase()));
     let category_filter = postdoc_category_filter(if career_track == "postdoc" { category } else { None })?;
@@ -428,7 +446,8 @@ fn list_targets_with_conn(
                 t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
                 t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at,
                 CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END,
-                t.material_status, t.material_error, o.status
+                t.material_status, t.material_error, o.status,
+                COALESCE(o.verification_status,'verified'), COALESCE(o.source_channel,'web_ats'), COALESCE(o.source_backend,'legacy')
          FROM contact_targets_v2 t
          LEFT JOIN opportunities o ON o.id=t.opportunity_id
          WHERE t.archived_at IS NULL
@@ -446,12 +465,21 @@ fn list_targets_with_conn(
            AND (?3 IS NULL OR t.submission_status=?3)
            AND (?4 IS NULL OR lower(t.name) LIKE ?4 OR lower(t.organization) LIKE ?4
                 OR lower(t.title) LIKE ?4 OR lower(COALESCE(t.email,'')) LIKE ?4)
+           AND (?5 IS NULL OR COALESCE(o.verification_status,'verified')=?5)
          ORDER BY {order}
-         LIMIT ?5 OFFSET ?6"
+         LIMIT ?6 OFFSET ?7"
     );
     let mut statement = conn.prepare(&sql)?;
     let rows = statement.query_map(
-        params![career_track, status, submission_status, pattern, limit as i64, offset as i64],
+        params![
+            career_track,
+            status,
+            submission_status,
+            pattern,
+            verification_status,
+            limit as i64,
+            offset as i64,
+        ],
         target_from_row,
     )?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -466,7 +494,8 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
                     t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
                     t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at,
                     CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END,
-                t.material_status, t.material_error, o.status
+                t.material_status, t.material_error, o.status,
+                COALESCE(o.verification_status,'verified'), COALESCE(o.source_channel,'web_ats'), COALESCE(o.source_backend,'legacy')
              FROM contact_targets_v2 t
              LEFT JOIN opportunities o ON o.id=t.opportunity_id
              WHERE t.id=?1 AND t.archived_at IS NULL",
@@ -591,6 +620,11 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
     let unpublished_cv = if target.material_status == "pending" && !artifacts.iter().any(|item| item.artifact_type == "cv_data") {
         unpublished_cv_candidates(data_root,target_id)?
     } else { Vec::new() };
+    let mut sources_statement = conn.prepare("SELECT title,url,checked_at,evidence_type,source_channel,backend FROM native_source_evidence WHERE (entity_type='opportunity' AND entity_id=?1) OR (entity_type='contact_target' AND entity_id=?2) ORDER BY checked_at DESC,id")?;
+    let sources = sources_statement.query_map(params![target.opportunity_id, target_id], |r| Ok(SourceEvidence {
+        title:r.get(0)?, url:r.get(1)?, checked_at:r.get(2)?, evidence_type:r.get(3)?,
+        channel:SearchChannel::parse(&r.get::<_,String>(4)?), backend:r.get(5)?,
+    }))?.collect::<std::result::Result<Vec<_>,_>>()?;
     Ok(TargetDetail {
         target,
         summary,
@@ -603,6 +637,7 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
         revisions,
         recovery_job,
         unpublished_cv,
+        sources,
     })
 }
 
@@ -708,6 +743,24 @@ pub fn update_submission_status(path: &Path, target_id: &str, status: &str) -> R
         bail!("未知投递状态：{status}")
     }
     let conn = connect(path)?;
+    if matches!(status, "portal_pending" | "submitted") {
+        let verification: Option<String> = conn
+            .query_row(
+                "SELECT COALESCE(o.verification_status,'verified')
+                 FROM contact_targets_v2 t
+                 LEFT JOIN opportunities o ON o.id=t.opportunity_id
+                 WHERE t.id=?1 AND t.archived_at IS NULL",
+                [target_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(verification) = verification else {
+            bail!("联系目标不存在，投递状态未更新")
+        };
+        if verification == "unverified" {
+            bail!("该机会尚未核验，不能标记为待投递或已投递；请先打开官方 Web / ATS 来源确认")
+        }
+    }
     let changed = conn.execute(
         "UPDATE contact_targets_v2
          SET submission_status=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
@@ -1210,6 +1263,9 @@ fn target_from_row(row: &Row<'_>) -> rusqlite::Result<TargetCard> {
         material_status: row.get(17)?,
         material_error: row.get(18)?,
         opportunity_status: row.get(19)?,
+        verification_status: VerificationStatus::parse(&row.get::<_,String>(20)?),
+        source_channel: SearchChannel::parse(&row.get::<_,String>(21)?),
+        source_backend: row.get(22)?,
     })
 }
 
@@ -1323,6 +1379,15 @@ fn validate_submission_status_filter(status: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn validate_verification_status_filter(status: Option<&str>) -> Result<()> {
+    if let Some(value) = status {
+        if !matches!(value, "verified" | "unverified" | "all") {
+            bail!("未知核验状态：{value}")
+        }
+    }
+    Ok(())
+}
+
 fn resolve_data_path(data_root: &Path, value: &str) -> std::path::PathBuf {
     let path = std::path::PathBuf::from(value);
     if path.is_absolute() {
@@ -1389,7 +1454,7 @@ mod tests {
         conn.execute_batch("CREATE TABLE opportunities(
             id TEXT PRIMARY KEY,title TEXT DEFAULT 'Role',organization TEXT DEFAULT 'University',summary TEXT,
             country TEXT,region TEXT,deadline TEXT,source_url TEXT,status TEXT DEFAULT 'open',
-            discovered_at TEXT,created_at TEXT DEFAULT '2026-09-01',opportunity_type TEXT,fit_score REAL,shelved_at TEXT);
+            discovered_at TEXT,created_at TEXT DEFAULT '2026-09-01',opportunity_type TEXT,fit_score REAL,shelved_at TEXT,verification_status TEXT DEFAULT 'verified',source_channel TEXT DEFAULT 'web_ats',source_backend TEXT DEFAULT 'legacy');
             CREATE TABLE contact_targets_v2(id TEXT PRIMARY KEY,application_id TEXT DEFAULT 'app',opportunity_id TEXT,
                 name TEXT DEFAULT 'Contact',email TEXT,organization TEXT DEFAULT 'University',title TEXT DEFAULT 'Role',
                 fit_score REAL,priority INTEGER DEFAULT 0,status TEXT DEFAULT 'ready_to_contact',
@@ -1418,16 +1483,16 @@ mod tests {
             let conn = connect(&path)?;
             conn.execute("UPDATE contact_targets_v2 SET status=?1,shelved_at=CASE WHEN ?1='shelved' THEN '2026-09-01' END",[stage])?;
             drop(conn);
-            let targets = list_targets_by_category(&path,"postdoc",Some(stage),None,None,0,1,Some("advertised"))?;
+            let targets = list_targets_by_category(&path,"postdoc",Some(stage),None,None,None,0,1,Some("advertised"))?;
             assert_eq!(targets[0].id,"near");
-            let next = list_targets_by_category(&path,"postdoc",Some(stage),None,None,1,1,Some("advertised"))?;
+            let next = list_targets_by_category(&path,"postdoc",Some(stage),None,None,None,1,1,Some("advertised"))?;
             assert_eq!(next[0].id,"later");
-            let targets = list_targets_by_category(&path,"postdoc",Some(stage),None,None,0,10,Some("prospective"))?;
+            let targets = list_targets_by_category(&path,"postdoc",Some(stage),None,None,None,0,10,Some("prospective"))?;
             assert_eq!(targets.len(),2);
             assert_eq!(targets[0].id,"prospect-high");
         }
-        assert_eq!(list_targets_by_category(&path,"internship",None,None,None,0,10,None)?.len(),1);
-        assert!(list_targets_by_category(&path,"postdoc",None,None,None,0,10,Some("invalid")).is_err());
+        assert_eq!(list_targets_by_category(&path,"internship",None,None,None,None,0,10,None)?.len(),1);
+        assert!(list_targets_by_category(&path,"postdoc",None,None,None,None,0,10,Some("invalid")).is_err());
         let conn = connect(&path)?;
         conn.execute_batch("INSERT INTO opportunities(id,opportunity_type,deadline,fit_score) VALUES
             ('intern-near','industry_internship','2099-01-01',1),
@@ -1435,22 +1500,22 @@ mod tests {
             ('intern-expired','industry_internship','2000-01-01',100);
             INSERT INTO contact_targets_v2(id,opportunity_id,fit_score,submission_status)
                 SELECT id,id,fit_score,CASE WHEN id='intern-near' THEN 'submitted' ELSE 'portal_pending' END FROM opportunities WHERE id LIKE 'intern-%';")?;
-        let intern_dashboard = list_targets_with_conn(&conn,"internship",None,None,None,0,4,true,None)?;
+        let intern_dashboard = list_targets_with_conn(&conn,"internship",None,None,None,None,0,4,true,None)?;
         assert_eq!(intern_dashboard.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),vec!["intern-near","intern-later","intern","intern-expired"]);
         assert_eq!(intern_dashboard[0].submission_status,"submitted");
         assert!(intern_dashboard.iter().all(|t| t.career_track == "internship"));
-        let internship_default = list_targets_with_conn(&conn,"internship",None,None,None,0,1,false,None)?;
+        let internship_default = list_targets_with_conn(&conn,"internship",None,None,None,None,0,1,false,None)?;
         assert_ne!(internship_default[0].id,"intern-near"); // Application list sorting is unchanged.
         conn.execute_batch("UPDATE contact_targets_v2 SET status='ready_to_contact',shelved_at=NULL;
             UPDATE contact_targets_v2 SET material_status='pending' WHERE id='near';")?;
-        let ready=list_targets_with_conn(&conn,"postdoc",Some("ready_to_contact"),None,None,0,100,false,None)?;
+        let ready=list_targets_with_conn(&conn,"postdoc",Some("ready_to_contact"),None,None,None,0,100,false,None)?;
         assert!(!ready.iter().any(|target|target.id=="near"));
-        assert!(list_targets_with_conn(&conn,"postdoc",None,None,None,0,100,false,None)?.iter().any(|target|target.id=="near"));
+        assert!(list_targets_with_conn(&conn,"postdoc",None,None,None,None,0,100,false,None)?.iter().any(|target|target.id=="near"));
         assert!(list_discovered_opportunities(&path,None,0,100,true)?.items.iter().any(|opportunity|opportunity.id=="near"));
         conn.execute("UPDATE contact_targets_v2 SET status='contacted' WHERE id='near'",[])?;
-        assert!(list_targets_with_conn(&conn,"postdoc",Some("contacted"),None,None,0,100,false,None)?.iter().any(|target|target.id=="near"));
+        assert!(list_targets_with_conn(&conn,"postdoc",Some("contacted"),None,None,None,0,100,false,None)?.iter().any(|target|target.id=="near"));
         conn.execute("UPDATE contact_targets_v2 SET status='ready_to_contact',material_status='ready' WHERE id='near'",[])?;
-        assert!(list_targets_with_conn(&conn,"postdoc",Some("ready_to_contact"),None,None,0,100,false,None)?.iter().any(|target|target.id=="near"));
+        assert!(list_targets_with_conn(&conn,"postdoc",Some("ready_to_contact"),None,None,None,0,100,false,None)?.iter().any(|target|target.id=="near"));
         assert!(!list_discovered_opportunities(&path,None,0,100,true)?.items.iter().any(|opportunity|opportunity.id=="near"));
         Ok(())
     }
@@ -1585,7 +1650,8 @@ mod tests {
         let database = temp.path().join("status.sqlite3");
         let conn = connect(&database)?;
         conn.execute_batch(
-            "CREATE TABLE opportunities(id TEXT PRIMARY KEY,shelved_at TEXT);
+            "CREATE TABLE opportunities(id TEXT PRIMARY KEY,shelved_at TEXT,verification_status TEXT DEFAULT 'verified');
+             INSERT INTO opportunities(id) VALUES('opportunity-1');
              CREATE TABLE contact_targets_v2(
                 id TEXT PRIMARY KEY,
                 opportunity_id TEXT,
@@ -1598,7 +1664,7 @@ mod tests {
                 archived_at TEXT,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
              );
-             INSERT INTO contact_targets_v2(id,status) VALUES('target-1','replied');",
+             INSERT INTO contact_targets_v2(id,opportunity_id,status) VALUES('target-1','opportunity-1','replied');",
         )?;
         empty_jobs_fixture(&conn)?;
         conn.execute_batch(include_str!("../migrations/0013_contact_status_version.sql"))?;
@@ -1616,6 +1682,16 @@ mod tests {
         assert!(shelved.is_some());
         assert_eq!(submission, "portal_pending");
         drop(conn);
+
+        let conn = connect(&database)?;
+        conn.execute(
+            "UPDATE opportunities SET verification_status='unverified' WHERE id='opportunity-1'",
+            [],
+        )?;
+        drop(conn);
+        assert!(update_submission_status(&database, "target-1", "submitted").is_err());
+        update_submission_status(&database, "target-1", "not_required")?;
+        connect(&database)?.execute("UPDATE opportunities SET verification_status='verified' WHERE id='opportunity-1'", [])?;
 
         update_target_status(&database, "target-1", "follow_up")?;
         let conn = connect(&database)?;
@@ -1713,6 +1789,7 @@ mod tests {
     fn reply_fixture(temp: &TempDir) -> Result<AppPaths> {
         let paths = crate::materials::tests::publication_fixture(temp.path())?;
         let conn = connect(&paths.database)?;
+        conn.execute_batch(include_str!("../migrations/0012_search_channels.sql"))?;
         conn.execute_batch(include_str!("../migrations/0013_contact_status_version.sql"))?;
         conn.execute_batch(include_str!("../migrations/0014_opportunity_shelving.sql"))?;
         conn.execute_batch("INSERT INTO opportunities(id,title,organization,opportunity_type,status)

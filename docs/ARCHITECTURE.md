@@ -30,6 +30,7 @@ Rust paths below are relative to `src-tauri/src/`.
 |---|---|---|
 | UI and bridge | `src/App.tsx`, `src/pages/`, `src/components/`, `src/styles.css`, `src/themes.css`; `src/uiPreferences.ts`, `src/i18n/`; `src/api.ts`, `src/types.ts`; `lib.rs` | Routing, presentation, local interface preferences and explicit Tauri contracts; commands delegate domain work |
 | Onboarding | `src/pages/OnboardingPage.tsx`, `onboarding.rs` | CV upload, local extraction/Mac OCR, optional preferences and source-profile versions |
+| Internship profile | `src/components/InternshipPlanningPanel.tsx`, `internship.rs` | Separate optional CV/preferences and immutable task snapshots; no Postdoc-profile fallback |
 | Opportunities | `workflows.rs`, `opportunity_identity.rs`, `models.rs` | Structured result validation/import, Postdoc identity evidence shared by search and continuation, domain/result shapes |
 | Contacts and outreach | `src/pages/ApplicationDetailPage.tsx`, `db.rs`, `workflows.rs`, `materials.rs` | Manual status, reply persistence/decisions, outreach edits and generated reply artifacts; not Gmail authentication |
 | Materials | `materials.rs`; artifact queries in `db.rs` | Workspace/input preparation, target-owned copies, revisions, backups, base-hash conflict checks and publication |
@@ -69,6 +70,8 @@ These are starting points, not prohibitions on a necessary cross-module fix.
 
 See [Postdoc pipeline](features/postdoc-pipeline.md) for freshness, contact-status precedence, scoped continuation, identity compatibility and publication contracts.
 
+Internship uses a separate public-web search contract and importer. When no result file was delivered, its bounded retry uses a fresh thread while retaining the original profile snapshot. Official-source verification is tracked separately from submission status; unverified results cannot be marked ready/submitted. No channel installation or social-login extension is required.
+
 ### CV and material revisions
 
 Uploaded CV claims are user-provided evidence, not independently verified facts. New uploads affect future tasks; historical task snapshots and materials remain intact. Mac supports local OCR; Windows currently needs text-layer PDFs.
@@ -102,3 +105,5 @@ Settings imports the OAuth client and connects Gmail. Draft creation requires th
 Provider API keys stay outside SQLite/config snapshots and are passed only to the relevant provider child through its configured environment variable. Cache/log paths are separately resolved in `paths.rs`.
 
 Migrations are additive/versioned with compatibility defaults and pre-migration backups, including WAL-aware SQLite backup. Preserve legacy readability, artifact ownership, snapshot/base-hash checks and atomic publication. Implemented safeguards and their tests are authoritative; developer safety/validation rules are centralized in [AGENTS.md](../AGENTS.md).
+
+Migration 15 reconciles the historical local Postdoc migrations 12–14 with the remote Internship migration 12. Initialization recognizes both recorded v12 names, preserves their ledger entries and adds missing structures; upgrading does not reset contact state, material pointers or source evidence.

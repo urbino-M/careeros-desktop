@@ -1,7 +1,7 @@
 import { dateLocale, t } from "../i18n";
 import { AlertTriangle, LoaderCircle } from "lucide-react";
 import { useState } from "react";
-import type { ContactStatus, SubmissionStatus } from "../types";
+import type { ContactStatus, SubmissionStatus, VerificationStatus, SearchChannel } from "../types";
 
 export type UiNotice = string | (() => string);
 
@@ -33,6 +33,20 @@ export const submissionStatusLabels: Record<SubmissionStatus, string> = {
   not_required: "无需投递",
 };
 
+export const verificationStatusLabels: Record<VerificationStatus, string> = {
+  verified: "已核验",
+  unverified: "待核验",
+};
+
+export const searchChannelLabels: Record<SearchChannel, string> = {
+  web_ats: "官方 Web / ATS",
+  exa: "Exa",
+  rss: "RSS",
+  linkedin: "LinkedIn",
+  facebook: "Facebook",
+  twitter: "Twitter / X",
+};
+
 export const jobLabels: Record<string, string> = {
   internship_search: "Internship 机会检索",
   full_run: "完整检索与申请",
@@ -56,6 +70,10 @@ export function StatusBadge({ status }: { status: string }) {
 
 export function SubmissionBadge({ status }: { status: SubmissionStatus }) {
   return <span className={`submission-badge submission-${status}`}>{t(submissionStatusLabels[status])}</span>;
+}
+
+export function VerificationBadge({ status }: { status: VerificationStatus }) {
+  return <span className={`verification-badge verification-${status}`}>{t(verificationStatusLabels[status])}</span>;
 }
 
 export function translateJobStatus(status: string) {

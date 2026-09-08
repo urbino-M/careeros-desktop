@@ -10,6 +10,7 @@ import { api, errorMessage } from "./api";
 import type { ApplicationFilter, ApplicationTab, AppRoute, CareerSystem, OnboardingProfile } from "./types";
 import { useUiPreferences } from "./uiPreferences";
 import { t } from "./i18n";
+import type { AutomationComposer } from "./types";
 
 const applicationStatuses: ApplicationFilter[] = [
   "ready_to_contact",
@@ -22,6 +23,8 @@ const applicationStatuses: ApplicationFilter[] = [
   "submitted",
   "not_required",
   "all",
+  "verified",
+  "unverified",
 ];
 
 function isCareerSystem(value?: string): value is CareerSystem {
@@ -31,7 +34,9 @@ function isCareerSystem(value?: string): value is CareerSystem {
 export function parseHash(hashValue = window.location.hash): AppRoute {
   const hash = hashValue.replace(/^#\/?/, "");
   const [page, value, section, origin, job, detailJob] = hash.split("/");
-  if (page === "automation") return { page: "automation" };
+  if (page === "automation") {
+    return { page: "automation", composer: value === "internship_search" ? value as AutomationComposer : undefined };
+  }
   if (page === "settings") return { page: "settings" };
   if (page === "application" && value) {
     const allowedTabs: ApplicationTab[] = ["cv", "cover_letter", "checklist", "email_en", "email_zh", "fit", "pi", "revision", "reply", "other"];
@@ -74,7 +79,7 @@ export function parseHash(hashValue = window.location.hash): AppRoute {
 export function routeHash(route: AppRoute) {
   switch (route.page) {
     case "dashboard": return "#/dashboard";
-    case "automation": return "#/automation";
+    case "automation": return route.composer ? `#/automation/${route.composer}` : "#/automation";
     case "settings": return "#/settings";
     case "applications": return route.view === "strategy"
       ? `#/applications/${route.careerSystem}/strategy`
@@ -126,7 +131,7 @@ export default function App() {
   return (
     <Shell route={route} onNavigate={navigate}>
       {route.page === "dashboard" && <DashboardPage onNavigate={navigate} />}
-      {route.page === "automation" && <AutomationPage onNavigate={navigate} />}
+      {route.page === "automation" && <AutomationPage initialComposer={route.composer} onNavigate={navigate} />}
       {route.page === "applications" && (
         <ApplicationsPage careerSystem={route.careerSystem} status={route.status} view={route.view} initialCategory={route.category} onNavigate={navigate} />
       )}

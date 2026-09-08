@@ -24,7 +24,7 @@ import { ModelControls, type ModelSelection } from "../components/ModelControls"
 import { ManualMaterialEditor } from "../components/ManualMaterialEditor";
 import { OpportunityContinuationComposer } from "./ApplicationsPage";
 import { JobCard } from "./AutomationPage";
-import { ErrorState, LoadingState, StatusBadge, formatLocalTime, submissionStatusLabels } from "../components/Ui";
+import { ErrorState, LoadingState, StatusBadge, VerificationBadge, formatLocalTime, submissionStatusLabels, searchChannelLabels } from "../components/Ui";
 import type { ApplicationTab, AppRoute, ArtifactItem, ContactStatus, DiffEntry, GmailDraftInfo, GmailStatus, Locale, SubmissionStatus, TargetDetail } from "../types";
 
 type DetailTab = ApplicationTab;
@@ -119,7 +119,9 @@ export function ApplicationDetailPage({
           : {
             page: "applications",
             careerSystem: internship ? "internship" : "postdoc",
-            status: internship ? target.submissionStatus : target.status,
+            status: internship
+              ? target.verificationStatus === "unverified" ? "unverified" : target.submissionStatus
+              : target.status,
           },
       )}>
         <ArrowLeft size={17} /> {returnPage === "automation" ? t("返回 Agent 运行中心") : t("返回申请列表")}
@@ -132,6 +134,7 @@ export function ApplicationDetailPage({
           <p className="rail-role">{target.title}</p>
           {!internship && (target.status==='ready_to_contact' && target.materialStatus==='pending'
             ? <span className="badge">{t("已发现 · 材料待补齐")}</span> : <StatusBadge status={target.status} />)}
+          {internship && <VerificationBadge status={target.verificationStatus ?? "verified"} />}
           <dl className="rail-facts">
             <div><dt>{internship ? t("申请方式") : t("PI / 联系人")}</dt><dd>{target.name}</dd></div>
             {!internship && <div><dt>{t("联系邮箱")}</dt><dd>{target.email || t("待核验")}</dd></div>}
@@ -156,7 +159,7 @@ export function ApplicationDetailPage({
             <span>{t("申请投递标记")}</span>
             <select value={target.submissionStatus} onChange={(event) => changeSubmissionStatus(event.target.value as SubmissionStatus)}>
               {(Object.entries(submissionStatusLabels) as [SubmissionStatus, string][]).map(([value, label]) => (
-                <option value={value} key={value}>{t(label)}</option>
+                <option value={value} key={value} disabled={internship && target.verificationStatus === "unverified" && (value === "portal_pending" || value === "submitted")}>{t(label)}</option>
               ))}
             </select>
             <small>{internship ? t("这里只记录投递进度；系统不会自动提交。") : t("仅显示为卡片标签，不创建新的申请分类。")}</small>
@@ -178,6 +181,7 @@ export function ApplicationDetailPage({
           {!internship && target.materialStatus === "pending" && <div className="inline-notice" role="status"><strong>{t("材料待补齐")}</strong><p>{target.materialError || t("这条机会已保存，但申请材料尚未全部完成。可从机会卡片继续完善。")}</p></div>}
           {!internship && target.materialStatus === "pending" && (activeTab === "cv" || activeTab === "revision") &&
             <MaterialRecoveryPanel detail={detail} onChanged={load} onNavigate={onNavigate} />}
+          {internship && <SourcesPanel sources={detail.sources} />}
           <div className="material-body">
             {activeTab === "cv" && <CvPanel detail={detail} onChanged={load} />}
             {activeTab === "cover_letter" && <CoverLetterPanel detail={detail} onChanged={load} />}
@@ -956,6 +960,17 @@ function OtherPanel({ detail }: { detail: TargetDetail }) {
     <div className="content-title"><FileText size={21} /><div><h3>{t("源文件与辅助材料")}</h3><p>{t("CV 页面只负责预览与审核；当前可编辑源数据和辅助文件集中保存在这里。")}</p></div></div>
     <div className="file-grid">{items.map((item) => <FileTile item={item} label={labels[item.artifactType] || `${item.artifactType} · ${item.language}`} key={`${item.artifactType}-${item.language}`} />)}</div>
   </div>;
+}
+
+export function SourcesPanel({ sources = [] }: { sources: TargetDetail["sources"] }) {
+  return <section className="source-evidence-panel">
+    <div className="content-title"><ExternalLink size={21} /><div><h3>{t("来源与核验证据")}</h3><p>{t("保留每个渠道、后端、检查时间和证据类型；官方 Web / ATS 主证据才会成为已核验机会。")}</p></div></div>
+    {sources.length === 0 ? <p className="muted-copy">{t("当前没有可展示的来源证据。")}</p> : <div className="source-evidence-list">{sources.map((source, index) => <article key={`${source.url}-${index}`}>
+      <div><strong>{source.title}</strong><span>{t(searchChannelLabels[source.channel] || source.channel)} · {source.backend} · {source.evidenceType}</span></div>
+      <a href={source.url} onClick={(event) => { event.preventDefault(); void openUrl(source.url); }}>{source.url}<ExternalLink size={12} /></a>
+      <small>检查时间：{formatLocalTime(source.checkedAt)}</small>
+    </article>)}</div>}
+  </section>;
 }
 
 function RevisionLocations({ value }: { value: string }) {

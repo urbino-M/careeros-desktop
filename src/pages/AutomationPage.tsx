@@ -21,17 +21,17 @@ import { listen } from "@tauri-apps/api/event";
 import { api, errorMessage } from "../api";
 import { ModelControls, type ModelSelection } from "../components/ModelControls";
 import { ErrorState, LoadingState, StatusBadge, formatLocalTime, jobLabels } from "../components/Ui";
-import type { ApplicationTab, AppRoute, JobGroups, JobSummary, RetryJobRequest } from "../types";
+import type { ApplicationTab, AppRoute, JobGroups, JobSummary, RetryJobRequest, AutomationComposer, InternshipProfile } from "../types";
 
 type ComposerType = "internship_search" | "full_search" | "research_pi" | "opportunity_health" | "follow_up_scan" | null;
 const DEFAULT_RESULT_LIMIT = 5;
 const MAX_RESULT_LIMIT = 5;
 
-export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
+export function AutomationPage({ initialComposer, onNavigate }: { initialComposer?: AutomationComposer; onNavigate: (route: AppRoute) => void }) {
   const [jobs, setJobs] = useState<JobGroups>();
   const [error, setError] = useState("");
   const [historySize, setHistorySize] = useState(5);
-  const [composer, setComposer] = useState<ComposerType>(null);
+  const [composer, setComposer] = useState<ComposerType>(initialComposer ?? null);
   const [notice, setNotice] = useState("");
   const load = () => api.jobs(historySize).then(setJobs).catch((value) => setError(errorMessage(value)));
 
@@ -42,6 +42,10 @@ export function AutomationPage({ onNavigate }: { onNavigate: (route: AppRoute) =
     listen("careeros://jobs-changed", load).then((value) => (unlisten = value));
     return () => { window.clearInterval(timer); unlisten?.(); };
   }, [historySize]);
+
+  useEffect(() => {
+    if (initialComposer) setComposer(initialComposer);
+  }, [initialComposer]);
 
   const taskHistory = useMemo(() => {
     if (!jobs) return [];
@@ -270,7 +274,9 @@ function RetryJobComposer({ job, onClose, onRetried }: { job: JobSummary; onClos
       setBusy(false);
     }
   };
-  const changeNotice = changedProvider
+  const changeNotice = job.jobType === "internship_search"
+      ? t("实习任务未交付结果时会使用新线程重试；原画像快照保留。")
+      : changedProvider
       ? t("已切换 Agent 服务：不同服务商无法访问原线程，会创建新的 Agent 线程。")
       : changedPrompt || changedModel || changedResultLimit
       ? t("已修改任务设置：会续用原 Agent 线程，并在已有证据基础上应用新设置。")
@@ -522,6 +528,17 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
   const supportsResultLimit = isResultLimitedSearch(type);
   const isHealth = type === "opportunity_health";
   const isScan = type === "follow_up_scan";
+
+  useEffect(() => {
+    if (!isInternship) return;
+    let active = true;
+    void api.internshipProfile()
+      .then((profile) => {
+        if (active) setQuery((current) => current.trim() ? current : buildInternshipSearchQuery(profile));
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [isInternship]);
   const submit = async () => {
     if (!isScan && !query.trim()) return;
     setBusy(true); setError("");
@@ -556,10 +573,26 @@ function TaskComposer({ type, onClose, onCreated }: { type: Exclude<ComposerType
         {["full_search", "internship_search"].includes(type) && <label className="field"><span>{t("严格匹配阈值（只保留大于该分数）")}</span><input type="number" min={0} max={99} value={threshold} onChange={(event) => setThreshold(Math.min(99, Math.max(0, Number(event.target.value) || 0)))} /></label>}
         {supportsResultLimit && <label className="field"><span>{t("本次最多返回并导入的机会数（1–5）")}</span><input type="number" min={1} max={MAX_RESULT_LIMIT} value={maxResults} onChange={(event) => setMaxResults(clampResultLimit(Number(event.target.value)))} /></label>}
         <ModelControls taskType={isPi ? "research_pi" : isHealth || isScan ? "maintenance" : "full_search"} value={model} onChange={setModel} />
-        <div className="composer-safety">{t("任务会建立独立 Codex 线程；重试恢复原线程。任何邮件发送和申请提交仍需你手动确认。")}</div>
+        <div className="composer-safety">{t("任务会建立独立 Codex 线程。Postdoc 重试优先恢复原线程；实习未交付结果时新开线程。邮件发送和申请提交仍需手动确认。")}</div>
         {error && <div className="inline-notice error">{error}</div>}
         <button className="button primary wide" disabled={busy || (!isScan && !query.trim())} onClick={submit}><Play size={17} /> {busy ? t("正在加入队列…") : t("加入任务队列")}</button>
       </section>
     </div>
   );
+}
+
+export function buildInternshipSearchQuery(profile: InternshipProfile): string {
+  const fields = [
+    ["目标岗位 / 技能", profile.targetRoles],
+    ["目标行业", profile.industries],
+    ["目标地区", profile.regions],
+    ["工作方式", profile.workMode],
+    ["开始时间", profile.startDate],
+    ["实习时长", profile.duration],
+    ["工作许可", profile.workAuthorization],
+    ["在读状态", profile.enrollmentStatus],
+    ["限制条件", profile.constraints],
+  ].filter(([, value]) => value.trim());
+  if (fields.length === 0) return "寻找符合当前 Internship 画像的行业实习机会。";
+  return `请寻找符合以下条件的行业 Internship：\n${fields.map(([label, value]) => `${label}：${value}`).join("\n")}`;
 }

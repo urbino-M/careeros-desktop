@@ -1,5 +1,95 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchChannel {
+    #[serde(rename = "web_ats")]
+    WebAts,
+    #[serde(rename = "exa")]
+    Exa,
+    #[serde(rename = "rss")]
+    Rss,
+    #[serde(rename = "linkedin")]
+    LinkedIn,
+    #[serde(rename = "facebook")]
+    Facebook,
+    #[serde(rename = "twitter")]
+    Twitter,
+}
+
+impl Default for SearchChannel {
+    fn default() -> Self { Self::WebAts }
+}
+
+impl SearchChannel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::WebAts => "web_ats",
+            Self::Exa => "exa",
+            Self::Rss => "rss",
+            Self::LinkedIn => "linkedin",
+            Self::Facebook => "facebook",
+            Self::Twitter => "twitter",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "exa" => Self::Exa,
+            "rss" => Self::Rss,
+            "linkedin" | "linked_in" => Self::LinkedIn,
+            "facebook" => Self::Facebook,
+            "twitter" | "x" => Self::Twitter,
+            _ => Self::WebAts,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationStatus {
+    Verified,
+    Unverified,
+}
+
+impl Default for VerificationStatus {
+    fn default() -> Self { Self::Verified }
+}
+
+impl VerificationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Unverified => "unverified",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("unverified") {
+            Self::Unverified
+        } else {
+            Self::Verified
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceEvidence {
+    pub title: String,
+    pub url: String,
+    pub checked_at: String,
+    #[serde(default = "default_evidence_type")]
+    pub evidence_type: String,
+    #[serde(default)]
+    pub channel: SearchChannel,
+    #[serde(default = "default_backend")]
+    pub backend: String,
+}
+
+fn default_evidence_type() -> String { "primary".into() }
+fn default_backend() -> String { "legacy".into() }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationReport {
@@ -118,6 +208,12 @@ pub struct TargetCard {
     pub material_status: String,
     pub material_error: Option<String>,
     pub opportunity_status: Option<String>,
+    #[serde(default)]
+    pub verification_status: VerificationStatus,
+    #[serde(default)]
+    pub source_channel: SearchChannel,
+    #[serde(default = "default_backend")]
+    pub source_backend: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +300,7 @@ pub struct TargetDetail {
     pub revisions: Vec<RevisionItem>,
     pub recovery_job: Option<JobSummary>,
     pub unpublished_cv: Vec<ArtifactItem>,
+    pub sources: Vec<SourceEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

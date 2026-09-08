@@ -1,4 +1,14 @@
 /* Interface tokens only: document previews keep their own paper colours. */
+:root[data-theme="light"] .internship-profile-editor,
+:root[data-theme="light"] .source-evidence-panel,
+:root[data-theme="light"] .source-evidence-list article { background: var(--panel); border-color: var(--line); }
+:root[data-theme="light"] .profile-field input,
+:root[data-theme="light"] .profile-field textarea,
+:root[data-theme="light"] .internship-cv-dropzone,
+:root[data-theme="light"] .planning-notice { background: var(--panel-soft); color: var(--text); border-color: var(--line-bright); }
+:root[data-theme="light"] .profile-field > span { color: var(--muted); }
+:root[data-theme="light"] .internship-cv-drop-icon { background: var(--icon-surface); color: var(--accent); border-color: var(--icon-border); }
+:root[data-theme="light"] .source-evidence-list a { color: var(--blue); }
 :root {
   --icon-surface: rgba(72,205,208,.08);
   --icon-border: rgba(72,205,208,.22);
