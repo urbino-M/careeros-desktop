@@ -33,17 +33,6 @@ impl SearchChannel {
         }
     }
 
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Self::WebAts => "官方 Web / ATS",
-            Self::Exa => "Exa",
-            Self::Rss => "RSS",
-            Self::LinkedIn => "LinkedIn",
-            Self::Facebook => "Facebook",
-            Self::Twitter => "Twitter / X",
-        }
-    }
-
     pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "exa" => Self::Exa,
@@ -266,69 +255,6 @@ pub struct TargetDetail {
     pub replies: Vec<ReplyItem>,
     pub revisions: Vec<RevisionItem>,
     pub sources: Vec<SourceEvidence>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChannelHealth {
-    pub channel: SearchChannel,
-    pub backend: String,
-    pub available: bool,
-    pub authenticated: bool,
-    pub status: String,
-    pub message: String,
-    pub checked_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchCapabilities {
-    pub checked_at: String,
-    pub channels: Vec<ChannelHealth>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchCandidate {
-    pub title: String,
-    pub organization: Option<String>,
-    pub description: Option<String>,
-    pub url: String,
-    pub published_at: Option<String>,
-    pub location: Option<String>,
-    pub source_title: Option<String>,
-    pub evidence_type: String,
-    pub channel: SearchChannel,
-    pub backend: String,
-    pub checked_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChannelResults {
-    pub channel: SearchChannel,
-    pub backend: String,
-    pub checked_at: String,
-    pub candidates: Vec<SearchCandidate>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchSetupResult {
-    pub completed: bool,
-    pub messages: Vec<String>,
-    pub capabilities: SearchCapabilities,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthGuide {
-    pub channel: SearchChannel,
-    pub title: String,
-    pub url: Option<String>,
-    pub instructions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

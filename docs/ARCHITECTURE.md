@@ -18,8 +18,7 @@ src-tauri/src/lib.rs command + AppState
 owning Rust subsystem
     ├─ db.rs / SQLite
     ├─ materials.rs / generated files and revisions
-    ├─ scheduler.rs → materials.rs/workspace → search_channels.rs → codex.rs → materials.rs/workflows.rs
-    ├─ search_channels.rs / native Web-ATS, Exa, RSS, LinkedIn, Facebook, Twitter adapters
+    ├─ scheduler.rs → materials.rs/workspace → codex.rs → materials.rs/workflows.rs
     ├─ typst.rs or cover_letter.rs → bundled Typst/templates → PDF
     └─ gmail.rs / secrets.rs → Gmail draft API and private credentials file
 ```
@@ -40,7 +39,7 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 1. `AutomationPage.tsx` or an application-detail panel creates an `EnqueueRequest` through `src/api.ts`.
 2. `scheduler.rs` snapshots provider/model settings into `native_jobs`, rejects duplicate active keys, dispatches with bounded concurrency, and records lifecycle events, execution deadlines, lease heartbeats, and checkpoints.
 3. `materials.rs` prepares an isolated workspace and runtime input contract (`CAREEROS_TASK.json`); material-revision tasks snapshot the source SHA-256 in both the contract and the trusted job payload. This is separate from the developer Task Contract in `AGENTS.md`.
-4. For `internship_search`, `search_channels.rs` performs a capability check, runs available native adapters in parallel, and writes normalized channel results and warnings to `input/channel-results.json`; a failed channel is isolated.
+4. For `internship_search`, the task contract selects the independent Internship profile and runtime skill. Codex searches public recruitment information, including accessible LinkedIn / X posts, then verifies against official Web / ATS sources; there is no native channel setup, login, or pre-search step.
 5. `codex.rs` runs or resumes the bundled Codex App Server task.
 6. `materials.rs` rejects an Agent revision if the live material no longer matches its trusted base SHA-256, then applies the revision; other jobs use `workflows.rs` to validate and import structured business results.
 7. CV/Cover Letter revisions may invoke `typst.rs` or `cover_letter.rs` to regenerate PDFs.
@@ -86,8 +85,8 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 | Tauri command boundary | `src-tauri/src/lib.rs` | `AppState`, startup wiring, command arguments/results, delegation, and command registration | Keep domain logic in owning modules; ordinary page layout changes do not belong here. |
 | First-run onboarding | `src/pages/OnboardingPage.tsx`; gate in `src/App.tsx`; `src-tauri/src/onboarding.rs` | Career-stage and discipline context, target preferences, resumable onboarding state, and local CV source import | Stores profile files only; it does not own model transport, Gmail OAuth, opportunity persistence, or automatic verification of uploaded CV claims. |
 | Application domain | `src-tauri/src/models.rs`; `src-tauri/src/workflows.rs` | Core target/job shapes, structured agent-result contracts, validation, deduplication, and result import | Does not own generic scheduling, UI presentation, or external transport authentication. |
-| Search channels | `src-tauri/src/search_channels.rs`; `src-tauri/src/models.rs` | Native channel health checks, per-channel adapters, preferred/fallback backends, parallel discovery, normalization, warnings, and source provenance | Does not own Codex business-result validation, user credentials, or application submission. |
-| Internship profile | `src-tauri/src/internship.rs`; Internship strategy UI | Independent `profile/internship.json`, optional profile-local CV, RSS feed validation, and isolated workspace copy | Must not reuse Postdoc `master_profile.json` or own Postdoc onboarding. |
+| Search evidence | `src-tauri/src/models.rs`; `src-tauri/src/workflows.rs` | Source provenance, deduplication, and official-primary-evidence verification for Codex web-search results | Source channel labels remain readable for old records; they do not imply installed adapters or authenticated social accounts. |
+| Internship profile | `src-tauri/src/internship.rs`; Internship strategy UI | Independent `profile/internship.json`, optional profile-local CV, and isolated workspace copy; legacy RSS metadata is preserved but not fetched | Must not reuse Postdoc `master_profile.json` or own Postdoc onboarding. |
 | CV | `src-tauri/src/cv_schema.rs`; `src-tauri/src/typst.rs`; `src-tauri/resources/templates/cv.typ` | Target-isolated CV normalization and deduplication, exact-two-page preflight/rendering, PDF generation, and CV revision persistence | A target CV must come from that target's Agent selection. It must never be completed from another contact's CV. Visibility, icons, and preview toggles belong to the UI. |
 | Cover Letter | `src-tauri/src/cover_letter.rs`; `src-tauri/resources/templates/cover-letter.typ`; relevant panels in `src/pages/ApplicationDetailPage.tsx` | Cover Letter content assembly, text/source persistence, Typst layout, PDF regeneration, and preview controls | Does not own scheduler lifecycle, Gmail OAuth, or unrelated CV rendering. |
 | Email / Outreach | email/reply/artifact panels in `src/pages/ApplicationDetailPage.tsx`; `src-tauri/src/materials.rs`; `src-tauri/src/workflows.rs`; reply persistence in `src-tauri/src/db.rs` | Display/edit/revision of outreach materials, inbound reply persistence/follow-up, and agent-produced email artifacts | Gmail authentication and remote draft transport belong to Gmail; ordinary outreach editing must not change scheduler infrastructure. |
@@ -114,7 +113,7 @@ Application startup in `src-tauri/src/lib.rs` resolves `AppPaths`, initializes/m
 | Inbound reply or follow-up | `ReplyPanel` in `src/pages/ApplicationDetailPage.tsx` | `src/api.ts` → `src-tauri/src/lib.rs` → `src-tauri/src/db.rs`; inspect `src-tauri/src/workflows.rs`/scheduler only if agent follow-up behavior changes | Gmail OAuth, Typst/PDF, unrelated contact records |
 | Reply decision routing / shelving | `src-tauri/src/workflows.rs` | `src-tauri/src/db.rs`, `src-tauri/src/materials.rs`, runtime agent skill, status UI/types | scheduler lifecycle, Gmail, document rendering |
 | Application/contact status | status action in the relevant page | `src/api.ts` → `src-tauri/src/lib.rs` → `src-tauri/src/db.rs`; `src/types.ts` if values change | Typst, Codex, scheduler |
-| Internship multi-channel search | `src-tauri/src/search_channels.rs` and `src-tauri/src/scheduler.rs` | `internship.rs`, `workflows.rs`, `db.rs`, `materials.rs`, runtime skill, commands/API/types, and Internship UI | Agent-Reach dependency, automatic login, direct submission, unrelated social channels |
+| Internship public-web search | `src-tauri/src/workflows.rs`, `src-tauri/src/materials.rs`, and Internship runtime skill | `internship.rs`, Internship UI, and scheduler only for task lifecycle changes | Native channel adapters, search-tool installation, social-account login, direct submission, schema changes for provenance labels |
 | Scheduled task behavior | `src-tauri/src/scheduler.rs` and `src/pages/AutomationPage.tsx` | `src-tauri/src/workflows.rs`, `src-tauri/src/materials.rs`, or `src-tauri/src/codex.rs` only for the affected job type; command/API contracts | unrelated renderers, Gmail, general UI cleanup |
 | Tauri API | command in `src-tauri/src/lib.rs` | owning Rust type/service → `src/api.ts` → `src/types.ts` → caller; command registration | unrelated commands and persistence changes not required by the contract |
 | Database field/schema | `src-tauri/migrations/` and `src-tauri/src/migration.rs` | `src-tauri/src/db.rs`, `src-tauri/src/models.rs`, then API/types/UI only if exposed | opportunistic UI or scheduler refactors |
@@ -154,7 +153,7 @@ Use the shape of the change to keep inspection targeted:
 - `generated/`: target material and document outputs;
 - `profile/`: candidate source-of-truth files used in agent workspaces;
 - `profile/internship.json`: independent Internship search preferences, optional
-  profile-local CV path, and RSS feed list; it is not derived from Postdoc
+  profile-local CV path, and legacy RSS feed list retained without fetching; it is not derived from Postdoc
   `master_profile.json`;
 - `workspaces/`: isolated Codex task inputs/outputs and resumable results;
 - `codex/`: app-specific Codex home and installed runtime skill;
@@ -206,7 +205,7 @@ Tests are evidence, not ceremony. A filtered test that does not exercise the cha
 - `ApplicationDetailPage.tsx` contains several independent panels. Keep local UI changes inside the owning panel; its file size alone is not permission to refactor it.
 - `lib.rs` is a command registry/orchestration boundary. Do not move domain logic there for convenience.
 - `scheduler.rs` coordinates Codex, materials, workflows, and renderers. Touching it is justified only by lifecycle/dispatch/job-flow changes.
-- `search_channels.rs` owns native Internship discovery adapters and capability/setup checks; it must not receive or persist passwords, cookies, or tokens.
+- Internship search uses the existing Codex web-search path. The removed native channel extension must not be reintroduced through setup/login commands or pre-search subprocesses. Keep historical source/verification fields and migration 0012 intact.
 - `workflows.rs` owns structured result validation and import, while `scheduler.rs` owns execution lifecycle. Keep that split.
 - `materials.rs` owns workspace/input preparation plus manual and revision artifact application; `workflows.rs` owns validated import of non-revision structured business outputs. `models.rs` owns serialized `JobSummary` data, while `scheduler.rs` owns `EnqueueRequest` and lifecycle transitions.
 - `db.rs` preserves imported legacy tables for compatibility and audit, while current task views query `native_jobs` only. A new view need does not automatically justify a schema change or deletion of imported data.

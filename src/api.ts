@@ -1,11 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   DashboardData,
-  AuthGuide,
   InternshipProfile,
-  SearchCapabilities,
-  SearchChannel,
-  SearchSetupResult,
   CvGenerationResult,
   CoverLetterGenerationResult,
   CareerSystem,
@@ -86,11 +82,6 @@ export const api = {
   internshipProfile: () => invoke<InternshipProfile>("get_internship_profile"),
   saveInternshipProfile: (value: InternshipProfile) =>
     invoke<InternshipProfile>("save_internship_profile", { value }),
-  searchCapabilities: () => invoke<SearchCapabilities>("get_search_capabilities"),
-  setupSearchCapabilities: (channels: SearchChannel[]) =>
-    invoke<SearchSetupResult>("setup_search_capabilities", { channels }),
-  beginSearchChannelAuth: (channel: SearchChannel) =>
-    invoke<AuthGuide>("begin_search_channel_auth", { channel }),
   jobs: (pageSize = 5) => invoke<JobGroups>("get_jobs", { pageSize }),
   enqueue: (request: EnqueueRequest) =>
     invoke<string>("enqueue_job", { request }),

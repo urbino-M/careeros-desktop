@@ -6,7 +6,6 @@ import {
   CircleAlert,
   FileUp,
   GitBranch,
-  Globe2,
   Radar,
   Save,
   ShieldCheck,
@@ -15,7 +14,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../api";
-import type { AppRoute, InternshipProfile, SearchCapabilities } from "../types";
+import type { AppRoute, InternshipProfile } from "../types";
 
 const emptyProfile: InternshipProfile = {
   schemaVersion: 1,
@@ -98,7 +97,6 @@ export function InternshipPlanningSummary({ onNavigate }: { onNavigate: (route: 
 
 export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: AppRoute) => void }) {
   const [profile, setProfile] = useState<InternshipProfile>(emptyProfile);
-  const [capabilities, setCapabilities] = useState<SearchCapabilities>();
   const [cvFileName, setCvFileName] = useState("");
   const [cvDragActive, setCvDragActive] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -109,10 +107,9 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
     setBusy(true);
     setNotice("");
     try {
-      const [nextProfile, nextCapabilities] = await Promise.all([api.internshipProfile(), api.searchCapabilities()]);
+      const nextProfile = await api.internshipProfile();
       setProfile(nextProfile);
       setCvFileName(nextProfile.cvPath ? "已导入 CV" : "");
-      setCapabilities(nextCapabilities);
     } catch (value) {
       setNotice(errorMessage(value));
     } finally {
@@ -205,14 +202,13 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
   };
 
   const profilePreferencesValue = profilePreferences(profile);
-  const readyChannels = capabilities?.channels.filter((health) => health.available && (!isAuthChannel(health.channel) || health.authenticated)) ?? [];
   return (
     <section className="internship-planning" aria-label="Internship 求职策略">
       <header className="internship-planning-header">
         <div>
           <div className="eyebrow">CURRENT TRACK</div>
           <h2>求职策略</h2>
-          <p>先定义独立的 Internship 筛选画像，再并行探索官方 Web / ATS、Exa、RSS、LinkedIn、Facebook 和 Twitter / X。</p>
+          <p>按独立的 Internship 画像，由 GPT / Codex 搜索公开招聘信息，包括可访问的 LinkedIn / X 公开线索，再到公司官网或官方 ATS 核验。无需安装搜索工具或连接社交账号。</p>
         </div>
         <div className="internship-search-profile" aria-label="Internship 求职筛选画像">
           {profilePreferencesValue.map((item) => (
@@ -263,21 +259,11 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
               </div>
             </div>
           </div>
-          <label className="profile-field profile-field-wide">
-            <span>RSS / Atom 地址（每行一个）</span>
-            <textarea value={profile.rssFeeds.join("\n")} onChange={(event) => patch({ rssFeeds: event.target.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) })} placeholder="https://example.com/internships.xml" />
-          </label>
         </div>
         <div className="planning-editor-actions">
           <button className="button primary" disabled={busy} onClick={() => void saveProfile()}><Save size={16} /> 保存 Internship 画像</button>
           <span className="planning-section-note">最后更新：{profile.updatedAt ? new Date(profile.updatedAt).toLocaleString() : "尚未保存"}</span>
         </div>
-      </section>
-
-      <section className="channel-summary-strip" aria-label="信息搜索渠道摘要">
-        <div className="channel-summary-title"><Globe2 size={19} /><div><span>信息搜索渠道</span><strong>{capabilities ? `${readyChannels.length} / ${capabilities.channels.length} 个渠道可用` : "正在检查渠道…"}</strong></div></div>
-        <p>搜索会自动使用所有已准备渠道；单个渠道不可用时会跳过，不影响其他来源。</p>
-        <button className="text-button" onClick={() => onNavigate({ page: "settings", focus: "search-channels" })}>管理信息搜索渠道 <ArrowRight size={15} /></button>
       </section>
 
       {notice && <div className="planning-notice"><CircleAlert size={17} /><span>{notice}</span></div>}
@@ -289,7 +275,7 @@ export function InternshipPlanningPanel({ onNavigate }: { onNavigate: (route: Ap
             <div><span className="planning-index">01 · 机会雷达</span><h3>覆盖目标岗位</h3></div>
           </div>
           <div className="planning-summary"><span>检索配置</span><strong>{profile.targetRoles || "待设置"}</strong></div>
-          <div className="planning-source-row"><span>官方 Web / ATS</span><span>Exa</span><span>RSS</span><span>社交渠道</span></div>
+          <div className="planning-source-row"><span>GPT / Codex 网页搜索</span><span>公开招聘线索</span><span>官网 / ATS 核验</span></div>
           <div className="planning-track-list">
             {(profile.targetRoles ? profile.targetRoles.split(/[\n,，]/).map((value) => value.trim()).filter(Boolean) : searchTracks).slice(0, 7).map((track, index) => <span key={track} className={index < 3 ? "priority" : ""}>{track}</span>)}
           </div>
@@ -333,10 +319,6 @@ function profilePreferences(profile?: InternshipProfile) {
     { label: "实习时长", value: profile?.duration || "待设置" },
     { label: "开始时间", value: profile?.startDate || "待设置" },
   ];
-}
-
-function isAuthChannel(channel: string) {
-  return ["facebook", "linkedin", "twitter"].includes(channel);
 }
 
 function isDropInside(position: { x: number; y: number }, rect: DOMRect) {

@@ -13,6 +13,8 @@ CareerOS 的本机桌面版本，目前发布 Apple Silicon macOS 和 Windows x6
 
 ## 开发与验证
 
+- 贡献代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)；安全问题请遵循
+  [SECURITY.md](SECURITY.md) 的私下报告流程。
 - `CAREEROS_DATA_DIR`：指定隔离的数据目录，供本地验证使用。
 - `CAREEROS_RUNTIME_DIR`：指定开发环境中的运行时目录。
 - `CAREEROS_CODEX_BIN` / `CAREEROS_TYPST_BIN`：指定开发环境中的 Codex / Typst 可执行文件。

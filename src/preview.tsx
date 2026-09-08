@@ -61,7 +61,7 @@ const dashboards = {
     metrics: [
       { key: "all", label: "申请机会", value: 8, helper: "只显示行业 Internship" },
       { key: "high_fit", label: "高匹配", value: 3, helper: "评分 ≥ 85" },
-      { key: "unverified", label: "待核验", value: 2, helper: "来自多渠道，不能直接投递" },
+      { key: "unverified", label: "待核验", value: 2, helper: "公开线索尚未核验，不能直接投递" },
       { key: "portal_pending", label: "待投递", value: 4, helper: "已核验，等待官网投递" },
     ],
     regions: [
@@ -190,22 +190,6 @@ mockIPC((command, payload) => {
   }
   if (command === "import_internship_cv") return "uploads/internship-cv-preview.pdf";
   if (command === "save_internship_profile") return payloadValue(payload, "value");
-  if (command === "get_search_capabilities") {
-    return {
-      checkedAt: "2026-09-02T08:00:00Z",
-      channels: [
-        { channel: "web_ats", backend: "codex_web_search", available: true, authenticated: true, status: "ready", message: "由当前 Codex 线程执行官方网页和 ATS 搜索。", checkedAt: "2026-09-02T08:00:00Z" },
-        { channel: "exa", backend: "mcporter:exa.web_search_exa", available: false, authenticated: false, status: "setup_required", message: "缺少 mcporter。", checkedAt: "2026-09-02T08:00:00Z" },
-        { channel: "rss", backend: "reqwest_rss", available: false, authenticated: true, status: "setup_required", message: "尚未配置 RSS。", checkedAt: "2026-09-02T08:00:00Z" },
-        { channel: "linkedin", backend: "mcporter:linkedin.search_jobs", available: false, authenticated: false, status: "setup_required", message: "缺少 mcporter。", checkedAt: "2026-09-02T08:00:00Z" },
-        { channel: "facebook", backend: "opencli:facebook", available: false, authenticated: false, status: "setup_required", message: "缺少 OpenCLI。", checkedAt: "2026-09-02T08:00:00Z" },
-        { channel: "twitter", backend: "opencli:twitter", available: false, authenticated: false, status: "setup_required", message: "缺少 OpenCLI 和 twitter-cli。", checkedAt: "2026-09-02T08:00:00Z" },
-      ],
-      warnings: [],
-    };
-  }
-  if (command === "setup_search_capabilities") return { completed: true, messages: ["已完成用户级渠道设置（演示环境）。"], capabilities: { checkedAt: "2026-09-02T08:00:00Z", channels: [], warnings: [] } };
-  if (command === "begin_search_channel_auth") return { channel: payloadValue(payload, "channel"), title: "准备登录态", url: "https://example.com/login", instructions: ["请在自己的浏览器完成登录。"] };
   if (command === "get_dashboard") {
     return dashboards[payloadValue(payload, "careerTrack") === "internship" ? "internship" : "postdoc"];
   }

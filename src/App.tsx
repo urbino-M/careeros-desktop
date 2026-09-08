@@ -32,7 +32,7 @@ function parseHash(): AppRoute {
   if (page === "automation") {
     return { page: "automation", composer: value === "internship_search" ? value as AutomationComposer : undefined };
   }
-  if (page === "settings") return { page: "settings", focus: value === "search-channels" ? value : undefined };
+  if (page === "settings") return { page: "settings" };
   if (page === "application" && value) {
     const allowedTabs: ApplicationTab[] = ["cv", "cover_letter", "checklist", "email_en", "email_zh", "fit", "pi", "revision", "reply", "other"];
     const prefixed = isCareerSystem(origin);
@@ -74,7 +74,7 @@ function routeHash(route: AppRoute) {
   switch (route.page) {
     case "dashboard": return "#/dashboard";
     case "automation": return route.composer ? `#/automation/${route.composer}` : "#/automation";
-    case "settings": return route.focus ? `#/settings/${route.focus}` : "#/settings";
+    case "settings": return "#/settings";
     case "applications": return route.view === "strategy"
       ? `#/applications/${route.careerSystem}/strategy`
       : `#/applications/${route.careerSystem}/${route.status}`;
@@ -139,7 +139,7 @@ export default function App() {
       {route.page === "application" && (
         <ApplicationDetailPage targetId={route.targetId} initialTab={route.tab} returnPage={route.returnPage} focusJobId={route.jobId} locale={locale} onNavigate={navigate} />
       )}
-      {route.page === "settings" && <SettingsPage focusSection={route.focus} onRestartOnboarding={async () => {
+      {route.page === "settings" && <SettingsPage onRestartOnboarding={async () => {
         const saved = await api.saveOnboardingProfile({ ...onboarding, completed: false, currentStep: 0 });
         setOnboarding(saved);
       }} />}

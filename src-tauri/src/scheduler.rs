@@ -3,7 +3,6 @@ use crate::db;
 use crate::materials;
 use crate::models::JobSummary;
 use crate::paths::AppPaths;
-use crate::search_channels;
 use crate::typst;
 use crate::workflows;
 use anyhow::{bail, Context, Result};
@@ -28,6 +27,7 @@ const LEASE_DURATION_SECONDS: i64 = 120;
 const LEASE_REAP_INTERVAL: Duration = Duration::from_secs(15);
 const TIMEOUT_ERROR: &str = "task_timeout";
 const MAX_SEARCH_FINALIZATION_TURNS: usize = 2;
+const INTERNSHIP_SEARCH_CONTRACT_VERSION: &str = "public-web-v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +95,9 @@ impl Scheduler {
         }
         if let Some(prompt) = request.prompt.as_ref() {
             payload["prompt"] = Value::String(prompt.clone());
+        }
+        if request.job_type == "internship_search" {
+            payload["searchContractVersion"] = Value::String(INTERNSHIP_SEARCH_CONTRACT_VERSION.into());
         }
         let active_key = active_key_for(&request, &payload)?;
         if let Some(key) = active_key.as_deref() {
@@ -201,6 +204,8 @@ impl Scheduler {
             }
         }
         let mut payload: Value = serde_json::from_str(&payload_raw)?;
+        let legacy_internship_contract = job_type == "internship_search"
+            && migrate_legacy_internship_search_payload(&mut payload);
         let reuse_output = has_reusable_output(&self.paths, job_id, &job_type);
         let openai_region_error = last_error
             .as_deref()
@@ -211,7 +216,16 @@ impl Scheduler {
         } else {
             None
         };
-        let reset_thread = provider_route_mismatch || regional_fallback.is_some();
+        // Internship searches can be very long-lived.  Resuming a timed-out
+        // thread forces Codex to compact it, but the Responses-backed route
+        // used by the app does not support that operation reliably.  A fresh
+        // thread can re-run the public-web search from the persisted request
+        // and profile without carrying the broken conversation forward.
+        let fresh_internship_thread = job_type == "internship_search" && !reuse_output;
+        let reset_thread = provider_route_mismatch
+            || regional_fallback.is_some()
+            || legacy_internship_contract
+            || fresh_internship_thread;
         let repair_error = last_error.as_ref().filter(|error| {
             reuse_output && is_search_job_type(&job_type) && is_cv_preflight_error(error)
         }).cloned();
@@ -228,6 +242,10 @@ impl Scheduler {
             format!("OpenAI 当前地区不可用；已切换到 {fallback_provider} 并等待重新执行")
         } else if provider_route_mismatch {
             format!("检测到旧线程错误连接 OpenAI；已清除并将用 {provider_id} 新线程")
+        } else if legacy_internship_contract {
+            "旧版 Internship 搜索合同已更新为公开网页搜索；将从新线程开始执行".into()
+        } else if fresh_internship_thread {
+            "上次 Internship 检索未交付结果；将从新线程重新执行".into()
         } else if repair_error.is_some() {
             "等待定向修复已有检索结果"
                 .into()
@@ -283,6 +301,8 @@ impl Scheduler {
             format!("任务已重新加入队列；已丢弃错连 OpenAI 的旧线程并使用 {provider_id} 新线程")
         } else if reuse_output {
             "任务已重新加入队列；将直接校验并导入已有结果".into()
+        } else if fresh_internship_thread {
+            "任务已重新加入队列；将丢弃未完成的 Internship 线程并从新线程执行".into()
         } else {
             "任务已重新加入队列；将恢复原线程".into()
         };
@@ -300,6 +320,8 @@ impl Scheduler {
                     "modelId":snapshot.2,
                 })),
                 "providerRouteMismatch":provider_route_mismatch,
+                "legacyInternshipContract":legacy_internship_contract,
+                "freshInternshipThread":fresh_internship_thread,
             }),
         )?;
         tx.commit()?;
@@ -486,19 +508,6 @@ impl Scheduler {
                 &job.job_type,
                 &payload,
             )?;
-            if job.job_type == "internship_search" {
-                update_progress(
-                    &self.db_path,
-                    &job.id,
-                    6,
-                    "正在并行检查 Internship 搜索渠道",
-                )?;
-                let manifest = search_channels::run(&self.paths, &payload).await?;
-                fs::write(
-                    workspace.join("input/channel-results.json"),
-                    serde_json::to_vec_pretty(&manifest)?,
-                )?;
-            }
             (contract, None)
         };
         update_progress(&self.db_path, &job.id, 8, "正在启动 Codex")?;
@@ -512,6 +521,7 @@ impl Scheduler {
         ).context("任务快照引用的模型不存在")?;
         let job_attempt = load_job_attempt(&self.db_path, &job.id)?;
         let resume_for_finalization = is_search_job
+            && job.job_type != "internship_search"
             && job_attempt > 0
             && job.thread_id.is_some()
             && !has_reusable_output(&self.paths, &job.id, &job.job_type);
@@ -544,18 +554,37 @@ impl Scheduler {
             && finalization_turns < MAX_SEARCH_FINALIZATION_TURNS
         {
             finalization_turns += 1;
-            self.compact_search_thread(job, &result.thread_id).await?;
-            let message = format!(
-                "模型已结束检索但尚未交付结果，正在自动收尾（{finalization_turns}/{MAX_SEARCH_FINALIZATION_TURNS}）"
-            );
+            let fresh_internship_retry = job.job_type == "internship_search";
+            if !fresh_internship_retry {
+                self.compact_search_thread(job, &result.thread_id).await?;
+            }
+            let message = if fresh_internship_retry {
+                format!(
+                    "模型未交付 Internship 结果，正在用新线程重新检索（{finalization_turns}/{MAX_SEARCH_FINALIZATION_TURNS}）"
+                )
+            } else {
+                format!(
+                    "模型已结束检索但尚未交付结果，正在自动收尾（{finalization_turns}/{MAX_SEARCH_FINALIZATION_TURNS}）"
+                )
+            };
             update_activity(&self.db_path, &job.id, &message)?;
             self.emit_changed();
+            let next_prompt = if fresh_internship_retry {
+                fresh_internship_search_retry_prompt(
+                    &prompt,
+                    &contract,
+                    finalization_turns,
+                    MAX_SEARCH_FINALIZATION_TURNS,
+                )
+            } else {
+                search_finalization_prompt(&job.job_type, finalization_turns, MAX_SEARCH_FINALIZATION_TURNS)
+            };
             result = self.run_codex_turn(
                 job,
                 &workspace,
                 &model_slug,
-                search_finalization_prompt(&job.job_type, finalization_turns, MAX_SEARCH_FINALIZATION_TURNS),
-                Some(result.thread_id.clone()),
+                next_prompt,
+                (!fresh_internship_retry).then(|| result.thread_id.clone()),
             ).await?;
         }
         if is_search_job && !has_reusable_output(&self.paths, &job.id, &job.job_type) {
@@ -881,6 +910,17 @@ The turn is not complete until {output_path} exists and is valid."
     )
 }
 
+fn fresh_internship_search_retry_prompt(
+    prompt: &str,
+    contract: &str,
+    attempt: usize,
+    total: usize,
+) -> String {
+    format!(
+        "{prompt}{contract}\n\nThis is a fresh Internship search pass ({attempt} of {total}) because the previous pass did not create the required result file. Do not resume or rely on the previous conversation. Perform the public-web search again within the stated limits, then write output/internship-search-results.json exactly according to resultContract in CAREEROS_TASK.json. Validate the JSON file before ending; the turn is not complete until the file exists and is valid."
+    )
+}
+
 fn search_result_repair_prompt(error: &str) -> String {
     format!(
         "The existing output/search-results.json passed research finalization but failed the local Typst CV preflight:\n{error}\n\n\
@@ -942,6 +982,37 @@ fn timeout_seconds_for(job_type: &str) -> i64 {
         "preference_rebuild" => 10 * 60,
         _ => 60 * 60,
     }
+}
+
+fn migrate_legacy_internship_search_payload(payload: &mut Value) -> bool {
+    let Some(object) = payload.as_object_mut() else { return false };
+    let legacy_prompt = object
+        .get("prompt")
+        .and_then(Value::as_str)
+        .is_some_and(|prompt| {
+            prompt.contains("input/channel-results.json")
+                || prompt.contains("Combine the normalized results")
+        });
+    if !legacy_prompt {
+        return false
+    }
+    let query = object
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("the saved Internship search request");
+    object.insert(
+        "prompt".into(),
+        Value::String(format!(
+            "Search for current industry internships matching this request: {query}. Use Codex web search to discover public recruitment information, including accessible LinkedIn and Twitter / X posts. Do not install or invoke channel tools, connect social accounts, or bypass login restrictions. Use official company career pages or official ATS records as primary evidence; keep opportunities supported only by public posts or search snippets unverified and state any access or freshness limits. Exclude postdoctoral, doctoral, faculty and regular full-time roles. Check hard eligibility requirements against the independent Internship profile; missing facts are uncertain, not a reason to stop discovery. Return no more than 20 discovered and 10 saved review-only opportunities with application checklists. Do not create a CV, contact anyone or submit an application."
+        )),
+    );
+    object.insert(
+        "searchContractVersion".into(),
+        Value::String(INTERNSHIP_SEARCH_CONTRACT_VERSION.into()),
+    );
+    true
 }
 
 fn model_default_type(job_type: &str) -> &str {
@@ -1408,6 +1479,14 @@ mod tests {
         assert!(prompt.contains("validate the JSON file"));
         assert!(search_finalization_prompt("internship_search", 1, MAX_SEARCH_FINALIZATION_TURNS)
             .contains("output/internship-search-results.json"));
+        let fresh_retry = fresh_internship_search_retry_prompt(
+            "Search for AI Infra internships.",
+            "\nUse the result contract.",
+            1,
+            MAX_SEARCH_FINALIZATION_TURNS,
+        );
+        assert!(fresh_retry.contains("Perform the public-web search again"));
+        assert!(fresh_retry.contains("output/internship-search-results.json"));
 
         let temp = TempDir::new()?;
         let paths = test_paths(&temp);
@@ -1869,6 +1948,83 @@ mod tests {
         assert_eq!(payload["_repairExistingOutputError"], error);
         assert!(payload.get("_reuseExistingOutput").is_none());
         assert!(message.contains("定向修复"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_migrates_legacy_internship_search_to_a_fresh_public_web_thread() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let paths = scheduler.paths.clone();
+        let job_id = scheduler.enqueue(EnqueueRequest {
+            job_type: "internship_search".into(), target_type: Some("internship".into()), target_id: None,
+            prompt: Some("Combine the normalized results from input/channel-results.json across official Web / ATS, Exa, RSS, LinkedIn, Facebook, and Twitter / X.".into()),
+            payload: Some(json!({"query":"AI Infra internships in Hong Kong", "threshold":75})),
+            provider_id: None, account_id: None, model_id: None, reasoning: None,
+            thread_id: Some("legacy-channel-thread".into()),
+        })?;
+        let conn = db::connect(&paths.database)?;
+        conn.execute(
+            "UPDATE native_jobs SET status='failed',error='任务超过允许的最长执行时间；可检查范围后重试' WHERE id=?1",
+            [&job_id],
+        )?;
+        drop(conn);
+
+        scheduler.retry(&job_id)?;
+        let conn = db::connect(&paths.database)?;
+        let (payload_raw, thread_id, message): (String, Option<String>, String) = conn.query_row(
+            "SELECT payload_json,thread_id,message FROM native_jobs WHERE id=?1",
+            [&job_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let payload: Value = serde_json::from_str(&payload_raw)?;
+        let prompt = payload["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains("Codex web search"));
+        assert!(!prompt.contains("channel-results.json"));
+        assert_eq!(payload["searchContractVersion"], "public-web-v1");
+        assert_eq!(thread_id, None);
+        assert!(message.contains("公开网页"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_restarts_current_internship_search_instead_of_compacting_old_thread() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let paths = scheduler.paths.clone();
+        let job_id = scheduler.enqueue(EnqueueRequest {
+            job_type: "internship_search".into(), target_type: Some("internship".into()), target_id: None,
+            prompt: Some("Search for current AI Infra internships using Codex web search.".into()),
+            payload: Some(json!({
+                "query":"AI Infra internships in Hong Kong",
+                "threshold":75,
+                "searchContractVersion": INTERNSHIP_SEARCH_CONTRACT_VERSION,
+            })),
+            provider_id: None, account_id: None, model_id: None, reasoning: None,
+            thread_id: Some("timed-out-internship-thread".into()),
+        })?;
+        let conn = db::connect(&paths.database)?;
+        conn.execute(
+            "UPDATE native_jobs SET status='failed',error=?2 WHERE id=?1",
+            params![&job_id, "任务超过允许的最长执行时间；可检查范围后重试"],
+        )?;
+        drop(conn);
+
+        scheduler.retry(&job_id)?;
+        let conn = db::connect(&paths.database)?;
+        let (thread_id, message): (Option<String>, String) = conn.query_row(
+            "SELECT thread_id,message FROM native_jobs WHERE id=?1",
+            [&job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(thread_id, None);
+        assert!(message.contains("新线程"));
+        let event_payload: String = conn.query_row(
+            "SELECT payload_json FROM native_job_events WHERE job_id=?1 AND event_type='retried' ORDER BY id DESC LIMIT 1",
+            [&job_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(serde_json::from_str::<Value>(&event_payload)?["freshInternshipThread"], true);
         Ok(())
     }
 }
