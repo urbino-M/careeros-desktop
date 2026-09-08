@@ -7,7 +7,9 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { api, errorMessage } from "./api";
-import type { ApplicationFilter, ApplicationTab, AppRoute, CareerSystem, Locale, OnboardingProfile } from "./types";
+import type { ApplicationFilter, ApplicationTab, AppRoute, CareerSystem, OnboardingProfile } from "./types";
+import { useUiPreferences } from "./uiPreferences";
+import { t } from "./i18n";
 
 const applicationStatuses: ApplicationFilter[] = [
   "ready_to_contact",
@@ -26,8 +28,8 @@ function isCareerSystem(value?: string): value is CareerSystem {
   return value === "postdoc" || value === "internship";
 }
 
-function parseHash(): AppRoute {
-  const hash = window.location.hash.replace(/^#\/?/, "");
+export function parseHash(hashValue = window.location.hash): AppRoute {
+  const hash = hashValue.replace(/^#\/?/, "");
   const [page, value, section, origin, job, detailJob] = hash.split("/");
   if (page === "automation") return { page: "automation" };
   if (page === "settings") return { page: "settings" };
@@ -63,19 +65,20 @@ function parseHash(): AppRoute {
         ? candidateStatus as ApplicationFilter
         : fallbackStatus,
       view,
+      category: careerSystem === "postdoc" && (origin === "advertised" || origin === "prospective" || origin === "uncertain") ? origin : undefined,
     };
   }
   return { page: "dashboard" };
 }
 
-function routeHash(route: AppRoute) {
+export function routeHash(route: AppRoute) {
   switch (route.page) {
     case "dashboard": return "#/dashboard";
     case "automation": return "#/automation";
     case "settings": return "#/settings";
     case "applications": return route.view === "strategy"
       ? `#/applications/${route.careerSystem}/strategy`
-      : `#/applications/${route.careerSystem}/${route.status}`;
+      : `#/applications/${route.careerSystem}/${route.status}${route.careerSystem === "postdoc" && route.category ? `/${route.category}` : ""}`;
     case "application": {
       const parts = ["#/application", encodeURIComponent(route.targetId), route.tab || "cv", route.careerSystem];
       if (route.returnPage) parts.push(route.returnPage);
@@ -88,9 +91,7 @@ function routeHash(route: AppRoute) {
 
 export default function App() {
   const [route, setRoute] = useState<AppRoute>(() => parseHash());
-  const [locale, setLocale] = useState<Locale>(() =>
-    localStorage.getItem("careeros-locale") === "en" ? "en" : "zh",
-  );
+  const { locale } = useUiPreferences();
   const [onboarding, setOnboarding] = useState<OnboardingProfile>();
   const [onboardingError, setOnboardingError] = useState("");
 
@@ -114,25 +115,20 @@ export default function App() {
     else window.location.hash = nextHash;
   }, []);
 
-  const changeLocale = (next: Locale) => {
-    setLocale(next);
-    localStorage.setItem("careeros-locale", next);
-  };
-
   if (onboardingError) {
-    return <div className="onboarding-boot"><strong>无法读取开始使用资料</strong><p>{onboardingError}</p><button onClick={loadOnboarding}>重新读取</button></div>;
+    return <div className="onboarding-boot"><strong>{t("无法读取开始使用资料")}</strong><p>{onboardingError}</p><button onClick={loadOnboarding}>{t("重新读取")}</button></div>;
   }
-  if (!onboarding) return <div className="onboarding-boot"><span />正在准备本机工作区…</div>;
+  if (!onboarding) return <div className="onboarding-boot"><span />{t("正在准备本机工作区…")}</div>;
   if (!onboarding.completed) {
-    return <OnboardingPage initial={onboarding} onComplete={setOnboarding} />;
+    return <OnboardingPage initial={onboarding} onComplete={(profile) => { setOnboarding(profile); navigate({ page: "automation" }); }} />;
   }
 
   return (
-    <Shell route={route} locale={locale} onLocale={changeLocale} onNavigate={navigate}>
+    <Shell route={route} onNavigate={navigate}>
       {route.page === "dashboard" && <DashboardPage onNavigate={navigate} />}
       {route.page === "automation" && <AutomationPage onNavigate={navigate} />}
       {route.page === "applications" && (
-        <ApplicationsPage careerSystem={route.careerSystem} status={route.status} view={route.view} onNavigate={navigate} />
+        <ApplicationsPage careerSystem={route.careerSystem} status={route.status} view={route.view} initialCategory={route.category} onNavigate={navigate} />
       )}
       {route.page === "application" && (
         <ApplicationDetailPage targetId={route.targetId} initialTab={route.tab} returnPage={route.returnPage} focusJobId={route.jobId} locale={locale} onNavigate={navigate} />

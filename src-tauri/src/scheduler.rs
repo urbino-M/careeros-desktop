@@ -3,7 +3,6 @@ use crate::db;
 use crate::materials;
 use crate::models::JobSummary;
 use crate::paths::AppPaths;
-use crate::typst;
 use crate::workflows;
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
@@ -27,6 +26,33 @@ const LEASE_DURATION_SECONDS: i64 = 120;
 const LEASE_REAP_INTERVAL: Duration = Duration::from_secs(15);
 const TIMEOUT_ERROR: &str = "task_timeout";
 const MAX_SEARCH_FINALIZATION_TURNS: usize = 2;
+const DEFAULT_RESULT_LIMIT: usize = 5;
+const MAX_RESULT_LIMIT: usize = 5;
+
+#[derive(Clone)]
+struct ExecutionIdentity { job_id: String, worker_id: String, attempt: i64 }
+
+tokio::task_local! { static EXECUTION: ExecutionIdentity; }
+
+/// Must be called inside the writer transaction, before publishing business state.
+/// Manual commands have no task identity; queued jobs always run in this scope.
+pub(crate) fn ensure_can_publish(conn: &rusqlite::Connection) -> Result<()> {
+    let Ok(identity) = EXECUTION.try_with(Clone::clone) else { return Ok(()) };
+    let current: Option<(String, i64, Option<String>, i64, bool, bool)> = conn.query_row(
+        "SELECT status,cancel_requested,lease_owner,attempt,
+         (timeout_at IS NULL OR timeout_at>strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+         ,(lease_expires_at IS NULL OR lease_expires_at>strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+         FROM native_jobs WHERE id=?1",
+        [&identity.job_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+    ).optional()?;
+    let Some((status, cancelled, owner, attempt, within_deadline, unexpired)) = current else { bail!("任务执行权已失效") };
+    if cancelled != 0 { bail!("cancelled") }
+    if !within_deadline { bail!(TIMEOUT_ERROR) }
+    if status != "running" || owner.as_deref() != Some(identity.worker_id.as_str()) || attempt != identity.attempt || !unexpired {
+        bail!("任务执行权已失效，旧执行结果未发布")
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +67,17 @@ pub struct EnqueueRequest {
     pub model_id: Option<String>,
     pub reasoning: Option<String>,
     pub thread_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryJobRequest {
+    pub job_id: String,
+    pub prompt: Option<String>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub reasoning: Option<String>,
+    pub max_results: Option<usize>,
 }
 
 pub struct Scheduler {
@@ -92,21 +129,21 @@ impl Scheduler {
         if !payload.is_object() {
             payload = json!({"value":payload});
         }
+        normalize_result_limit(&request.job_type, &mut payload)?;
+        if let Some(id) = payload.get("opportunityId").and_then(Value::as_str) {
+            if db::opportunity_shelved(&tx, id)? { bail!("机会已搁置，请先恢复后再新建任务") }
+        }
+        if request.job_type == "reply_followup" {
+            let target = request.target_id.as_deref().context("回复任务缺少联系人 ID")?;
+            let version: i64 = tx.query_row("SELECT status_version FROM contact_targets_v2 WHERE id=?1 AND archived_at IS NULL", [target], |row| row.get(0))?;
+            payload["_statusVersion"] = json!(version);
+        }
         if let Some(prompt) = request.prompt.as_ref() {
             payload["prompt"] = Value::String(prompt.clone());
         }
         let active_key = active_key_for(&request, &payload)?;
-        if let Some(key) = active_key.as_deref() {
-            let existing: Option<String> = tx.query_row(
-                "SELECT id FROM native_jobs
-                 WHERE active_key=?1 AND status IN ('queued','running')
-                 ORDER BY created_at,id LIMIT 1",
-                [key],
-                |row| row.get(0),
-            ).optional()?;
-            if let Some(existing) = existing {
-                bail!("相同任务已在队列或运行中：{existing}")
-            }
+        if let Some(existing) = active_duplicate(&tx, &request.job_type, &payload, active_key.as_deref(), None)? {
+            bail!("相同任务已在队列或运行中：{existing}")
         }
         let timeout_seconds = timeout_seconds_for(&request.job_type);
         tx.execute(
@@ -134,6 +171,9 @@ impl Scheduler {
             "activeKey": active_key,
             "timeoutSeconds": timeout_seconds,
         }))?;
+        if is_search_job_type(&request.job_type) {
+            materials::snapshot_profile(&self.paths, &self.paths.workspaces.join(&id).join("profile"))?;
+        }
         tx.commit()?;
         self.notify.notify_one();
         self.emit_changed();
@@ -180,50 +220,117 @@ impl Scheduler {
     }
 
     pub fn retry(&self, job_id: &str) -> Result<()> {
+        self.retry_with_options(RetryJobRequest {
+            job_id: job_id.to_owned(),
+            prompt: None,
+            provider_id: None,
+            model_id: None,
+            reasoning: None,
+            max_results: None,
+        })
+    }
+
+    pub fn retry_with_options(&self, request: RetryJobRequest) -> Result<()> {
+        let job_id = request.job_id.as_str();
         let mut conn = db::connect(&self.db_path)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let (job_type, payload_raw, active_key, last_error, provider_id): (String, String, Option<String>, Option<String>, String) = tx.query_row(
-            "SELECT job_type,payload_json,active_key,error,provider_id FROM native_jobs WHERE id=?1",
+        let (job_type, payload_raw, active_key, last_error, provider_id, account_id, model_id, reasoning, thread_id): (String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>) = tx.query_row(
+            "SELECT job_type,payload_json,active_key,error,provider_id,account_id,model_id,reasoning,thread_id FROM native_jobs WHERE id=?1",
             [job_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
         ).context("任务不存在")?;
-        if let Some(key) = active_key.as_deref() {
-            let existing: Option<String> = tx.query_row(
-                "SELECT id FROM native_jobs
-                 WHERE active_key=?1 AND id<>?2 AND status IN ('queued','running')
-                 ORDER BY created_at,id LIMIT 1",
-                params![key,job_id],
-                |row| row.get(0),
-            ).optional()?;
-            if let Some(existing) = existing {
-                bail!("相同任务已在队列或运行中，不能重试：{existing}")
+        let mut payload: Value = serde_json::from_str(&payload_raw)?;
+        if let Some(id) = payload.get("opportunityId").and_then(Value::as_str) {
+            if db::opportunity_shelved(&tx, id)? { bail!("机会已搁置，请先恢复后再重试") }
+        }
+        if let Some(existing) = active_duplicate(&tx, &job_type, &payload, active_key.as_deref(), Some(job_id))? {
+            bail!("相同任务已在队列或运行中，不能重试：{existing}")
+        }
+        let original_prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or("");
+        let prompt_changed = request.prompt.as_deref().is_some_and(|prompt| prompt.trim() != original_prompt.trim());
+        if request.prompt.as_deref().is_some_and(|prompt| prompt.trim().is_empty()) {
+            bail!("任务指令不能为空")
+        }
+        if prompt_changed {
+            payload["prompt"] = Value::String(request.prompt.as_deref().unwrap_or_default().trim().to_owned());
+            if is_revision_job(&job_type) || payload.get("instruction").is_some() {
+                // The retry editor exposes the full effective instruction. Do not leave
+                // an older requirement in the contract or learned-preference history.
+                payload["instruction"] = payload["prompt"].clone();
             }
         }
-        let mut payload: Value = serde_json::from_str(&payload_raw)?;
-        let reuse_output = has_reusable_output(&self.paths, job_id, &job_type);
+        let original_result_limit = result_limit_for_job(&job_type, &payload)?;
+        let result_limit_changed = if let Some(max_results) = request.max_results {
+            let original = original_result_limit.context("只有机会检索任务可以调整结果数量上限")?;
+            validate_result_limit(max_results)?;
+            if max_results != original {
+                payload["maxResults"] = json!(max_results);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let selected_provider_id = request.provider_id.clone().unwrap_or_else(|| provider_id.clone());
+        let selected_model_id = request.model_id.clone().or_else(|| model_id.clone());
+        let selected_reasoning = request.reasoning.clone().or_else(|| reasoning.clone());
+        let provider_changed = selected_provider_id != provider_id;
+        let model_changed = selected_provider_id != provider_id
+            || selected_model_id != model_id
+            || selected_reasoning != reasoning;
+        let selected_snapshot = if model_changed {
+            Some(resolve_model_snapshot(
+                &tx,
+                &EnqueueRequest {
+                    job_type: job_type.clone(),
+                    target_type: None,
+                    target_id: None,
+                    prompt: None,
+                    payload: None,
+                    provider_id: Some(selected_provider_id),
+                    account_id: if provider_changed { None } else { account_id.clone() },
+                    model_id: selected_model_id,
+                    reasoning: selected_reasoning,
+                    thread_id: None,
+                },
+            )?)
+        } else {
+            None
+        };
+        let settings_changed = prompt_changed || model_changed || result_limit_changed;
+        let reuse_output = !settings_changed && (has_reusable_output(&self.paths, job_id, &job_type)
+            || has_saved_revision_baseline(&self.paths, job_id, &job_type, &payload));
         let openai_region_error = last_error
             .as_deref()
             .is_some_and(is_openai_region_unsupported_error);
-        let provider_route_mismatch = !reuse_output && provider_id != "openai" && openai_region_error;
-        let regional_fallback = if !reuse_output && provider_id == "openai" && openai_region_error {
+        let provider_route_mismatch = !settings_changed && !reuse_output && provider_id != "openai" && openai_region_error;
+        let regional_fallback = if !settings_changed && !reuse_output && provider_id == "openai" && openai_region_error {
             resolve_regional_fallback_snapshot(&tx, &job_type)?
         } else {
             None
         };
-        let reset_thread = provider_route_mismatch || regional_fallback.is_some();
-        let repair_error = last_error.as_ref().filter(|error| {
-            reuse_output && is_search_job_type(&job_type) && is_cv_preflight_error(error)
-        }).cloned();
+        let reset_thread = provider_changed || provider_route_mismatch || regional_fallback.is_some();
+        let continue_existing_thread = settings_changed && !reset_thread && thread_id.is_some();
+        let repair_error: Option<String> = None; // Import first; typed pending results drive material repair.
         if let Some(object) = payload.as_object_mut() {
             object.remove("_reuseExistingOutput");
             object.remove("_repairExistingOutputError");
+            object.remove("_resumeWithUpdatedSettings");
             if let Some(error) = repair_error.as_ref() {
                 object.insert("_repairExistingOutputError".into(), Value::String(error.clone()));
             } else if reuse_output {
                 object.insert("_reuseExistingOutput".into(), Value::Bool(true));
             }
+            if settings_changed {
+                object.insert("_resumeWithUpdatedSettings".into(), Value::Bool(true));
+            }
         }
-        let message = if let Some((fallback_provider, _, _, _)) = regional_fallback.as_ref() {
+        let message = if settings_changed && continue_existing_thread {
+            "已更新任务设置，等待恢复原 Agent 线程".into()
+        } else if settings_changed {
+            "已更新服务商设置，等待新线程执行".into()
+        } else if let Some((fallback_provider, _, _, _)) = regional_fallback.as_ref() {
             format!("OpenAI 当前地区不可用；已切换到 {fallback_provider} 并等待重新执行")
         } else if provider_route_mismatch {
             format!("检测到旧线程错误连接 OpenAI；已清除并将用 {provider_id} 新线程")
@@ -237,23 +344,22 @@ impl Scheduler {
             "等待重试"
                 .into()
         };
-        let (next_provider_id, next_account_id, next_model_id, next_reasoning) = regional_fallback
+        let (next_provider_id, next_account_id, next_model_id, next_reasoning) = selected_snapshot
             .as_ref()
+            .or(regional_fallback.as_ref())
             .map(|snapshot| (
-                snapshot.0.as_str(),
-                snapshot.1.as_deref(),
-                Some(snapshot.2.as_str()),
-                Some(snapshot.3.as_str()),
+                snapshot.0.clone(),
+                snapshot.1.clone(),
+                Some(snapshot.2.clone()),
+                Some(snapshot.3.clone()),
             ))
-            .unwrap_or((provider_id.as_str(), None, None, None));
+            .unwrap_or((provider_id.clone(), account_id.clone(), model_id.clone(), reasoning.clone()));
         let changed = tx.execute(
             "UPDATE native_jobs
              SET status='queued', progress=0, message=?2, error=NULL, payload_json=?3,
                  provider_id=?4,
-                 account_id=CASE WHEN ?5 THEN ?6 ELSE account_id END,
-                 model_id=CASE WHEN ?5 THEN ?7 ELSE model_id END,
-                 reasoning=CASE WHEN ?5 THEN ?8 ELSE reasoning END,
-                 thread_id=CASE WHEN ?9 THEN NULL ELSE thread_id END,
+                 account_id=?5, model_id=?6, reasoning=?7,
+                 thread_id=CASE WHEN ?8 THEN NULL ELSE thread_id END,
                  cancel_requested=0, attempt=attempt+1, started_at=NULL, finished_at=NULL,
                  timeout_at=NULL, heartbeat_at=NULL, lease_owner=NULL, lease_expires_at=NULL,
                  updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
@@ -263,7 +369,6 @@ impl Scheduler {
                 message,
                 serde_json::to_string(&payload)?,
                 next_provider_id,
-                regional_fallback.is_some(),
                 next_account_id,
                 next_model_id,
                 next_reasoning,
@@ -276,10 +381,16 @@ impl Scheduler {
         if reset_thread {
             tx.execute("DELETE FROM native_job_runtime WHERE job_id=?1", [job_id])?;
         }
-        let event_message = if let Some((fallback_provider, _, _, _)) = regional_fallback.as_ref() {
+        let event_message = if settings_changed && continue_existing_thread {
+            "任务已按更新后的设置重新加入队列；将续用原 Agent 线程".into()
+        } else if settings_changed {
+            "任务已按更新后的服务商设置重新加入队列；将创建新线程".into()
+        } else if let Some((fallback_provider, _, _, _)) = regional_fallback.as_ref() {
             format!("任务已重新加入队列；OpenAI 地区限制后改用 {fallback_provider} 新线程")
         } else if provider_route_mismatch {
             format!("任务已重新加入队列；已丢弃错连 OpenAI 的旧线程并使用 {provider_id} 新线程")
+        } else if repair_error.is_some() {
+            "任务已重新加入队列；将沿用原线程定向修复已有检索结果".into()
         } else if reuse_output {
             "任务已重新加入队列；将直接校验并导入已有结果".into()
         } else {
@@ -299,6 +410,10 @@ impl Scheduler {
                     "modelId":snapshot.2,
                 })),
                 "providerRouteMismatch":provider_route_mismatch,
+                "promptChanged":prompt_changed,
+                "modelChanged":model_changed,
+                "resultLimitChanged":result_limit_changed,
+                "continueExistingThread":continue_existing_thread,
             }),
         )?;
         tx.commit()?;
@@ -370,16 +485,34 @@ impl Scheduler {
     }
 
     async fn execute_job(&self, job: JobSummary) {
+        let identity = match db::connect(&self.db_path).and_then(|conn| {
+            Ok(ExecutionIdentity { job_id: job.id.clone(), worker_id: self.worker_id.clone(),
+                attempt: conn.query_row("SELECT attempt FROM native_jobs WHERE id=?1 AND status='running' AND lease_owner=?2",
+                    params![job.id,self.worker_id], |r| r.get(0))? })
+        }) {
+            Ok(identity) => identity,
+            Err(_) => return, // A cancelled/reclaimed claim must not finish another execution.
+        };
+        EXECUTION.scope(identity, self.execute_claimed_job(job)).await;
+    }
+
+    async fn execute_claimed_job(&self, job: JobSummary) {
         let result = match load_timeout_seconds(&self.db_path, &job.id) {
             Ok(timeout_seconds) => {
                 let run = self.execute_job_inner(&job);
                 let deadline = tokio::time::sleep(Duration::from_secs(timeout_seconds));
                 let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+                let mut cancellation = tokio::time::interval(Duration::from_millis(250));
                 heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 tokio::pin!(run);
                 tokio::pin!(deadline);
                 loop {
                     tokio::select! {
+                        _ = cancellation.tick() => {
+                            if let Err(error) = db::connect(&self.db_path).and_then(|conn| ensure_can_publish(&conn)) {
+                                break Err(error);
+                            }
+                        }
                         outcome = &mut run => break outcome,
                         _ = &mut deadline => {
                             if let Ok(Some((thread_id, turn_id))) = load_runtime_checkpoint(&self.db_path, &job.id) {
@@ -403,7 +536,16 @@ impl Scheduler {
             Err(error) => Err(error),
         };
         let finish_result = match result {
-            Ok(result) => finish_job(&self.db_path, &job.id, "needs_review", "执行完成，请审核结果", Some(result), None),
+            Ok(result) => {
+                let message = result.pointer("/businessResult/summary").and_then(Value::as_str)
+                    .unwrap_or("执行完成，请审核结果").to_owned();
+                finish_job(&self.db_path, &job.id, "needs_review", &message, Some(result), None)
+            },
+            Err(error) if error.is::<materials::UnchangedMaterial>() => {
+                let message = error.to_string();
+                finish_job(&self.db_path, &job.id, "needs_review", &message,
+                    Some(json!({"revisionOutcome":"unchanged","summary":message})), None)
+            },
             Err(error) if error.to_string() == "cancelled" => {
                 finish_job(&self.db_path, &job.id, "cancelled", "已取消", None, None)
             }
@@ -452,29 +594,24 @@ impl Scheduler {
             .get("_repairExistingOutputError")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        if payload.get("_reuseExistingOutput").and_then(Value::as_bool) == Some(true) {
+        if !is_search_job && payload.get("_reuseExistingOutput").and_then(Value::as_bool) == Some(true) {
             let result = self.import_existing_output(job, &payload, &workspace).await?;
             clear_output_retry_flags(&self.db_path, &job.id)?;
             return Ok(result)
         }
+        // Validate/reuse a revision's original input before clearing an old
+        // proposal. A changed model or prompt is not consent to rebase on edits
+        // the user saved after this task started.
+        let prepared_revision = if is_revision_job(&job.job_type) {
+            Some(prepare_revision_for_run(&self.paths,&workspace,job,&payload)?)
+        } else { None };
         let output = workspace.join("output");
-        if output.exists() && repair_existing_output_error.is_none() {
+        if !is_search_job && output.exists() && repair_existing_output_error.is_none() {
             std::fs::remove_dir_all(&output)?;
         }
         update_progress(&self.db_path, &job.id, 4, "正在准备独立任务工作区")?;
-        let (contract, revision_base_sha256) = if matches!(job.job_type.as_str(), "revision_request" | "material_revision") {
-            let target_id = job.target_id.as_deref().context("材料修订缺少联系人 ID")?;
-            let artifact_type = payload
-                .get("artifactType")
-                .and_then(Value::as_str)
-                .context("材料修订缺少材料类型")?;
-            let prepared = materials::prepare_revision_workspace(
-                &self.paths,
-                &workspace,
-                target_id,
-                artifact_type,
-                payload.get("instruction").and_then(Value::as_str),
-            )?;
+        let (contract, revision_base_sha256) = if let Some(prepared) = prepared_revision {
+            std::fs::create_dir_all(&output)?;
             persist_revision_base_sha256(&self.db_path, &job.id, &prepared.base_sha256)?;
             (prepared.prompt_suffix, Some(prepared.base_sha256))
         } else {
@@ -495,59 +632,13 @@ impl Scheduler {
             ],
             |row| row.get(0),
         ).context("任务快照引用的模型不存在")?;
-        let job_attempt = load_job_attempt(&self.db_path, &job.id)?;
-        let resume_for_finalization = is_search_job
-            && job_attempt > 0
-            && job.thread_id.is_some()
-            && !has_reusable_output(&self.paths, &job.id, &job.job_type);
-        let mut finalization_turns = usize::from(resume_for_finalization);
-        let initial_prompt = if let Some(error) = repair_existing_output_error.as_deref() {
-            update_activity(&self.db_path, &job.id, "正在按本地两页预检结果定向修复 CV")?;
-            self.emit_changed();
-            search_result_repair_prompt(error)
-        } else if resume_for_finalization {
-            self.compact_search_thread(job, job.thread_id.as_deref().context("收尾任务缺少原线程 ID")?).await?;
-            let message = format!(
-                "原线程已有检索证据，正在执行结构化收尾（{finalization_turns}/{MAX_SEARCH_FINALIZATION_TURNS}）"
-            );
-            update_activity(&self.db_path, &job.id, &message)?;
-            self.emit_changed();
-            search_finalization_prompt(finalization_turns, MAX_SEARCH_FINALIZATION_TURNS)
-        } else {
-            format!("{prompt}{contract}")
-        };
-        let mut result = self.run_codex_turn(
-            job,
-            &workspace,
-            &model_slug,
-            initial_prompt,
-            job.thread_id.clone(),
-        ).await?;
-
-        while is_search_job
-            && !has_reusable_output(&self.paths, &job.id, &job.job_type)
-            && finalization_turns < MAX_SEARCH_FINALIZATION_TURNS
-        {
-            finalization_turns += 1;
-            self.compact_search_thread(job, &result.thread_id).await?;
-            let message = format!(
-                "模型已结束检索但尚未交付结果，正在自动收尾（{finalization_turns}/{MAX_SEARCH_FINALIZATION_TURNS}）"
-            );
-            update_activity(&self.db_path, &job.id, &message)?;
-            self.emit_changed();
-            result = self.run_codex_turn(
-                job,
-                &workspace,
-                &model_slug,
-                search_finalization_prompt(finalization_turns, MAX_SEARCH_FINALIZATION_TURNS),
-                Some(result.thread_id.clone()),
-            ).await?;
+        if is_search_job {
+            return self.execute_search_pipeline(job, &payload, &workspace, &model_slug, prompt, &contract).await;
         }
-        if is_search_job && !has_reusable_output(&self.paths, &job.id, &job.job_type) {
-            bail!(
-                "模型连续结束 turn，但没有生成 output/search-results.json；该模型或 Responses API 在长工具链后未完成结构化结果交付"
-            )
-        }
+        let initial_prompt = if payload.get("_resumeWithUpdatedSettings").and_then(Value::as_bool) == Some(true) {
+            updated_thread_prompt(prompt, &contract, &job.job_type, &payload)?
+        } else { format!("{prompt}{contract}") };
+        let result = self.run_codex_turn(job,&workspace,&model_slug,initial_prompt,job.thread_id.clone()).await?;
         let mut output_result = json!({
             "threadId":result.thread_id,
             "turnId":result.turn_id,
@@ -555,47 +646,91 @@ impl Scheduler {
         });
         if matches!(job.job_type.as_str(), "revision_request" | "material_revision") {
             update_progress(&self.db_path, &job.id, 92, "正在校验并保存修订版本")?;
-            let target_id = job.target_id.as_deref().context("材料修订缺少联系人 ID")?;
-            let artifact_type = payload.get("artifactType").and_then(Value::as_str).context("材料修订缺少材料类型")?;
             let base_sha256 = revision_base_sha256.as_deref().context("材料修订缺少基线 SHA-256")?;
-            let revision = materials::apply_agent_revision(
-                &self.paths,
-                &workspace,
-                target_id,
-                artifact_type,
-                base_sha256,
-                &job.id,
-                &job.provider_id,
-                job.model_id.as_deref(),
-                job.reasoning.as_deref(),
-                payload.get("instruction").and_then(Value::as_str),
-            )?;
-            output_result["revision"] = serde_json::to_value(revision)?;
-            if artifact_type == "cv_data" {
-                update_progress(&self.db_path, &job.id, 96, "正在用内置 Typst 重新生成 PDF")?;
-                match typst::generate_cv(&self.paths, target_id).await {
-                    Ok(result) => output_result["typst"] = serde_json::to_value(result)?,
-                    Err(error) => output_result["typstWarning"] = Value::String(format!("修订已保存，PDF 待重新生成：{error:#}")),
-                }
-            } else if artifact_type == "cover_letter_text" {
-                update_progress(&self.db_path, &job.id, 96, "正在重新排版 Cover Letter PDF")?;
-                match crate::cover_letter::regenerate_from_text(&self.paths, target_id).await {
-                    Ok(result) => output_result["coverLetter"] = serde_json::to_value(result)?,
-                    Err(error) => output_result["coverLetterWarning"] = Value::String(format!("正文修订已保存，Cover Letter PDF 待重新生成：{error:#}")),
-                }
-            }
+            let applied = self.apply_revision_with_repair(job,&payload,&workspace,base_sha256).await?;
+            output_result.as_object_mut().unwrap().extend(applied.as_object().unwrap().clone());
         } else {
             update_progress(&self.db_path, &job.id, 92, "正在校验并导入业务结果")?;
             output_result["businessResult"] = workflows::import_job_result(
-                &self.paths,
-                job,
-                &payload,
-                &workspace,
+                &self.paths, job, &payload, &workspace,
             ).await?;
         }
         update_progress(&self.db_path, &job.id, 100, "Codex 已完成，等待审核")?;
         clear_output_retry_flags(&self.db_path, &job.id)?;
         Ok(output_result)
+    }
+
+    async fn execute_search_pipeline(
+        &self, job: &JobSummary, payload: &Value, workspace: &Path,
+        model: &str, prompt: &str, contract: &str,
+    ) -> Result<Value> {
+        let mut thread = job.thread_id.clone();
+        let mut last_turn = None;
+        let changed = payload.get("_resumeWithUpdatedSettings").and_then(Value::as_bool) == Some(true);
+        if changed || !has_reusable_output(&self.paths, &job.id, &job.job_type) {
+            update_activity(&self.db_path, &job.id, "正在读取上传 CV 并核验机会；本阶段先保存机会，不生成材料")?;
+            self.emit_changed();
+            let instruction = format!(
+                "{prompt}{contract}{}\nExecution phase: DISCOVERY ONLY. This phase overrides any request above to produce materials immediately. Read source CV and infer the candidate context; preserve uncertainty. Save verified opportunities and contacts to output/search-results.json, OMIT materials, then end the turn. On resume reuse existing evidence and files. Do not overwrite existing material packages.",
+                result_limit_instruction(&job.job_type,payload)?,
+            );
+            let result = self.run_codex_turn(job,workspace,model,instruction,thread).await?;
+            thread = Some(result.thread_id);
+            last_turn = result.turn_id;
+        }
+        for attempt in 1..=MAX_SEARCH_FINALIZATION_TURNS {
+            if has_reusable_output(&self.paths,&job.id,&job.job_type) { break; }
+            update_activity(&self.db_path,&job.id,"正在整理已找到的机会为可保存结果")?;
+            let result = self.run_codex_turn(job,workspace,model,
+                format!("{}\nDiscovery phase only: omit materials; preserve source-backed contacts and save now.",search_finalization_prompt(attempt,MAX_SEARCH_FINALIZATION_TURNS)),
+                thread.clone()).await?;
+            thread = Some(result.thread_id); last_turn = result.turn_id;
+        }
+        let mut business = match workflows::import_job_result(&self.paths,job,payload,workspace).await {
+            Ok(value) => value,
+            Err(error) if error.downcast_ref::<workflows::SearchContractError>().is_some() => {
+                update_activity(&self.db_path,&job.id,"正在修正搜索结果数据结构，不重新检索")?;
+                let result = self.run_codex_turn(job,workspace,model,
+                    format!("Repair only the JSON structure in output/search-results.json according to CAREEROS_TASK.json. Error: {error}. Keep verified opportunities, omit unfinished materials, do not browse or invent facts."),
+                    thread.clone()).await?;
+                thread = Some(result.thread_id); last_turn = result.turn_id;
+                workflows::import_job_result(&self.paths,job,payload,workspace).await?
+            },
+            Err(error) => return Err(error),
+        };
+        self.emit_changed(); // Cards exist before any PDF is attempted.
+        for attempt in 1..=2 {
+            let pending = business.get("pendingMaterials").and_then(Value::as_array).cloned().unwrap_or_default();
+            if pending.is_empty() { break; }
+            let activity = format!("已保存机会；正在完成 {} 份待处理材料（{attempt}/2）",pending.len());
+            update_activity(&self.db_path,&job.id,&activity)?;
+            self.emit_changed();
+            let instruction = format!(
+                "Continue this same thread. Discovery has already been saved. Complete ONLY pending materials in output/search-results.json; preserve all other opportunities and existing files. Do not restart broad search. Read CAREEROS_TASK.json (including cvPolicy, cvCustomization, language and source CV). Use structured fitScores, flexible Markdown headings and source-backed facts. References are optional and source-based. Pending items with local validation details: {}. If evidence is missing, state uncertainty; never fabricate details to satisfy formatting. Only use narrowly targeted institutional/Scholar/publisher lookup for a genuine evidence gap, not for layout repairs. Save the JSON and end this turn.",
+                serde_json::to_string(&pending)?,
+            );
+            match self.run_codex_turn(job,workspace,model,instruction,thread.clone()).await {
+                Ok(result) => {
+                    thread = Some(result.thread_id); last_turn = result.turn_id;
+                    match workflows::import_job_result(&self.paths,job,payload,workspace).await {
+                        Ok(value) => business = value,
+                        Err(error) => {
+                            business["generationError"] = json!(format!("{error:#}"));
+                            business["summary"] = json!("机会已保存；材料结果未能导入，可继续原任务。");
+                            break;
+                        },
+                    }
+                },
+                Err(error) => {
+                    if error.to_string() == "cancelled" { return Err(error); }
+                    business["generationError"] = json!(format!("{error:#}"));
+                    business["summary"] = json!("机会已保存；模型在材料阶段中断，可继续原任务。");
+                    break;
+                },
+            }
+        }
+        clear_output_retry_flags(&self.db_path,&job.id)?;
+        Ok(json!({"threadId":thread,"turnId":last_turn,"businessResult":business}))
     }
 
     async fn run_codex_turn(
@@ -664,43 +799,46 @@ impl Scheduler {
         Ok(result)
     }
 
-    async fn compact_search_thread(&self, job: &JobSummary, thread_id: &str) -> Result<()> {
-        update_activity(&self.db_path, &job.id, "检索上下文过长，正在压缩后继续")?;
-        self.emit_changed();
-        self.codex
-            .compact_thread(&job.provider_id, job.account_id.as_deref(), thread_id)
-            .await
-            .context("无法压缩完整检索线程；该 Responses API 可能不支持 Codex 上下文压缩")?;
-        update_activity(&self.db_path, &job.id, "上下文已压缩，正在生成结构化结果")?;
-        self.emit_changed();
-        Ok(())
+    async fn apply_revision_with_repair(&self, job: &JobSummary, payload: &Value, workspace: &Path, base: &str) -> Result<Value> {
+        let target = job.target_id.as_deref().context("材料修订缺少联系人")?;
+        let artifact = payload.get("artifactType").and_then(Value::as_str).context("材料修订缺少材料类型")?;
+        with_bounded_revision_repairs(|| async {
+            if artifact == "cv_data" {
+                let applied = materials::apply_agent_cv_revision(&self.paths,workspace,target,artifact,base,&job.id,
+                    &job.provider_id,job.model_id.as_deref(),job.reasoning.as_deref(),revision_instruction(payload)).await?;
+                Ok(json!({"revision":applied.revision,"typst":applied.generation}))
+            } else {
+                let revision = materials::apply_agent_revision(&self.paths,workspace,target,artifact,base,&job.id,
+                    &job.provider_id,job.model_id.as_deref(),job.reasoning.as_deref(),revision_instruction(payload)).await?;
+                Ok(json!({"revision":revision}))
+            }
+        }, |error, repair_count| async move {
+            // Recheck immediately before spending a repair turn. Never rebase on a
+            // newer material, even when the original error was malformed output.
+            let live = materials::verify_agent_revision_base(&self.paths,target,artifact,base)?;
+            let checkpoint = load_runtime_checkpoint(&self.db_path,&job.id)?;
+            let thread = checkpoint.map(|v|v.0).or_else(||job.thread_id.clone())
+                .context("材料输出需要修复，但原会话不可用；请重新发起修订，原输出已保留")?;
+            if artifact == "cv_data" { materials::refresh_revision_cv_contract(&self.paths,workspace)?; }
+            materials::preserve_revision_output(workspace,&live)?;
+            let model:String=db::connect(&self.db_path)?.query_row("SELECT model_slug FROM provider_models WHERE id=?1 AND provider_id=?2",
+                params![job.model_id,job.provider_id],|r|r.get(0))?;
+            update_activity(&self.db_path,&job.id,&format!("材料输出未通过：{error}；正在原会话修复（{repair_count}/2）"))?;
+            self.emit_changed();
+            let prompt = if error.is::<crate::typst::CvLayoutError>() { cv_layout_repair_prompt(&error) }
+                else { revision_output_repair_prompt(&error) };
+            self.run_codex_turn(job,workspace,&model,prompt,Some(thread)).await?;
+            Ok(())
+        }).await
     }
 
     async fn import_existing_output(&self, job:&JobSummary, payload:&Value, workspace:&Path) -> Result<Value> {
         update_progress(&self.db_path, &job.id, 92, "正在重新校验并导入已有结果")?;
         let mut output_result = json!({"recoveredExistingOutput":true});
         if matches!(job.job_type.as_str(), "revision_request" | "material_revision") {
-            let target_id = job.target_id.as_deref().context("材料修订缺少联系人 ID")?;
-            let artifact_type = payload.get("artifactType").and_then(Value::as_str).context("材料修订缺少材料类型")?;
             let base_sha256 = revision_base_sha256(payload)?;
-            let revision = materials::apply_agent_revision(
-                &self.paths,workspace,target_id,artifact_type,&base_sha256,&job.id,&job.provider_id,
-                job.model_id.as_deref(),job.reasoning.as_deref(),payload.get("instruction").and_then(Value::as_str),
-            )?;
-            output_result["revision"] = serde_json::to_value(revision)?;
-            if artifact_type == "cv_data" {
-                update_progress(&self.db_path, &job.id, 96, "正在用内置 Typst 重新生成 PDF")?;
-                match typst::generate_cv(&self.paths,target_id).await {
-                    Ok(result) => output_result["typst"] = serde_json::to_value(result)?,
-                    Err(error) => output_result["typstWarning"] = Value::String(format!("修订已保存，PDF 待重新生成：{error:#}")),
-                }
-            } else if artifact_type == "cover_letter_text" {
-                update_progress(&self.db_path, &job.id, 96, "正在重新排版 Cover Letter PDF")?;
-                match crate::cover_letter::regenerate_from_text(&self.paths,target_id).await {
-                    Ok(result) => output_result["coverLetter"] = serde_json::to_value(result)?,
-                    Err(error) => output_result["coverLetterWarning"] = Value::String(format!("正文修订已保存，Cover Letter PDF 待重新生成：{error:#}")),
-                }
-            }
+            let applied = self.apply_revision_with_repair(job,payload,workspace,&base_sha256).await?;
+            output_result.as_object_mut().unwrap().extend(applied.as_object().unwrap().clone());
         } else {
             output_result["businessResult"] = workflows::import_job_result(&self.paths,job,payload,workspace).await?;
         }
@@ -782,16 +920,78 @@ fn resolve_regional_fallback_snapshot(
         .transpose()
 }
 
+fn cv_layout_repair_allowed(error: &anyhow::Error, repairs: usize) -> bool {
+    repairs < 2 && error.downcast_ref::<crate::typst::CvLayoutError>().is_some()
+}
+
+async fn with_bounded_revision_repairs<T, A, AF, R, RF>(mut apply: A, mut repair: R) -> Result<T>
+where
+    A: FnMut() -> AF,
+    AF: std::future::Future<Output = Result<T>>,
+    R: FnMut(anyhow::Error, usize) -> RF,
+    RF: std::future::Future<Output = Result<()>>,
+{
+    for repairs in 0..=2 {
+        match apply().await {
+            Ok(value) => return Ok(value),
+            Err(error) if cv_layout_repair_allowed(&error, repairs)
+                || (repairs < 2 && error.is::<materials::InvalidRevisionOutput>()) => {
+                repair(error, repairs + 1).await?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the last attempt always returns its result")
+}
+
+fn revision_output_repair_prompt(error: &anyhow::Error) -> String {
+    format!("Continue this SAME material revision thread. Local validation could not publish your output: {error:#}. Read CAREEROS_TASK.json and repair ONLY its replacementFile and changeSetFile under output/. Keep the unchanged input/current baseline and satisfy the current userInstruction. Write the complete replacement and valid change-set JSON, including a nonempty summary, with the exact schema and filenames in the contract. Do not browse, restart research, modify input/profile/template, or bypass validation. Preserve source-backed facts and unrelated content. No section or entry count is locked; ignore legacy preserveStructure/cv_structure.json. End this turn after saving both output files for local validation.")
+}
+
+fn is_revision_job(job_type: &str) -> bool {
+    matches!(job_type, "material_revision" | "revision_request")
+}
+
+fn revision_instruction(payload: &Value) -> Option<&str> {
+    payload.get("instruction").and_then(Value::as_str).filter(|value| !value.trim().is_empty())
+        .or_else(|| payload.get("prompt").and_then(Value::as_str))
+}
+
+fn prepare_revision_for_run(paths: &AppPaths, workspace: &Path, job: &JobSummary, payload: &Value) -> Result<materials::PreparedRevisionWorkspace> {
+    let target = job.target_id.as_deref().context("材料修订缺少联系人 ID")?;
+    let artifact = payload.get("artifactType").and_then(Value::as_str).context("材料修订缺少材料类型")?;
+    if payload.get("_baseSha256").is_some() || workspace.join("CAREEROS_TASK.json").exists() || workspace.join("input/current").exists() {
+        let base = revision_base_sha256(payload)?;
+        materials::resume_revision_workspace(paths,workspace,target,artifact,revision_instruction(payload),&base)
+    } else {
+        materials::prepare_revision_workspace(paths,workspace,target,artifact,revision_instruction(payload))
+    }
+}
+
+fn has_saved_revision_baseline(paths: &AppPaths, job_id: &str, job_type: &str, payload: &Value) -> bool {
+    let workspace = paths.workspaces.join(job_id);
+    is_revision_job(job_type)
+        && revision_base_sha256(payload).is_ok_and(|value| !value.is_empty())
+        && workspace.join("CAREEROS_TASK.json").is_file()
+        && workspace.join("input/current").is_dir()
+}
+
+fn cv_layout_repair_prompt(error: &anyhow::Error) -> String {
+    format!("Continue this SAME CV revision thread. The proposed output was NOT published because of local layout validation: {error:#}. Read refreshed CAREEROS_TASK.json: cvCustomization.pageCount is authoritative, including legacy fixed-page settings. Repair ONLY output/cv-data.json and output/change-set.json against the unchanged input/current baseline. Do not browse or redo research. For an almost empty overflow page, tighten repetition and redistribute existing source-backed details; do not add filler to fill another page. Preserve source references unless the user excluded them. Never shrink typography, invent skills/achievements, modify input/profile/template, or bypass validation. Do not freeze section or entry counts. Honor the user request and ignore legacy preserveStructure/cv_structure.json locks. Write the complete replacement and change summary, then finish for local validation.")
+}
+
 fn revision_base_sha256(payload: &Value) -> Result<String> {
     payload
         .get("_baseSha256")
         .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
         .context("材料修订缺少可信基线 SHA-256，请重新发起任务")
 }
 
 fn persist_revision_base_sha256(path: &Path, job_id: &str, base_sha256: &str) -> Result<()> {
-    let conn = db::connect(path)?;
+    let database_conn = db::connect(path)?;
+    let conn = db::publication_transaction(&database_conn)?;
     let raw: String = conn.query_row(
         "SELECT payload_json FROM native_jobs WHERE id=?1",
         [job_id],
@@ -807,6 +1007,7 @@ fn persist_revision_base_sha256(path: &Path, job_id: &str, base_sha256: &str) ->
     if changed != 1 {
         bail!("材料修订任务已不在运行状态，不能记录基线 SHA-256")
     }
+    conn.commit()?;
     Ok(())
 }
 
@@ -832,17 +1033,61 @@ fn is_search_job_type(job_type: &str) -> bool {
     matches!(job_type, "full_run" | "full_search" | "research_pi")
 }
 
-fn is_cv_preflight_error(error: &str) -> bool {
-    error.contains("目标定制 CV 未通过两页预检")
+fn supports_result_limit(job_type: &str) -> bool {
+    matches!(job_type, "full_search" | "internship_search")
 }
 
-fn load_job_attempt(path: &Path, job_id: &str) -> Result<i64> {
-    let conn = db::connect(path)?;
-    Ok(conn.query_row(
-        "SELECT attempt FROM native_jobs WHERE id=?1",
-        [job_id],
-        |row| row.get(0),
-    )?)
+fn validate_result_limit(limit: usize) -> Result<()> {
+    if !(1..=MAX_RESULT_LIMIT).contains(&limit) {
+        bail!("每次最多处理的机会数必须在 1 到 {MAX_RESULT_LIMIT} 之间")
+    }
+    Ok(())
+}
+
+fn result_limit_for_job(job_type: &str, payload: &Value) -> Result<Option<usize>> {
+    if !supports_result_limit(job_type) {
+        return Ok(None);
+    }
+    let limit = match payload.get("maxResults") {
+        None | Some(Value::Null) => DEFAULT_RESULT_LIMIT,
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .context("每次最多处理的机会数必须是整数")?,
+    };
+    validate_result_limit(limit)?;
+    Ok(Some(limit))
+}
+
+fn normalize_result_limit(job_type: &str, payload: &mut Value) -> Result<()> {
+    let Some(limit) = result_limit_for_job(job_type, payload)? else {
+        return Ok(());
+    };
+    payload["maxResults"] = json!(limit);
+    Ok(())
+}
+
+fn result_limit_instruction(job_type: &str, payload: &Value) -> Result<String> {
+    let Some(limit) = result_limit_for_job(job_type, payload)? else {
+        return Ok(String::new());
+    };
+    let instruction = if job_type == "internship_search" {
+        format!(
+            "\n\nConfigured result limit: return and prepare at most {limit} reviewable internship opportunities for this run. Stop once that limit is met; do not continue broad discovery solely to find more results."
+        )
+    } else {
+        format!(
+            "\n\nConfigured result limit: return and prepare at most {limit} complete reviewable opportunity and material package(s) for this run. Stop once that limit is met; do not continue broad discovery solely to find more results."
+        )
+    };
+    Ok(instruction)
+}
+
+fn updated_thread_prompt(prompt: &str, contract: &str, job_type: &str, payload: &Value) -> Result<String> {
+    Ok(format!(
+        "Continue the existing task in this thread with the updated settings below. Preserve and reuse all already verified evidence and prior analysis. Do not restart broad research; if sufficient evidence already exists, proceed directly to the required structured output.\n\nCurrent task instruction:\n{prompt}{contract}{}",
+        result_limit_instruction(job_type, payload)?,
+    ))
 }
 
 fn search_finalization_prompt(attempt: usize, total: usize) -> String {
@@ -851,36 +1096,44 @@ fn search_finalization_prompt(attempt: usize, total: usize) -> String {
 This is finalization turn {attempt} of {total}. Do not call web search, open URLs, or gather any new evidence. \
 Use only the evidence already present in this thread and workspace. Finish the task now: write \
 output/search-results.json so it conforms exactly to resultContract in CAREEROS_TASK.json, include only \
-evidence-supported candidates, create all required reviewable package fields, and validate the JSON file before ending. \
+evidence-supported candidates, omit unfinished materials during discovery, and validate the JSON file before ending. \
 The turn is not complete until output/search-results.json exists and is valid."
     )
 }
 
-fn search_result_repair_prompt(error: &str) -> String {
-    format!(
-        "The existing output/search-results.json passed research finalization but failed the local Typst CV preflight:\n{error}\n\n\
-Do not call web search, open URLs, or gather new evidence. Repair the existing JSON file in place using only its verified content. \
-For every failing contact, preserve target-specific prioritization while making the CV exactly two well-filled pages: keep 36 to 38 distinct \
-high-value entries, keep no more than 8 sections where feasible by merging low-priority sections, shorten verbose bodies instead of shrinking typography, \
-keep every entry key as a short label of preferably 18 characters or fewer so the key column does not wrap, and remove only the least relevant evidence. \
-Keep publications/research outputs and patents before projects, preserve each contact's cvData.authorName so the renderer can bold the candidate's verified author form, \
-and preserve verified career-stage wording. Do not change fit scores, sources, or facts to evade validation. Validate output/search-results.json before ending."
-    )
-}
-
 fn clear_output_retry_flags(path:&Path, job_id:&str) -> Result<()> {
-    let conn = db::connect(path)?;
+    let database_conn = db::connect(path)?;
+    let conn = db::publication_transaction(&database_conn)?;
     let raw:String = conn.query_row("SELECT payload_json FROM native_jobs WHERE id=?1",[job_id],|row|row.get(0))?;
     let mut payload:Value = serde_json::from_str(&raw)?;
     if let Some(object) = payload.as_object_mut() {
         object.remove("_reuseExistingOutput");
         object.remove("_repairExistingOutputError");
+        object.remove("_resumeWithUpdatedSettings");
     }
     conn.execute("UPDATE native_jobs SET payload_json=?2 WHERE id=?1",params![job_id,serde_json::to_string(&payload)?])?;
+    conn.commit()?;
     Ok(())
 }
 
+fn active_duplicate(conn: &rusqlite::Connection, job_type: &str, payload: &Value, active_key: Option<&str>, exclude_id: Option<&str>) -> Result<Option<String>> {
+    let opportunity_id = if job_type == "full_search" { payload.get("opportunityId").and_then(Value::as_str) } else { None };
+    Ok(conn.query_row(
+        "SELECT id FROM native_jobs
+         WHERE status IN ('queued','running') AND (?3 IS NULL OR id<>?3) AND
+           (active_key=?1 OR (?2 IS NOT NULL AND job_type='full_search'
+             AND json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.opportunityId')=?2))
+         ORDER BY created_at,id LIMIT 1",
+        params![active_key, opportunity_id, exclude_id], |row| row.get(0),
+    ).optional()?)
+}
+
 fn active_key_for(request: &EnqueueRequest, payload: &Value) -> Result<Option<String>> {
+    if request.job_type == "full_search" {
+        if let Some(id) = payload.get("opportunityId").and_then(Value::as_str) {
+            return Ok(Some(format!("continue_opportunity:{id}")));
+        }
+    }
     let job_type = match request.job_type.as_str() {
         "full_run" => "full_search",
         "revision_request" => "material_revision",
@@ -991,12 +1244,19 @@ fn resolve_model_snapshot(
 fn recover_interrupted_jobs(path: &Path) -> Result<()> {
     let conn = db::connect(path)?;
     conn.execute(
+        "UPDATE native_jobs SET status='cancelled',message='已取消',
+          finished_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),lease_owner=NULL,lease_expires_at=NULL
+         WHERE cancel_requested=1 AND status IN ('running','queued')
+           AND (status='queued' OR lease_expires_at IS NULL OR lease_expires_at<=strftime('%Y-%m-%dT%H:%M:%SZ','now'))", [],
+    )?;
+    conn.execute(
         "UPDATE native_jobs
          SET status='queued', message='应用重启，正在恢复原线程',
              started_at=NULL, timeout_at=NULL, heartbeat_at=NULL,
              lease_owner=NULL, lease_expires_at=NULL,
              updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
-         WHERE status='running'",
+         WHERE status='running' AND cancel_requested=0
+           AND (lease_expires_at IS NULL OR lease_expires_at<=strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
         [],
     )?;
     Ok(())
@@ -1010,7 +1270,7 @@ fn reclaim_expired_jobs(path: &Path, current_worker_id: &str) -> Result<usize> {
             "SELECT id,
                     CASE WHEN timeout_at IS NOT NULL
                               AND timeout_at<=strftime('%Y-%m-%dT%H:%M:%SZ','now')
-                         THEN 1 ELSE 0 END
+                         THEN 1 ELSE 0 END, cancel_requested
              FROM native_jobs
              WHERE status='running'
                AND lease_expires_at IS NOT NULL
@@ -1018,11 +1278,16 @@ fn reclaim_expired_jobs(path: &Path, current_worker_id: &str) -> Result<usize> {
                AND (lease_owner IS NULL OR lease_owner<>?1)",
         )?;
         statement.query_map([current_worker_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0, row.get::<_, i64>(2)? != 0))
         })?.collect::<std::result::Result<Vec<_>, _>>()?
     };
-    for (job_id, timed_out) in &expired {
-        if *timed_out {
+    for (job_id, timed_out, cancelled) in &expired {
+        if *cancelled {
+            tx.execute("UPDATE native_jobs SET status='cancelled',message='已取消',
+                finished_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),heartbeat_at=NULL,lease_owner=NULL,lease_expires_at=NULL,
+                updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1 AND status='running'",[job_id])?;
+            insert_event(&tx,job_id,"cancelled",None,"已取消",json!({}))?;
+        } else if *timed_out {
             tx.execute(
                 "UPDATE native_jobs
                  SET status='failed',progress=100,message='失联任务已超时',
@@ -1097,6 +1362,8 @@ fn claim_next_job(path: &Path, worker_id: &str) -> Result<Option<JobSummary>> {
                 provider_id: row.get(6)?, account_id: row.get(7)?, model_id: row.get(8)?, reasoning: row.get(9)?,
                 thread_id: row.get(10)?, error: row.get(11)?, created_at: row.get(12)?,
                 started_at: row.get(13)?, finished_at: row.get(14)?,
+                request_summary: None, prompt: None, max_results: None,
+                events: Vec::new(),
             })
         },
     )?;
@@ -1127,7 +1394,8 @@ fn load_timeout_seconds(path: &Path, job_id: &str) -> Result<u64> {
 }
 
 fn refresh_job_lease(path: &Path, job_id: &str, worker_id: &str) -> Result<()> {
-    let conn = db::connect(path)?;
+    let database_conn = db::connect(path)?;
+    let conn = db::publication_transaction(&database_conn)?;
     let changed = conn.execute(
         "UPDATE native_jobs
          SET heartbeat_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),
@@ -1139,22 +1407,26 @@ fn refresh_job_lease(path: &Path, job_id: &str, worker_id: &str) -> Result<()> {
     if changed != 1 {
         bail!("任务租约已失效，停止旧执行器")
     }
+    conn.commit()?;
     Ok(())
 }
 
 fn update_progress(path: &Path, job_id: &str, progress: i64, message: &str) -> Result<()> {
-    let conn = db::connect(path)?;
+    let database_conn = db::connect(path)?;
+    let conn = db::publication_transaction(&database_conn)?;
     conn.execute(
         "UPDATE native_jobs SET progress=?2,message=?3,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
          WHERE id=?1 AND status='running'",
         params![job_id, progress.clamp(0, 100), message],
     )?;
     insert_event(&conn, job_id, "progress", Some(progress), message, json!({}))?;
+    conn.commit()?;
     Ok(())
 }
 
 fn update_activity(path: &Path, job_id: &str, message: &str) -> Result<()> {
-    let conn = db::connect(path)?;
+    let database_conn = db::connect(path)?;
+    let conn = db::publication_transaction(&database_conn)?;
     let changed = conn.execute(
         "UPDATE native_jobs SET message=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
          WHERE id=?1 AND status='running' AND COALESCE(message,'')<>?2",
@@ -1163,6 +1435,7 @@ fn update_activity(path: &Path, job_id: &str, message: &str) -> Result<()> {
     if changed == 1 {
         insert_event(&conn, job_id, "activity", None, message, json!({}))?;
     }
+    conn.commit()?;
     Ok(())
 }
 
@@ -1173,7 +1446,7 @@ fn save_runtime_checkpoint(
     turn_id: Option<&str>,
 ) -> Result<()> {
     let conn = db::connect(path)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = db::publication_transaction(&conn)?;
     tx.execute(
         "UPDATE native_jobs SET thread_id=?2,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1",
         params![job_id, thread_id],
@@ -1209,20 +1482,25 @@ fn finish_job(
     result: Option<Value>,
     error: Option<String>,
 ) -> Result<()> {
-    let conn = db::connect(path)?;
-    let changed = conn.execute(
+    let mut conn = db::connect(path)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let identity = EXECUTION.try_with(Clone::clone).context("任务完成缺少执行身份")?;
+    let cancelled: bool = tx.query_row("SELECT cancel_requested<>0 FROM native_jobs WHERE id=?1", [job_id], |r| r.get(0))?;
+    let (status, message) = if cancelled { ("cancelled", "已取消；此前已保存的结果保留") } else { (status, message) };
+    let changed = tx.execute(
         "UPDATE native_jobs
          SET status=?2, progress=CASE WHEN ?2 IN ('needs_review','completed','failed','cancelled') THEN 100 ELSE progress END,
              message=?3, result_json=?4, error=?5,
              finished_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),
              heartbeat_at=NULL,lease_owner=NULL,lease_expires_at=NULL,
              updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
-         WHERE id=?1 AND status='running'",
-        params![job_id, status, message, result.map(|value| value.to_string()), error],
+         WHERE id=?1 AND status='running' AND lease_owner=?6 AND attempt=?7",
+        params![job_id, status, message, result.map(|value| value.to_string()), error, identity.worker_id, identity.attempt],
     )?;
     if changed == 1 {
-        insert_event(&conn, job_id, status, Some(100), message, json!({}))?;
+        insert_event(&tx, job_id, status, Some(100), message, json!({}))?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1245,6 +1523,309 @@ fn insert_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn edited_revision_retry_uses_one_instruction_for_contract_and_history() -> Result<()> {
+        for job_type in ["material_revision", "revision_request"] {
+            let temp = tempfile::tempdir()?;
+            let paths = materials::tests::publication_fixture(temp.path())?;
+            let conn = db::connect(&paths.database)?;
+            conn.execute_batch(include_str!("../migrations/0011_scheduler_leases.sql"))?;
+            let scheduler = Scheduler::new(paths.clone(),Arc::new(CodexManager::new(paths.clone())),None);
+            let id = scheduler.enqueue(EnqueueRequest {
+                job_type:job_type.into(),target_type:Some("contact_target".into()),target_id:Some("target".into()),
+                prompt:Some("Revise the email. User request: remove research detail.".into()),
+                payload:Some(json!({"artifactType":"email_en","instruction":"remove research detail"})),
+                provider_id:None,account_id:None,model_id:None,reasoning:None,thread_id:Some("original-thread".into()),
+            })?;
+            conn.execute("UPDATE native_jobs SET status='failed' WHERE id=?1",[&id])?;
+            let instruction = "Keep the research detail and clarify the closing sentence.";
+            scheduler.retry_with_options(RetryJobRequest { job_id:id.clone(),prompt:Some(instruction.into()),
+                provider_id:None,model_id:None,reasoning:None,max_results:None })?;
+            let payload = load_payload(&paths.database,&id)?;
+            assert_eq!(payload["prompt"],instruction);
+            assert_eq!(payload["instruction"],instruction);
+            let workspace = paths.workspaces.join(&id);
+            let prepared = materials::prepare_revision_workspace(&paths,&workspace,"target","email_en",revision_instruction(&payload))?;
+            let contract:Value = serde_json::from_slice(&fs::read(workspace.join("CAREEROS_TASK.json"))?)?;
+            assert_eq!(contract["userInstruction"],instruction);
+            fs::write(workspace.join("output/email.md"),"Dear Professor, I would welcome a discussion of the documented research fit.")?;
+            fs::write(workspace.join("output/change-set.json"),br#"{"summary":"Clarified closing"}"#)?;
+            let applied = materials::apply_agent_revision(&paths,&workspace,"target","email_en",&prepared.base_sha256,
+                &id,"test",None,None,revision_instruction(&payload)).await?;
+            let note:String = conn.query_row("SELECT note FROM artifact_revisions WHERE id=?1",[&applied.revision_id],|r|r.get(0))?;
+            let signal:String = conn.query_row("SELECT signal_json FROM preference_observations WHERE revision_id=?1",[&applied.revision_id],|r|r.get(0))?;
+            assert_eq!(note,instruction);
+            assert_eq!(serde_json::from_str::<Value>(&signal)?["instruction"],instruction);
+        }
+        assert_eq!(revision_instruction(&json!({"prompt":"legacy prompt"})),Some("legacy prompt"));
+        assert_eq!(revision_instruction(&json!({"prompt":"wrapper","instruction":"original requirement"})),Some("original requirement"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn changed_revision_settings_keep_original_input_and_reject_newer_materials() -> Result<()> {
+        for artifact in ["email_en", "cv_data"] {
+            for change in ["prompt", "reasoning", "provider"] {
+                let temp = tempfile::tempdir()?;
+                let paths = materials::tests::publication_fixture(temp.path())?;
+                let conn = db::connect(&paths.database)?;
+                conn.execute_batch(include_str!("../migrations/0011_scheduler_leases.sql"))?;
+                install_deepseek_provider(&paths.database)?;
+                let scheduler = Scheduler::new(paths.clone(),Arc::new(CodexManager::new(paths.clone())),None);
+                let id = scheduler.enqueue(EnqueueRequest {
+                    job_type:"material_revision".into(),target_type:Some("contact_target".into()),target_id:Some("target".into()),
+                    prompt:Some("Improve the source-backed description.".into()),
+                    payload:Some(json!({"artifactType":artifact,"instruction":"Improve the source-backed description."})),
+                    provider_id:None,account_id:None,model_id:None,reasoning:None,thread_id:Some("original-thread".into()),
+                })?;
+                let first = claim_next_job(&paths.database,&scheduler.worker_id)?.context("Initial job not queued")?;
+                let workspace = paths.workspaces.join(&id);
+                fs::create_dir_all(&workspace)?;
+                let original = prepare_revision_for_run(&paths,&workspace,&first,&load_payload(&paths.database,&id)?)?;
+                persist_revision_base_sha256(&paths.database,&id,&original.base_sha256)?;
+                let filename = if artifact == "cv_data" { "cv-data.json" } else { "email.md" };
+                let input_path = workspace.join("input/current").join(filename);
+                let original_input = fs::read(&input_path)?;
+                let original_profile = fs::read(workspace.join("profile/.snapshot-complete"))?;
+                conn.execute("UPDATE native_jobs SET status='failed' WHERE id=?1",[&id])?;
+                scheduler.retry_with_options(RetryJobRequest {
+                    job_id:id.clone(),prompt:(change=="prompt").then(||"Clarify the final sentence instead.".into()),
+                    provider_id:(change=="provider").then(||"deepseek".into()),
+                    model_id:(change=="provider").then(||"deepseek:deepseek-chat".into()),
+                    reasoning:(change=="reasoning").then(||"medium".into()),max_results:None,
+                })?;
+                let mut retry = claim_next_job(&paths.database,&scheduler.worker_id)?.context("Retry not queued")?;
+                let payload = load_payload(&paths.database,&id)?;
+                assert!(payload.get("_reuseExistingOutput").is_none());
+                let resumed = prepare_revision_for_run(&paths,&workspace,&retry,&payload)?;
+                assert_eq!(resumed.base_sha256,original.base_sha256);
+                assert_eq!(fs::read(&input_path)?,original_input);
+                assert_eq!(fs::read(workspace.join("profile/.snapshot-complete"))?,original_profile);
+                let contract:Value = serde_json::from_slice(&fs::read(workspace.join("CAREEROS_TASK.json"))?)?;
+                assert_eq!(contract["baseSha256"],original.base_sha256);
+                assert_eq!(contract["userInstruction"],payload["instruction"]);
+                // Exercise the actual run entry: conflict must stop before output
+                // removal or another Agent call, including after a provider switch.
+                fs::write(workspace.join("output").join(filename),"Previous proposal")?;
+                fs::write(paths.generated.join(filename),"A newer user material version")?;
+                // If the guard regresses, fail model lookup rather than invoking
+                // any real provider from an offline regression fixture.
+                retry.model_id = Some("test-missing-model-must-not-be-resolved".into());
+                let error = scheduler.execute_job_inner(&retry).await.err().context("Changed live base must stop the retry")?;
+                assert!(error.to_string().contains("SHA-256"),"{artifact}/{change}: {error:#}");
+                assert_eq!(fs::read(&input_path)?,original_input);
+                assert_eq!(fs::read_to_string(workspace.join("output").join(filename))?,"Previous proposal");
+                assert_eq!(fs::read_to_string(paths.generated.join(filename))?,"A newer user material version");
+                assert_eq!(load_payload(&paths.database,&id)?["_baseSha256"],original.base_sha256);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn old_revision_without_trusted_hash_and_modified_input_cannot_be_rebased() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = materials::tests::publication_fixture(temp.path())?;
+        let conn = db::connect(&paths.database)?;
+        conn.execute_batch(include_str!("../migrations/0011_scheduler_leases.sql"))?;
+        let scheduler = Scheduler::new(paths.clone(),Arc::new(CodexManager::new(paths.clone())),None);
+        let id = scheduler.enqueue(EnqueueRequest {
+            job_type:"material_revision".into(),target_type:Some("contact_target".into()),target_id:Some("target".into()),
+            prompt:Some("Revise email".into()),payload:Some(json!({"artifactType":"email_en"})),
+            provider_id:None,account_id:None,model_id:None,reasoning:None,thread_id:None,
+        })?;
+        let job = claim_next_job(&paths.database,&scheduler.worker_id)?.context("Job not queued")?;
+        let workspace = paths.workspaces.join(&id);
+        let prepared = materials::prepare_revision_workspace(&paths,&workspace,"target","email_en",None)?;
+        let input = workspace.join("input/current/email.md");
+        let original = fs::read(&input)?;
+        let error = prepare_revision_for_run(&paths,&workspace,&job,&load_payload(&paths.database,&id)?).err().context("Old task without trusted hash must not silently restart")?;
+        assert!(error.to_string().contains("请重新发起任务"));
+        assert_eq!(fs::read(&input)?,original);
+        let payload = json!({"artifactType":"email_en","_baseSha256":prepared.base_sha256,"instruction":"New instruction"});
+        fs::write(&input,"Modified by Agent")?;
+        let error = prepare_revision_for_run(&paths,&workspace,&job,&payload).err().context("Modified original input must not be accepted")?;
+        assert!(error.to_string().contains("SHA-256"));
+        assert_eq!(fs::read(&paths.generated.join("email.md"))?,original);
+        assert_eq!(fs::read_to_string(input)?,"Modified by Agent");
+        Ok(())
+    }
+
+    #[test]
+    fn changed_search_retry_synchronizes_instruction_but_preserves_query_and_facts() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let paths = materials::tests::publication_fixture(temp.path())?;
+        let conn = db::connect(&paths.database)?;
+        conn.execute_batch(include_str!("../migrations/0011_scheduler_leases.sql"))?;
+        let scheduler = Scheduler::new(paths.clone(),Arc::new(CodexManager::new(paths.clone())),None);
+        let facts = json!({"organization":"Original University","title":"Original role"});
+        let id = scheduler.enqueue(EnqueueRequest {
+            job_type:"full_search".into(),target_type:Some("search".into()),target_id:None,
+            prompt:Some("Find the official application route.".into()),
+            payload:Some(json!({"query":"Original search request","instruction":"Find a PI first","opportunity":facts})),
+            provider_id:None,account_id:None,model_id:None,reasoning:None,thread_id:None,
+        })?;
+        conn.execute("UPDATE native_jobs SET status='failed' WHERE id=?1",[&id])?;
+        let prompt = "Verify the deadline first, then find the official application route.";
+        scheduler.retry_with_options(RetryJobRequest { job_id:id.clone(),prompt:Some(prompt.into()),provider_id:None,model_id:None,reasoning:None,max_results:None })?;
+        let payload = load_payload(&paths.database,&id)?;
+        assert_eq!(payload["instruction"],prompt);
+        assert_eq!(payload["prompt"],prompt);
+        assert_eq!(payload["query"],"Original search request");
+        assert_eq!(payload["opportunity"],facts);
+        let workspace = paths.workspaces.join(&id);
+        materials::prepare_general_workspace(&paths,&workspace,None,"full_search",&payload)?;
+        let request:Value = serde_json::from_slice(&fs::read(workspace.join("input/request.json"))?)?;
+        assert_eq!(request["instruction"],prompt);
+        assert_eq!(request["opportunity"],facts);
+        let claimed = claim_next_job(&paths.database,&scheduler.worker_id)?.context("Retry not queued")?;
+        assert_eq!(claimed.id,id);
+        // The worker claim deliberately omits presentation fields; assert against
+        // the same database projection consumed by the Agent-center UI.
+        let visible = db::job_groups(&paths.database,10)?.running.into_iter()
+            .find(|job| job.id==id).context("Retried task missing from running UI group")?;
+        assert_eq!(visible.request_summary.as_deref(),Some("Original search request"));
+        assert_eq!(visible.prompt.as_deref(),Some(prompt));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_revision_output_repairs_once_against_the_saved_baseline() -> Result<()> {
+        for failure in ["missing_both", "missing_replacement", "bad_json", "empty_summary", "wrong_schema"] {
+            let temp = tempfile::tempdir()?;
+            let paths = materials::tests::publication_fixture(temp.path())?;
+            let conn = db::connect(&paths.database)?;
+            conn.execute_batch(include_str!("../migrations/0011_scheduler_leases.sql"))?;
+            let workspace = paths.workspaces.join("repair-test");
+            let prepared = materials::prepare_revision_workspace(&paths,&workspace,"target","email_en",Some("Clarify the closing"))?;
+            let baseline = fs::read(workspace.join("input/current/email.md"))?;
+            let replacement = "Dear Professor, I would welcome a discussion of the documented research fit.";
+            if !matches!(failure,"missing_both"|"missing_replacement") {
+                fs::write(workspace.join("output/email.md"),replacement)?;
+            }
+            if failure != "missing_both" {
+                let changes = match failure {
+                    "bad_json" => "{",
+                    "empty_summary" => r#"{"summary":" "}"#,
+                    "wrong_schema" => r#"{"schemaVersion":99,"summary":"Closing"}"#,
+                    _ => r#"{"summary":"Closing"}"#,
+                };
+                fs::write(workspace.join("output/change-set.json"),changes)?;
+            }
+            let payload=json!({"prompt":"Clarify the closing","artifactType":"email_en","_baseSha256":prepared.base_sha256});
+            conn.execute("INSERT INTO native_jobs(id,job_type,target_id,status,payload_json,thread_id) VALUES('repair-test','material_revision','target','failed',?1,'original-thread')",[payload.to_string()])?;
+            let scheduler = Scheduler::new(paths.clone(),Arc::new(CodexManager::new(paths.clone())),None);
+            scheduler.retry("repair-test")?;
+            let retry_payload=load_payload(&paths.database,"repair-test")?;
+            assert_eq!(retry_payload["_reuseExistingOutput"],true,"{failure}");
+            assert_eq!(retry_payload["_baseSha256"],prepared.base_sha256);
+            let repairs=std::cell::Cell::new(0);
+            let applied=with_bounded_revision_repairs(
+                || materials::apply_agent_revision(&paths,&workspace,"target","email_en",&prepared.base_sha256,"repair-test","test",None,None,Some("Clarify the closing")),
+                |error, count| {
+                    assert!(error.is::<materials::InvalidRevisionOutput>(),"{error:#}");
+                    repairs.set(count);
+                    let result=(|| -> Result<()> {
+                        let live=materials::verify_agent_revision_base(&paths,"target","email_en",&prepared.base_sha256)?;
+                        materials::preserve_revision_output(&workspace,&live)?;
+                        fs::write(workspace.join("output/email.md"),replacement)?;
+                        fs::write(workspace.join("output/change-set.json"),br#"{"summary":"Clarified closing"}"#)?;
+                        Ok(())
+                    })();
+                    std::future::ready(result)
+                },
+            ).await?;
+            assert_eq!(repairs.get(),1);
+            assert_eq!(fs::read(workspace.join("input/current/email.md"))?,baseline);
+            assert_eq!(fs::read_to_string(paths.data_root.join(applied.artifact_path))?,replacement);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn revision_repair_is_bounded_and_changed_bases_never_call_repair() -> Result<()> {
+        let attempts=std::cell::Cell::new(0);
+        let repairs=std::cell::Cell::new(0);
+        let result:Result<()> = with_bounded_revision_repairs(|| {
+            attempts.set(attempts.get()+1);
+            std::future::ready(Err(materials::InvalidRevisionOutput("invalid JSON".into()).into()))
+        }, |_,count| { repairs.set(count); std::future::ready(Ok(())) }).await;
+        assert!(result.unwrap_err().is::<materials::InvalidRevisionOutput>());
+        assert_eq!((attempts.get(),repairs.get()),(3,2));
+
+        let temp=tempfile::tempdir()?;
+        let paths=materials::tests::publication_fixture(temp.path())?;
+        let workspace=paths.workspaces.join("conflict");
+        let prepared=materials::prepare_revision_workspace(&paths,&workspace,"target","email_en",None)?;
+        fs::write(paths.generated.join("email.md"),"A newer user version")?;
+        let repairs=std::cell::Cell::new(0);
+        let result=with_bounded_revision_repairs(
+            || materials::apply_agent_revision(&paths,&workspace,"target","email_en",&prepared.base_sha256,"conflict","test",None,None,None),
+            |_,_| { repairs.set(repairs.get()+1); std::future::ready(Ok(())) },
+        ).await;
+        assert!(result.unwrap_err().to_string().contains("SHA-256"));
+        assert_eq!(repairs.get(),0);
+        assert_eq!(fs::read_to_string(paths.generated.join("email.md"))?,"A newer user version");
+        let result:Result<()> = with_bounded_revision_repairs(
+            || std::future::ready(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())),
+            |_,_| { repairs.set(repairs.get()+1); std::future::ready(Ok(())) },
+        ).await;
+        assert!(result.unwrap_err().is::<std::io::Error>());
+        assert_eq!(repairs.get(),0);
+        assert!(revision_base_sha256(&json!({})).is_err());
+        assert!(!has_saved_revision_baseline(&paths,"conflict","material_revision",&json!({})));
+        Ok(())
+    }
+
+    #[test]
+    fn cv_repair_is_bounded_and_does_not_retry_publication_or_base_conflicts() {
+        let error=anyhow::Error::new(crate::typst::CvLayoutError("3 pages; overflow".into())).context("preflight");
+        assert!(cv_layout_repair_allowed(&error,0));
+        assert!(cv_layout_repair_allowed(&error,1));
+        assert!(!cv_layout_repair_allowed(&error,2));
+        assert!(!cv_layout_repair_allowed(&anyhow::anyhow!("SQLite publication failed"),0));
+        assert!(!cv_layout_repair_allowed(&anyhow::anyhow!("base changed"),0));
+        let prompt=cv_layout_repair_prompt(&error);
+        assert!(prompt.contains("SAME CV revision thread"));
+        assert!(prompt.contains("Do not browse"));
+        assert!(prompt.contains("unchanged input/current baseline"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_recovery_and_stale_owner_cannot_publish_or_finish() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let conn = db::connect(&scheduler.db_path)?;
+        conn.execute("INSERT INTO native_jobs(id,job_type,status,provider_id) VALUES('fenced','test_delay','queued','openai')",[])?;
+        claim_next_job(&scheduler.db_path,&scheduler.worker_id)?.context("claim")?;
+        let attempt = conn.query_row("SELECT attempt FROM native_jobs WHERE id='fenced'",[],|r|r.get(0))?;
+        let identity = ExecutionIdentity {job_id:"fenced".into(),worker_id:scheduler.worker_id.clone(),attempt};
+        EXECUTION.scope(identity.clone(), async {
+            let tx = db::publication_transaction(&conn)?;
+            tx.commit()?;
+            conn.execute("UPDATE native_jobs SET cancel_requested=1 WHERE id='fenced'",[])?;
+            assert!(db::publication_transaction(&conn).is_err());
+            finish_job(&scheduler.db_path,"fenced","needs_review","done",None,None)?;
+            assert_eq!(conn.query_row("SELECT status FROM native_jobs WHERE id='fenced'",[],|r|r.get::<_,String>(0))?,"cancelled");
+            Ok::<_,anyhow::Error>(())
+        }).await?;
+        conn.execute("UPDATE native_jobs SET status='running',cancel_requested=1,lease_expires_at=NULL WHERE id='fenced'",[])?;
+        recover_interrupted_jobs(&scheduler.db_path)?;
+        assert_eq!(conn.query_row("SELECT status FROM native_jobs WHERE id='fenced'",[],|r|r.get::<_,String>(0))?,"cancelled");
+        conn.execute("UPDATE native_jobs SET status='running',cancel_requested=0,lease_owner='new-owner',attempt=attempt+1,lease_expires_at='2999-01-01T00:00:00Z' WHERE id='fenced'",[])?;
+        recover_interrupted_jobs(&scheduler.db_path)?;
+        EXECUTION.scope(identity, async {
+            assert!(db::publication_transaction(&conn).is_err());
+            finish_job(&scheduler.db_path,"fenced","failed","old owner stopped",None,None)?;
+            Ok::<_,anyhow::Error>(())
+        }).await?;
+        assert_eq!(conn.query_row("SELECT status||':'||lease_owner FROM native_jobs WHERE id='fenced'",[],|r|r.get::<_,String>(0))?,"running:new-owner");
+        conn.execute("UPDATE native_jobs SET cancel_requested=1,lease_expires_at='2000-01-01T00:00:00Z',timeout_at='2000-01-01T00:00:00Z' WHERE id='fenced'",[])?;
+        reclaim_expired_jobs(&scheduler.db_path,&scheduler.worker_id)?;
+        assert_eq!(conn.query_row("SELECT status FROM native_jobs WHERE id='fenced'",[],|r|r.get::<_,String>(0))?,"cancelled");
+        Ok(())
+    }
     use tempfile::TempDir;
 
     fn test_paths(temp: &TempDir) -> AppPaths {
@@ -1264,11 +1845,37 @@ mod tests {
         paths.ensure()?;
         let conn = db::connect(&paths.database)?;
         conn.execute_batch(include_str!("../migrations/0001_legacy_foundation.sql"))?;
+        conn.execute_batch(include_str!("../migrations/0014_opportunity_shelving.sql"))?;
         conn.execute_batch(include_str!("../migrations/0008_native_desktop.sql"))?;
         conn.execute_batch(include_str!("../migrations/0011_scheduler_leases.sql"))?;
         drop(conn);
         let codex = Arc::new(CodexManager::new(paths.clone()));
         Ok(Arc::new(Scheduler::new(paths, codex, None)))
+    }
+
+    #[tokio::test]
+    async fn unchanged_saved_cv_is_reviewable_without_model_or_new_revision() -> Result<()> {
+        let temp=TempDir::new()?;
+        let paths=materials::tests::publication_fixture(temp.path())?;
+        let conn=db::connect(&paths.database)?;
+        conn.execute_batch(include_str!("../migrations/0011_scheduler_leases.sql"))?;
+        let workspace=paths.workspaces.join("unchanged");
+        let prepared=materials::prepare_revision_workspace(&paths,&workspace,"target","cv_data",Some("Already satisfied"))?;
+        fs::copy(workspace.join("input/current/cv-data.json"),workspace.join("output/cv-data.json"))?;
+        fs::write(workspace.join("output/change-set.json"),br#"{"schemaVersion":1,"summary":"No content changes"}"#)?;
+        let payload=json!({"prompt":"revise","artifactType":"cv_data","_reuseExistingOutput":true,"_baseSha256":prepared.base_sha256});
+        conn.execute("INSERT INTO native_jobs(id,job_type,target_id,status,payload_json) VALUES('unchanged','material_revision','target','queued',?1)",[payload.to_string()])?;
+        let codex=Arc::new(CodexManager::new(paths.clone()));
+        let scheduler=Scheduler::new(paths,codex,None);
+        let job=claim_next_job(&scheduler.db_path,&scheduler.worker_id)?.context("claim")?;
+        scheduler.execute_job(job).await;
+        let (status,error,result):(String,Option<String>,String)=conn.query_row("SELECT status,error,result_json FROM native_jobs WHERE id='unchanged'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        assert_eq!(status,"needs_review");
+        assert!(error.is_none());
+        assert_eq!(serde_json::from_str::<Value>(&result)?["revisionOutcome"],"unchanged");
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM artifact_revisions",[],|r|r.get::<_,i64>(0))?,0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM target_artifact_approvals",[],|r|r.get::<_,i64>(0))?,1);
+        Ok(())
     }
 
     fn install_deepseek_provider(path: &Path) -> Result<()> {
@@ -1345,6 +1952,54 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_snapshots_status_and_deduplicates_legacy_continuations_by_id() -> Result<()> {
+        let temp=TempDir::new()?;
+        let paths=test_paths(&temp);
+        crate::migration::initialize(&paths)?;
+        let conn=db::connect(&paths.database)?;
+        conn.execute("INSERT INTO applications(id,status) VALUES('app','draft')",[])?;
+        conn.execute("INSERT INTO contact_targets_v2(id,application_id,name,normalized_name,organization,title,identity_key) VALUES('target','app','Contact','contact','University','Role','fixture')",[])?;
+        let codex=Arc::new(CodexManager::new(paths.clone()));
+        let scheduler=Scheduler::new(paths.clone(),codex,None);
+        let mut request=EnqueueRequest { job_type:"reply_followup".into(),target_type:Some("contact_target".into()),target_id:Some("target".into()),
+            payload:Some(json!({"_statusVersion":999})),prompt:None,provider_id:None,account_id:None,model_id:None,reasoning:None,thread_id:None };
+        let id=scheduler.enqueue(request.clone())?;
+        let raw:String=conn.query_row("SELECT payload_json FROM native_jobs WHERE id=?1",[&id],|row|row.get(0))?;
+        assert_eq!(serde_json::from_str::<Value>(&raw)?["_statusVersion"],0);
+        conn.execute("INSERT INTO native_jobs(id,job_type,status,provider_id,active_key,payload_json) VALUES('legacy-cont','full_search','running','openai','old-query-key',?1)",[json!({"opportunityId":"opp-1"}).to_string()])?;
+        request.job_type="full_search".into();request.target_id=None;request.target_type=Some("search".into());
+        request.payload=Some(json!({"opportunityId":"opp-1","query":"Renamed title"}));
+        assert!(scheduler.enqueue(request).unwrap_err().to_string().contains("legacy-cont"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_deduplicates_continuations_across_legacy_and_current_keys() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let request = EnqueueRequest { job_type:"full_search".into(),target_type:Some("search".into()),target_id:None,
+            payload:Some(json!({"opportunityId":"opp-1","query":"Research role"})),prompt:None,
+            provider_id:None,account_id:None,model_id:None,reasoning:None,thread_id:None };
+        let old = scheduler.enqueue(request.clone())?;
+        let conn = db::connect(&scheduler.db_path)?;
+        conn.execute("UPDATE native_jobs SET status='failed',active_key='legacy-query-key',thread_id='original-context' WHERE id=?1",[&old])?;
+        let new = scheduler.enqueue(request)?;
+        assert!(scheduler.retry(&old).unwrap_err().to_string().contains(&new));
+        let unchanged:(String,String) = conn.query_row("SELECT status,thread_id FROM native_jobs WHERE id=?1",[&old],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        assert_eq!(unchanged,("failed".into(),"original-context".into()));
+        conn.execute("UPDATE native_jobs SET status='failed' WHERE id=?1",[&new])?;
+        scheduler.retry(&old)?;
+        assert!(scheduler.retry(&new).unwrap_err().to_string().contains(&old));
+        // Old persisted tasks may even lack an active_key; opportunity ID still wins.
+        conn.execute("UPDATE native_jobs SET active_key=NULL WHERE id=?1",[&new])?;
+        assert!(scheduler.retry(&new).unwrap_err().to_string().contains(&old));
+        conn.execute("UPDATE native_jobs SET status='cancelled' WHERE id=?1",[&old])?;
+        scheduler.retry(&new)?;
+        assert_eq!(conn.query_row("SELECT status FROM native_jobs WHERE id=?1",[&new],|row|row.get::<_,String>(0))?,"queued");
+        Ok(())
+    }
+
+    #[test]
     fn live_activity_updates_message_without_faking_progress_or_duplicate_events() -> Result<()> {
         let temp = TempDir::new()?;
         let scheduler = setup_test_scheduler(&temp)?;
@@ -1390,10 +2045,7 @@ mod tests {
         fs::create_dir_all(&output)?;
         fs::write(output.join("search-results.json"), b"{}")?;
         assert!(has_reusable_output(&paths, job_id, "full_search"));
-        let repair = search_result_repair_prompt("PI：目标定制 CV 未通过两页预检（当前为 3 页）");
-        assert!(repair.contains("Do not call web search"));
-        assert!(repair.contains("36 to 38"));
-        assert!(repair.contains("exactly two well-filled pages"));
+        assert!(prompt.contains("omit unfinished materials"));
         Ok(())
     }
 
@@ -1813,7 +2465,151 @@ mod tests {
     }
 
     #[test]
-    fn retry_repairs_search_output_that_failed_two_page_preflight() -> Result<()> {
+    fn retry_with_updated_same_provider_settings_preserves_the_existing_thread() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let paths = scheduler.paths.clone();
+        install_deepseek_provider(&paths.database)?;
+        let job_id = scheduler.enqueue(EnqueueRequest {
+            job_type: "research_pi".into(),
+            target_type: Some("person".into()),
+            target_id: None,
+            prompt: Some("Research the original contact.".into()),
+            payload: Some(json!({"query":"Original researcher"})),
+            provider_id: Some("deepseek".into()),
+            account_id: None,
+            model_id: None,
+            reasoning: None,
+            thread_id: Some("old-thread".into()),
+        })?;
+        save_runtime_checkpoint(&paths.database, &job_id, "old-thread", Some("old-turn"))?;
+        let conn = db::connect(&paths.database)?;
+        conn.execute("UPDATE native_jobs SET status='failed' WHERE id=?1", [&job_id])?;
+        drop(conn);
+
+        scheduler.retry_with_options(RetryJobRequest {
+            job_id: job_id.clone(),
+            prompt: Some("Research the updated contact direction.".into()),
+            provider_id: None,
+            model_id: None,
+            reasoning: Some("medium".into()),
+            max_results: None,
+        })?;
+
+        let conn = db::connect(&paths.database)?;
+        let (payload, account_id, reasoning, thread_id, message): (String, Option<String>, Option<String>, Option<String>, String) = conn.query_row(
+            "SELECT payload_json,account_id,reasoning,thread_id,message FROM native_jobs WHERE id=?1",
+            [&job_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?;
+        let payload: Value = serde_json::from_str(&payload)?;
+        assert_eq!(payload["prompt"], "Research the updated contact direction.");
+        assert_eq!(payload["_resumeWithUpdatedSettings"], true);
+        assert!(payload.get("_reuseExistingOutput").is_none());
+        assert_eq!(account_id.as_deref(), Some("deepseek-active"));
+        assert_eq!(reasoning.as_deref(), Some("medium"));
+        assert_eq!(thread_id.as_deref(), Some("old-thread"));
+        assert!(message.contains("恢复原 Agent 线程"));
+        let runtime_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM native_job_runtime WHERE job_id=?1",
+            [&job_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(runtime_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn retry_with_changed_result_limit_preserves_the_existing_search_thread() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let paths = scheduler.paths.clone();
+        let job_id = scheduler.enqueue(EnqueueRequest {
+            job_type: "full_search".into(),
+            target_type: Some("search".into()),
+            target_id: None,
+            prompt: Some("Search for official opportunities.".into()),
+            payload: Some(json!({"query":"DAS postdoc", "maxResults":5})),
+            provider_id: None,
+            account_id: None,
+            model_id: None,
+            reasoning: None,
+            thread_id: Some("old-search-thread".into()),
+        })?;
+        save_runtime_checkpoint(&paths.database, &job_id, "old-search-thread", Some("old-turn"))?;
+        let conn = db::connect(&paths.database)?;
+        conn.execute("UPDATE native_jobs SET status='failed' WHERE id=?1", [&job_id])?;
+        drop(conn);
+
+        scheduler.retry_with_options(RetryJobRequest {
+            job_id: job_id.clone(),
+            prompt: None,
+            provider_id: None,
+            model_id: None,
+            reasoning: None,
+            max_results: Some(2),
+        })?;
+
+        let conn = db::connect(&paths.database)?;
+        let (payload, thread_id, message): (String, Option<String>, String) = conn.query_row(
+            "SELECT payload_json,thread_id,message FROM native_jobs WHERE id=?1",
+            [&job_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let payload = serde_json::from_str::<Value>(&payload)?;
+        assert_eq!(payload["maxResults"], 2);
+        assert_eq!(payload["_resumeWithUpdatedSettings"], true);
+        assert_eq!(thread_id.as_deref(), Some("old-search-thread"));
+        assert!(message.contains("恢复原 Agent 线程"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_with_changed_provider_starts_a_new_thread() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let paths = scheduler.paths.clone();
+        install_deepseek_provider(&paths.database)?;
+        let job_id = scheduler.enqueue(EnqueueRequest {
+            job_type: "research_pi".into(),
+            target_type: Some("person".into()),
+            target_id: None,
+            prompt: Some("Research the original contact.".into()),
+            payload: Some(json!({"query":"Original researcher"})),
+            provider_id: Some("openai".into()),
+            account_id: None,
+            model_id: None,
+            reasoning: None,
+            thread_id: Some("old-openai-thread".into()),
+        })?;
+        save_runtime_checkpoint(&paths.database, &job_id, "old-openai-thread", Some("old-turn"))?;
+        let conn = db::connect(&paths.database)?;
+        conn.execute("UPDATE native_jobs SET status='failed' WHERE id=?1", [&job_id])?;
+        drop(conn);
+
+        scheduler.retry_with_options(RetryJobRequest {
+            job_id: job_id.clone(),
+            prompt: None,
+            provider_id: Some("deepseek".into()),
+            model_id: Some("deepseek:deepseek-chat".into()),
+            reasoning: None,
+            max_results: None,
+        })?;
+
+        let conn = db::connect(&paths.database)?;
+        let (provider_id, thread_id, message): (String, Option<String>, String) = conn.query_row(
+            "SELECT provider_id,thread_id,message FROM native_jobs WHERE id=?1",
+            [&job_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(provider_id, "deepseek");
+        assert_eq!(thread_id, None);
+        assert!(message.contains("新线程"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_imports_saved_results_before_deciding_whether_material_repair_is_needed() -> Result<()> {
         let temp = TempDir::new()?;
         let scheduler = setup_test_scheduler(&temp)?;
         let paths = scheduler.paths.clone();
@@ -1825,7 +2621,7 @@ mod tests {
         let output = paths.workspaces.join(&job_id).join("output");
         fs::create_dir_all(&output)?;
         fs::write(output.join("search-results.json"), br#"{"schemaVersion":1,"opportunities":[]}"#)?;
-        let error = "PI：目标定制 CV 未通过两页预检（CV 必须正好为 2 页，当前为 3 页）";
+        let error = "没有结果同时通过职业层级、来源、严格阈值和完整材料校验：Postdoctoral fellowship / Cédric Richard：英文匹配分析缺少评分行：Research/topic alignment";
         let conn = db::connect(&paths.database)?;
         conn.execute(
             "UPDATE native_jobs SET status='failed',error=?2 WHERE id=?1",
@@ -1839,9 +2635,44 @@ mod tests {
             "SELECT payload_json,message FROM native_jobs WHERE id=?1",[&job_id],|row|Ok((row.get(0)?,row.get(1)?)),
         )?;
         let payload:Value = serde_json::from_str(&payload)?;
-        assert_eq!(payload["_repairExistingOutputError"], error);
-        assert!(payload.get("_reuseExistingOutput").is_none());
-        assert!(message.contains("定向修复"));
+        assert!(payload.get("_repairExistingOutputError").is_none());
+        assert_eq!(payload["_reuseExistingOutput"], true);
+        assert!(message.contains("重新导入"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_reimports_a_compatible_combined_fit_table_without_another_agent_turn() -> Result<()> {
+        let temp = TempDir::new()?;
+        let scheduler = setup_test_scheduler(&temp)?;
+        let paths = scheduler.paths.clone();
+        let job_id = scheduler.enqueue(EnqueueRequest {
+            job_type: "full_search".into(), target_type: None, target_id: None,
+            prompt: Some("search".into()), payload: Some(json!({})), provider_id: None,
+            account_id: None, model_id: None, reasoning: None, thread_id: Some("thread-search".into()),
+        })?;
+        let output = paths.workspaces.join(&job_id).join("output");
+        fs::create_dir_all(&output)?;
+        fs::write(output.join("search-results.json"), br#"{"schemaVersion":1,"opportunities":[]}"#)?;
+        let error = "没有结果同时通过职业层级、来源、严格阈值和完整材料校验：Postdoctoral fellowship / Cédric Richard：英文匹配分析的 Research/topic alignment 必须同时说明证据和缺口";
+        let conn = db::connect(&paths.database)?;
+        conn.execute(
+            "UPDATE native_jobs SET status='failed',error=?2 WHERE id=?1",
+            params![&job_id,error],
+        )?;
+        drop(conn);
+
+        scheduler.retry(&job_id)?;
+        let conn = db::connect(&paths.database)?;
+        let (payload, message): (String, String) = conn.query_row(
+            "SELECT payload_json,message FROM native_jobs WHERE id=?1",
+            [&job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let payload: Value = serde_json::from_str(&payload)?;
+        assert_eq!(payload["_reuseExistingOutput"], true);
+        assert!(payload.get("_repairExistingOutputError").is_none());
+        assert!(message.contains("重新导入"));
         Ok(())
     }
 }

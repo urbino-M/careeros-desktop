@@ -13,6 +13,7 @@ export type SubmissionStatus =
 
 export type StatusFilter = ContactStatus | "all";
 export type CareerSystem = "postdoc" | "internship";
+export type OpportunityCategory = "advertised" | "prospective" | "uncertain";
 export type ApplicationFilter = StatusFilter | SubmissionStatus;
 
 export interface MigrationReport {
@@ -42,6 +43,30 @@ export interface RegionCount {
   count: number;
 }
 
+export interface DiscoveredOpportunityPage {
+  items: DiscoveredOpportunity[];
+  total: number;
+  overallTotal: number;
+  pendingTotal: number;
+  shelvedTotal?: number;
+}
+
+export interface DiscoveredOpportunity {
+  id: string;
+  title: string;
+  organization: string;
+  summary: string | null;
+  country: string | null;
+  region: string | null;
+  deadline: string | null;
+  sourceUrl: string | null;
+  status: string;
+  discoveredAt: string | null;
+  shelved?: boolean;
+  contacts: { id: string; name: string; materialStatus: "pending" | "ready"; shelved?: boolean }[];
+  latestJob?: JobSummary | null;
+}
+
 export interface TargetCard {
   id: string;
   applicationId: string;
@@ -60,6 +85,9 @@ export interface TargetCard {
   sourceUrl?: string;
   updatedAt: string;
   careerTrack: "postdoc" | "internship";
+  materialStatus: "pending" | "ready";
+  materialError?: string | null;
+  opportunityStatus?: string | null;
 }
 
 export interface DashboardData {
@@ -123,6 +151,7 @@ export interface ManualRevisionRequest {
   language: string;
   content: string;
   note?: string;
+  expectedBaseSha256?: string;
 }
 
 export interface CvGenerationResult {
@@ -173,6 +202,8 @@ export interface TargetDetail {
   checklist: ChecklistItem[];
   replies: ReplyItem[];
   revisions: RevisionItem[];
+  recoveryJob?: JobSummary | null;
+  unpublishedCv?: ArtifactItem[];
 }
 
 export interface ProviderModelInfo {
@@ -217,7 +248,20 @@ export interface CvCustomizationSettings {
   emphasize: string;
   exclude: string;
   instructions: string;
+  pageCount: CvPageCountSetting;
+  preserveStructure: boolean;
+  structure?: CvStructureSummary;
   updatedAt?: string;
+}
+
+export interface CvPageCountSetting {
+  mode: "auto" | "fixed";
+  value?: number;
+}
+
+export interface CvStructureSummary {
+  largeEntryCount: number;
+  initializedAt?: string;
 }
 
 export interface OnboardingProfile {
@@ -238,6 +282,13 @@ export interface OnboardingProfile {
   updatedAt?: string;
 }
 
+export interface JobEvent {
+  eventType: string;
+  progress?: number;
+  message?: string;
+  createdAt: string;
+}
+
 export interface JobSummary {
   id: string;
   jobType: string;
@@ -255,6 +306,10 @@ export interface JobSummary {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+  requestSummary?: string;
+  prompt?: string;
+  maxResults?: number;
+  events: JobEvent[];
 }
 
 export interface JobGroups {
@@ -307,6 +362,15 @@ export interface EnqueueRequest {
   threadId?: string;
 }
 
+export interface RetryJobRequest {
+  jobId: string;
+  prompt?: string;
+  providerId?: string;
+  modelId?: string;
+  reasoning?: string;
+  maxResults?: number;
+}
+
 export type ApplicationTab =
   | "cv"
   | "cover_letter"
@@ -324,7 +388,7 @@ export type ApplicationView = "opportunities" | "strategy";
 export type AppRoute =
   | { page: "dashboard" }
   | { page: "automation" }
-  | { page: "applications"; careerSystem: CareerSystem; status: ApplicationFilter; view?: ApplicationView }
+  | { page: "applications"; careerSystem: CareerSystem; status: ApplicationFilter; view?: ApplicationView; category?: OpportunityCategory }
   | { page: "application"; targetId: string; careerSystem: CareerSystem; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
   | { page: "settings" };
 

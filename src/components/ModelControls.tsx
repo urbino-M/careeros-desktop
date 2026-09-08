@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { ProviderInfo, TaskModelDefault } from "../types";
@@ -7,6 +8,20 @@ export interface ModelSelection {
   modelId: string;
   reasoning: string;
 }
+
+const builtInModelLabels = new Set([
+  "Sol · 最高质量", "Terra · 平衡", "Terra · 均衡质量", "Luna · 快速", "Luna · 快速经济",
+]);
+
+export function modelDisplayLabel(providerId: string, displayName: string): string {
+  return providerId === "openai" && builtInModelLabels.has(displayName) ? t(displayName) : displayName;
+}
+
+const reasoningLabels: Record<string,string> = {
+  none:"不启用推理", minimal:"最少", low:"低", medium:"中", high:"高", xhigh:"XHigh · 默认高质量", max:"最高", ultra:"极致",
+};
+
+export function reasoningLabel(value: string): string { return reasoningLabels[value] ? t(reasoningLabels[value]) : value; }
 
 export function ModelControls({
   taskType,
@@ -45,13 +60,13 @@ export function ModelControls({
     ? selectedModel.reasoningLevels
     : ["low", "medium", "high"];
 
-  if (!current) return <div className="field-hint">正在读取模型设置…</div>;
+  if (!current) return <div className="field-hint">{t("正在读取模型设置…")}</div>;
 
   const update = (next: Partial<ModelSelection>) => onChange({ ...current, ...next });
   return (
     <div className={`model-controls ${compact ? "compact" : ""}`}>
       <label>
-        <span>Agent 服务</span>
+        <span>{t("Agent 服务")}</span>
         <select
           value={current.providerId}
           onChange={(event) => {
@@ -69,7 +84,7 @@ export function ModelControls({
         </select>
       </label>
       <label>
-        <span>模型</span>
+        <span>{t("模型")}</span>
         <select value={current.modelId} onChange={(event) => {
           const model = models.find((item) => item.id === event.target.value);
           const levels = model?.reasoningLevels || [];
@@ -80,13 +95,13 @@ export function ModelControls({
               : levels.includes("high") ? "high" : levels[0] || "medium",
           });
         }}>
-          {models.map((model) => <option value={model.id} key={model.id}>{model.displayName}</option>)}
+          {models.map((model) => <option value={model.id} key={model.id}>{modelDisplayLabel(currentProvider?.id ?? current.providerId,model.displayName)}</option>)}
         </select>
       </label>
       <label>
-        <span>推理强度</span>
+        <span>{t("推理强度")}</span>
         <select value={current.reasoning} onChange={(event) => update({ reasoning: event.target.value })}>
-          {reasoningOptions.map((item) => <option value={item} key={item}>{item === "xhigh" ? "XHigh · 默认高质量" : item[0].toUpperCase() + item.slice(1)}</option>)}
+          {reasoningOptions.map((item) => <option value={item} key={item}>{reasoningLabel(item)}</option>)}
         </select>
       </label>
     </div>

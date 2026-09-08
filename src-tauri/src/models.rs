@@ -59,6 +59,44 @@ pub struct RegionCount {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DiscoveredOpportunityPage {
+    pub items: Vec<DiscoveredOpportunity>,
+    pub total: i64,
+    pub overall_total: i64,
+    pub pending_total: i64,
+    pub shelved_total: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredOpportunity {
+    pub id: String,
+    pub title: String,
+    pub organization: String,
+    pub summary: Option<String>,
+    pub country: Option<String>,
+    pub region: Option<String>,
+    pub deadline: Option<String>,
+    pub source_url: Option<String>,
+    pub status: String,
+    pub discovered_at: Option<String>,
+    pub shelved: bool,
+    pub contacts: Vec<OpportunityContact>,
+    #[serde(default)]
+    pub latest_job: Option<JobSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpportunityContact {
+    pub id: String,
+    pub name: String,
+    pub material_status: String,
+    pub shelved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TargetCard {
     pub id: String,
     pub application_id: String,
@@ -77,6 +115,9 @@ pub struct TargetCard {
     pub source_url: Option<String>,
     pub updated_at: String,
     pub career_track: String,
+    pub material_status: String,
+    pub material_error: Option<String>,
+    pub opportunity_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +202,8 @@ pub struct TargetDetail {
     pub checklist: Vec<ChecklistItem>,
     pub replies: Vec<ReplyItem>,
     pub revisions: Vec<RevisionItem>,
+    pub recovery_job: Option<JobSummary>,
+    pub unpublished_cv: Vec<ArtifactItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +263,15 @@ pub struct TaskModelDefault {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct JobEvent {
+    pub event_type: String,
+    pub progress: Option<i64>,
+    pub message: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JobSummary {
     pub id: String,
     pub job_type: String,
@@ -237,6 +289,10 @@ pub struct JobSummary {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub request_summary: Option<String>,
+    pub prompt: Option<String>,
+    pub max_results: Option<usize>,
+    pub events: Vec<JobEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

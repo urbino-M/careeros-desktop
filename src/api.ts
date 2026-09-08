@@ -1,12 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   DashboardData,
+  DiscoveredOpportunityPage,
   CvGenerationResult,
   CoverLetterGenerationResult,
   CareerSystem,
+  OpportunityCategory,
   ApplicationFilter,
   CvCustomizationSettings,
   EnqueueRequest,
+  RetryJobRequest,
   JobGroups,
   GmailDraftInfo,
   GmailOAuthStart,
@@ -26,10 +29,14 @@ import type {
 
 export const api = {
   migration: () => invoke<MigrationReport>("get_migration_report"),
+  discoveredOpportunities: (search = "", offset = 0, limit = 10, pendingOnly = true, category?: OpportunityCategory, shelvedOnly = false) =>
+    invoke<DiscoveredOpportunityPage>("get_discovered_opportunities", { search: search || null, offset, limit, pendingOnly, category: category ?? null, shelvedOnly }),
+  setOpportunityShelved: (opportunityId: string, shelved: boolean) => invoke<void>("set_opportunity_shelved", { opportunityId, shelved }),
   dashboard: (careerTrack: CareerSystem) => invoke<DashboardData>("get_dashboard", { careerTrack }),
-  targets: (careerTrack: CareerSystem, status: ApplicationFilter, search = "", offset = 0, limit = 20) =>
+  targets: (careerTrack: CareerSystem, status: ApplicationFilter, search = "", offset = 0, limit = 20, category?: OpportunityCategory) =>
     invoke<TargetCard[]>("get_contact_targets", {
       careerTrack,
+      category: careerTrack === "postdoc" ? category ?? null : null,
       status: careerTrack === "postdoc" ? status : null,
       submissionStatus: careerTrack === "internship" ? status : null,
       search: search || null,
@@ -77,7 +84,7 @@ export const api = {
   enqueue: (request: EnqueueRequest) =>
     invoke<string>("enqueue_job", { request }),
   cancelJob: (jobId: string) => invoke<void>("cancel_job", { jobId }),
-  retryJob: (jobId: string) => invoke<void>("retry_job", { jobId }),
+  retryJob: (request: RetryJobRequest) => invoke<void>("retry_job", { request }),
   approveJob: (jobId: string) => invoke<void>("approve_job", { jobId }),
   codexAccount: () => invoke<Record<string, unknown>>("get_codex_account"),
   codexModels: () => invoke<Record<string, unknown>>("get_codex_models"),
@@ -89,8 +96,8 @@ export const api = {
   importGmailClient: (path: string) =>
     invoke<void>("import_gmail_client", { path }),
   startGmailOAuth: () => invoke<GmailOAuthStart>("start_gmail_oauth"),
-  approveCv: (targetId: string) =>
-    invoke<string>("approve_cv_for_gmail", { targetId }),
+  approveCv: (targetId: string, previewPath: string, previewSha256: string) =>
+    invoke<string>("approve_cv_for_gmail", { targetId, previewPath, previewSha256 }),
   cvApproval: (targetId: string) =>
     invoke<boolean>("get_cv_approval", { targetId }),
   createGmailDraft: (

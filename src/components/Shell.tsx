@@ -2,17 +2,16 @@ import {
   Bot,
   BriefcaseBusiness,
   Home,
-  Languages,
   Settings,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { AppRoute, CareerSystem, Locale } from "../types";
+import type { AppRoute, CareerSystem } from "../types";
 import { CareerOSMark } from "./CareerOSBrand";
+import { InterfacePreferences } from "./InterfacePreferences";
+import { t } from "../i18n";
 
 interface ShellProps {
   route: AppRoute;
-  locale: Locale;
-  onLocale: (locale: Locale) => void;
   onNavigate: (route: AppRoute) => void;
   children: React.ReactNode;
 }
@@ -26,8 +25,6 @@ function isActive(route: AppRoute, target: AppRoute, system?: CareerSystem) {
 
 export function Shell({
   route,
-  locale,
-  onLocale,
   onNavigate,
   children,
 }: ShellProps) {
@@ -58,17 +55,17 @@ export function Shell({
         <div className="brand-lockup">
           <CareerOSMark />
           <div>
-            <div className="brand-kicker">研究与职业机会决策系统</div>
+            <div className="brand-kicker">{t("研究与职业机会决策系统")}</div>
             <div className="brand-name"><span>Career</span><em>OS</em></div>
           </div>
         </div>
 
-        <nav className="primary-nav" aria-label="主导航">
-          <div className="nav-heading">工作台</div>
+        <nav className="primary-nav" aria-label={t("主导航")}>
+          <div className="nav-heading">{t("工作台")}</div>
           {navItems.slice(0, 2).map((item) => (
             <NavButton key={item.label} {...item} active={isActive(route, item.route)} onNavigate={onNavigate} />
           ))}
-          <div className="nav-heading">申请</div>
+          <div className="nav-heading">{t("申请")}</div>
           {applicationItems.map((item) => (
             <NavButton
               key={item.label}
@@ -79,17 +76,13 @@ export function Shell({
               onNavigate={onNavigate}
             />
           ))}
-          <div className="nav-heading">系统</div>
+          <div className="nav-heading">{t("系统")}</div>
           <NavButton {...navItems[2]} active={isActive(route, navItems[2].route)} onNavigate={onNavigate} />
         </nav>
 
         <div className="sidebar-footer">
-          <div className="language-label"><Languages size={15} /> 语言 / Language</div>
-          <div className="segmented compact">
-            <button className={locale === "zh" ? "selected" : ""} onClick={() => onLocale("zh")}>中文</button>
-            <button className={locale === "en" ? "selected" : ""} onClick={() => onLocale("en")}>English</button>
-          </div>
-          <div className="privacy-note">本机数据 · 外部操作需确认</div>
+          <InterfacePreferences compact />
+          <div className="privacy-note">{t("本机数据 · 外部操作需确认")}</div>
         </div>
       </aside>
       <main className="main-stage">
@@ -114,9 +107,9 @@ function NavButton({
   onNavigate: (route: AppRoute) => void;
 }) {
   return (
-    <button className={`nav-button ${active ? "active" : ""}`} onClick={() => onNavigate(route)}>
-      <Icon size={18} strokeWidth={1.8} />
-      <span>{label}</span>
+    <button className={`nav-button ${active ? "active" : ""}`} aria-label={t(label)} title={t(label)} onClick={() => onNavigate(route)}>
+      <span className={`nav-icon nav-icon-${route.page}`}><Icon size={18} strokeWidth={1.8} /></span>
+      <span>{t(label)}</span>
     </button>
   );
 }

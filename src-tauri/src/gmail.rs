@@ -57,11 +57,12 @@ struct TokenExchange {
 pub struct GmailManager {
     paths: AppPaths,
     http: Client,
+    api_base: String,
 }
 
 impl GmailManager {
     pub fn new(paths: AppPaths) -> Self {
-        Self { paths, http: Client::new() }
+        Self { paths, http: Client::new(), api_base: "https://gmail.googleapis.com/gmail/v1/users/me".into() }
     }
 
     pub fn import_client_file(&self, path: &Path) -> Result<()> {
@@ -214,15 +215,7 @@ impl GmailManager {
         if !recipient.trim().eq_ignore_ascii_case(target_email.trim()) {
             bail!("收件人必须与当前联系目标邮箱一致：{target_email}")
         }
-        let approval: (String, String) = conn.query_row(
-            "SELECT artifact_path,approved_sha256 FROM target_artifact_approvals
-             WHERE target_id=?1 AND artifact_type='cv_pdf' AND language='en'",
-            [target_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).context("请先在 CV 栏目审核并批准当前 PDF")?;
-        let cv_path = resolve_data_path(&self.paths.data_root, &approval.0);
-        let current_hash = sha256_file(&cv_path)?;
-        if current_hash != approval.1 { bail!("CV 在批准后发生变化，请重新审核") }
+        let attachment = approved_attachment(&self.paths, &conn, target_id)?;
 
         drop(conn);
         let access_token = self.valid_access_token().await?;
@@ -236,44 +229,62 @@ impl GmailManager {
         if !account.eq_ignore_ascii_case(&connected_account) {
             bail!("Gmail 当前授权账号与已连接账号不一致，请重新连接")
         }
-        let raw = build_mime(recipient, subject, body, &cv_path)?;
-        let response = self.http
-            .post("https://gmail.googleapis.com/gmail/v1/users/me/drafts")
-            .bearer_auth(&access_token)
-            .json(&json!({"message":{"raw":raw}}))
-            .send().await?;
-        if !response.status().is_success() { bail!("Gmail 创建草稿失败：{}", response.text().await?) }
-        let draft: Value = response.json().await?;
-        let draft_id = draft.get("id").and_then(Value::as_str).context("Gmail 未返回 draft ID")?.to_owned();
-        let message_id = draft.pointer("/message/id").and_then(Value::as_str).map(str::to_owned);
-
-        let verify = self.http
-            .get(format!("https://gmail.googleapis.com/gmail/v1/users/me/drafts/{draft_id}?format=minimal"))
-            .bearer_auth(&access_token)
-            .send().await?;
-        if !verify.status().is_success() { bail!("草稿已创建但远端核验失败：{}", verify.text().await?) }
-        let verified: Value = verify.json().await?;
-        if verified.get("id").and_then(Value::as_str) != Some(draft_id.as_str()) { bail!("Gmail 返回的 draft ID 与核验结果不一致") }
-
-        let record_id = format!("gmail-draft-{}", &Uuid::new_v4().simple().to_string()[..12]);
-        let conn = db::connect(&self.paths.database)?;
-        let tx = conn.unchecked_transaction()?;
-        tx.execute(
-            "INSERT INTO gmail_drafts(id,application_id,gmail_draft_id,gmail_message_id,recipient,subject,cv_path)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![record_id, application_id, draft_id, message_id, recipient.trim(), subject.trim(), approval.0],
-        )?;
-        tx.execute(
-            "INSERT INTO gmail_draft_targets(gmail_draft_record_id,target_id,remote_verified,remote_verified_at)
-             VALUES(?1,?2,1,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
-            params![record_id, target_id],
-        )?;
-        tx.commit()?;
-        self.list_drafts(target_id)?.into_iter().find(|item| item.id == record_id).context("草稿记录保存失败")
+        // Build from the already checked bytes, never reread the path after an await.
+        let current = approved_attachment(&self.paths,&conn,target_id)?;
+        if current.path != attachment.path || current.hash != attachment.hash { bail!("CV 已换版或审核已失效，请重新审核") }
+        let raw = build_mime(recipient, subject, body, &attachment.bytes)?;
+        let key = format!("{:x}",Sha256::digest(serde_json::to_vec(&json!([target_id,account,recipient,subject,body,attachment.hash]))?));
+        let request = DraftRequest { record_id:format!("gmail-request-{key}"),target_id:target_id.into(),application_id,
+            recipient:recipient.trim().into(),subject:subject.trim().into(),cv_path:attachment.path };
+        drop(conn);
+        self.publish_draft(&access_token,&request,&raw).await
     }
 
-    pub fn approve_cv(&self, target_id: &str) -> Result<String> {
-        let conn = db::connect(&self.paths.database)?;
+    async fn publish_draft(&self, access_token: &str, request: &DraftRequest, raw: &str) -> Result<GmailDraftInfo> {
+        let existing = reserve_draft(&self.paths.database, request)?;
+        let draft_id = if let Some(id) = existing {
+            if id.starts_with("unconfirmed:") {
+                bail!("上次创建请求的结果不确定；为防止重复草稿，本次未再次创建。请先在 Gmail 草稿箱核对并手动处理。")
+            }
+            id
+        } else {
+            let response = self.http.post(format!("{}/drafts",self.api_base)).bearer_auth(access_token)
+                .timeout(std::time::Duration::from_secs(30)).json(&json!({"message":{"raw":raw}})).send().await
+                .context("Gmail 创建请求结果不确定；请先在 Gmail 草稿箱核对，本次请求不会自动重复提交")?;
+            if !response.status().is_success() {
+                let status = response.status();
+                // Explicit rejection is safe to retry; uncertain transport/server failures stay reserved.
+                if status.is_client_error() && status.as_u16() != 408 {
+                    db::connect(&self.paths.database)?.execute("DELETE FROM gmail_drafts WHERE id=?1 AND gmail_draft_id LIKE 'unconfirmed:%'",[&request.record_id])?;
+                }
+                bail!("Gmail 创建草稿失败（{status}）；请核对草稿箱后再处理：{}",response.text().await?)
+            }
+            let draft: Value = response.json().await.context("Gmail 创建结果无法解析；请手动核对草稿箱，不会自动重复提交")?;
+            let id = draft.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).context("Gmail 未返回 draft ID；请手动核对草稿箱")?.to_owned();
+            let message = draft.pointer("/message/id").and_then(Value::as_str);
+            db::connect(&self.paths.database)?.execute(
+                "UPDATE gmail_drafts SET gmail_draft_id=?2,gmail_message_id=?3 WHERE id=?1",
+                params![request.record_id,id,message],
+            ).with_context(||format!("草稿已创建（ID：{id}），但本地记录更新失败；请保留此 ID 并在 Gmail 核对，不要重复创建"))?;
+            id
+        };
+        // The remote ID is durable before verification. Retrying this request only GETs this ID.
+        let verified = match self.http.get(format!("{}/drafts/{}?format=minimal",self.api_base,url_path_segment(&draft_id)))
+            .bearer_auth(access_token).timeout(std::time::Duration::from_secs(30)).send().await {
+            Ok(response) if response.status().is_success() => response.json::<Value>().await.ok()
+                .and_then(|value|value.get("id").and_then(Value::as_str).map(|id|id==draft_id)).unwrap_or(false),
+            _ => false,
+        };
+        db::connect(&self.paths.database)?.execute(
+            "UPDATE gmail_draft_targets SET remote_verified=?2,remote_verified_at=CASE WHEN ?2=1 THEN strftime('%Y-%m-%dT%H:%M:%SZ','now') ELSE NULL END WHERE gmail_draft_record_id=?1",
+            params![request.record_id,verified as i64],
+        )?;
+        self.list_drafts(&request.target_id)?.into_iter().find(|item|item.id==request.record_id).context("草稿记录读取失败")
+    }
+
+    pub fn approve_cv(&self, target_id: &str, preview_path: &str, preview_sha256: &str) -> Result<String> {
+        let database_conn = db::connect(&self.paths.database)?;
+        let conn = db::publication_transaction(&database_conn)?;
         let artifact_path: String = conn.query_row(
             "SELECT path FROM contact_target_artifacts
              WHERE target_id=?1 AND artifact_type='cv_pdf' AND language='en'",
@@ -281,6 +292,9 @@ impl GmailManager {
         ).context("当前申请没有 CV PDF")?;
         let resolved = resolve_data_path(&self.paths.data_root, &artifact_path);
         let hash = sha256_file(&resolved)?;
+        if resolved != resolve_data_path(&self.paths.data_root,preview_path) || hash != preview_sha256 {
+            bail!("CV 已与当前预览不同，请重新载入并审核；未批准未预览的版本")
+        }
         conn.execute(
             "INSERT INTO target_artifact_approvals(target_id,artifact_type,language,artifact_path,approved_sha256)
              VALUES(?1,'cv_pdf','en',?2,?3)
@@ -289,6 +303,7 @@ impl GmailManager {
                 approved_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')",
             params![target_id, artifact_path, hash],
         )?;
+        conn.commit()?;
         Ok(hash)
     }
 
@@ -297,6 +312,7 @@ impl GmailManager {
         let value: Option<(String, String)> = conn.query_row(
             "SELECT p.artifact_path,p.approved_sha256
              FROM target_artifact_approvals p
+             JOIN contact_target_artifacts a ON a.target_id=p.target_id AND a.artifact_type=p.artifact_type AND a.language=p.language AND a.path=p.artifact_path
              WHERE p.target_id=?1 AND p.artifact_type='cv_pdf' AND p.language='en'",
             [target_id], |row| Ok((row.get(0)?,row.get(1)?)),
         ).optional()?;
@@ -322,7 +338,7 @@ impl GmailManager {
                 gmail_message_id: message_id, recipient: row.get(4)?, subject: row.get(5)?,
                 cv_path: row.get(6)?, remote_verified: row.get::<_,i64>(7)? != 0,
                 created_at: row.get(8)?,
-                gmail_url: format!("https://mail.google.com/mail/u/0/#drafts/{locator}"),
+                gmail_url: if locator.starts_with("unconfirmed:") { "https://mail.google.com/mail/u/0/#drafts".into() } else { format!("https://mail.google.com/mail/u/0/#drafts/{locator}") },
             })
         })?.collect::<std::result::Result<Vec<_>,_>>()?)
     }
@@ -374,17 +390,48 @@ fn record_oauth_state(path:&Path,status:&str,message:Option<&str>)->Result<()> {
     Ok(())
 }
 
+struct ApprovedAttachment { path:String,hash:String,bytes:Vec<u8> }
+struct DraftRequest { record_id:String,target_id:String,application_id:String,recipient:String,subject:String,cv_path:String }
+
+fn approved_attachment(paths:&AppPaths,conn:&rusqlite::Connection,target_id:&str)->Result<ApprovedAttachment> {
+    let (path,hash):(String,String)=conn.query_row(
+        "SELECT p.artifact_path,p.approved_sha256 FROM target_artifact_approvals p
+         JOIN contact_target_artifacts a ON a.target_id=p.target_id AND a.artifact_type=p.artifact_type AND a.language=p.language AND a.path=p.artifact_path
+         WHERE p.target_id=?1 AND p.artifact_type='cv_pdf' AND p.language='en'",[target_id],|r|Ok((r.get(0)?,r.get(1)?)),
+    ).context("请先在 CV 栏目审核并批准当前 PDF")?;
+    let bytes=std::fs::read(resolve_data_path(&paths.data_root,&path))?;
+    if format!("{:x}",Sha256::digest(&bytes))!=hash { bail!("CV 在批准后发生变化，请重新审核") }
+    Ok(ApprovedAttachment {path,hash,bytes})
+}
+
+fn reserve_draft(path:&Path,request:&DraftRequest)->Result<Option<String>> {
+    let conn=db::connect(path)?;
+    let tx=db::publication_transaction(&conn)?;
+    let existing:Option<String>=tx.query_row("SELECT gmail_draft_id FROM gmail_drafts WHERE id=?1",[&request.record_id],|r|r.get(0)).optional()?;
+    if let Some(id)=existing {return Ok(Some(id))}
+    tx.execute("INSERT INTO gmail_drafts(id,application_id,gmail_draft_id,recipient,subject,cv_path) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![request.record_id,request.application_id,format!("unconfirmed:{}",request.record_id),request.recipient,request.subject,request.cv_path])?;
+    tx.execute("INSERT INTO gmail_draft_targets(gmail_draft_record_id,target_id,remote_verified) VALUES(?1,?2,0)",params![request.record_id,request.target_id])?;
+    tx.commit()?;
+    Ok(None)
+}
+
+fn url_path_segment(value:&str)->String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
 fn valid_email(value:&str)->bool {
     let value=value.trim();
     let Some((local,domain))=value.split_once('@') else{return false};
     !local.is_empty() && domain.contains('.') && !value.contains(char::is_whitespace)
 }
 
-fn build_mime(recipient:&str,subject:&str,body:&str,cv_path:&Path)->Result<String> {
+fn build_mime(recipient:&str,subject:&str,body:&str,cv_bytes:&[u8])->Result<String> {
+    if subject.contains(['\r','\n']) || !valid_email(recipient) { bail!("邮件头包含无效字符") }
     let boundary=format!("careeros-{}",Uuid::new_v4().simple());
-    let filename=cv_path.file_name().and_then(|value|value.to_str()).unwrap_or("cv.pdf");
+    let filename="cv.pdf";
     let encoded_subject=if subject.is_ascii(){subject.to_owned()}else{format!("=?UTF-8?B?{}?=",STANDARD.encode(subject.as_bytes()))};
-    let attachment=STANDARD.encode(std::fs::read(cv_path)?);
+    let attachment=STANDARD.encode(cv_bytes);
     let wrapped=attachment.as_bytes().chunks(76).map(|chunk|String::from_utf8_lossy(chunk).to_string()).collect::<Vec<_>>().join("\r\n");
     let mime=format!(
         "To: {recipient}\r\nSubject: {encoded_subject}\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n--{boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n{}\r\n\r\n--{boundary}\r\nContent-Type: application/pdf; name=\"{filename}\"\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{wrapped}\r\n--{boundary}--\r\n",
@@ -408,11 +455,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn approval_is_bound_to_preview_and_mime_keeps_the_captured_bytes() -> Result<()> {
+        let temp=tempfile::tempdir()?;
+        let paths=crate::materials::tests::publication_fixture(temp.path())?;
+        let manager=GmailManager::new(paths.clone());
+        let pdf=paths.generated.join("cv.pdf");
+        let hash=sha256_file(&pdf)?;
+        manager.approve_cv("target",&pdf.display().to_string(),&hash)?;
+        let conn=db::connect(&paths.database)?;
+        let captured=approved_attachment(&paths,&conn,"target")?;
+        std::fs::write(&pdf,b"unreviewed replacement")?;
+        assert!(manager.approve_cv("target",&pdf.display().to_string(),&hash).is_err());
+        assert!(approved_attachment(&paths,&conn,"target").is_err());
+        let raw=build_mime("contact@example.org","Subject","Body",&captured.bytes)?;
+        let mime=String::from_utf8(URL_SAFE_NO_PAD.decode(raw)?)?;
+        assert!(mime.contains(&STANDARD.encode(b"previous approved PDF")));
+        assert!(!mime.contains(&STANDARD.encode(b"unreviewed replacement")));
+        assert!(build_mime("contact@example.org","Subject\r\nBcc: unwanted@example.org","Body",&captured.bytes).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remote_id_survives_failed_verification_and_retry_never_posts_again() -> Result<()> {
+        let temp=tempfile::tempdir()?;
+        let paths=crate::materials::tests::publication_fixture(temp.path())?;
+        let listener=TcpListener::bind("127.0.0.1:0").await?;
+        let address=listener.local_addr()?;
+        let server=tokio::spawn(async move {
+            let mut methods=Vec::new();
+            for (status,body) in [("200 OK",r#"{"id":"draft-one","message":{"id":"message-one"}}"#),("503 Service Unavailable","{}"),("200 OK",r#"{"id":"draft-one"}"#)] {
+                let (mut socket,_)=listener.accept().await?;
+                let mut bytes=Vec::new();
+                loop {
+                    let mut buffer=[0u8;4096];
+                    let count=socket.read(&mut buffer).await?;
+                    if count==0 { break }
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(end)=bytes.windows(4).position(|part|part==b"\r\n\r\n") {
+                        let headers=String::from_utf8_lossy(&bytes[..end]);
+                        let length=headers.lines().find_map(|line|line.to_lowercase().strip_prefix("content-length:").and_then(|v|v.trim().parse::<usize>().ok())).unwrap_or(0);
+                        if bytes.len()>=end+4+length { break }
+                    }
+                }
+                methods.push(String::from_utf8_lossy(&bytes).split_whitespace().next().unwrap_or("").to_string());
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await?;
+            }
+            Ok::<_,anyhow::Error>(methods)
+        });
+        let mut manager=GmailManager::new(paths.clone());
+        manager.api_base=format!("http://{address}");
+        let request=DraftRequest {record_id:"request-one".into(),target_id:"target".into(),application_id:"app".into(),recipient:"contact@example.org".into(),subject:"Subject".into(),cv_path:"generated/cv.pdf".into()};
+        let first=manager.publish_draft("local-test-token",&request,"test-mime").await?;
+        assert!(!first.remote_verified);
+        assert_eq!(first.gmail_draft_id,"draft-one");
+        let second=manager.publish_draft("local-test-token",&request,"test-mime").await?;
+        assert!(second.remote_verified);
+        assert_eq!(server.await??,vec!["POST","GET","GET"]);
+        let conn=db::connect(&paths.database)?;
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM gmail_drafts",[],|r|r.get::<_,i64>(0))?,1);
+        let unknown=DraftRequest { record_id:"unknown-request".into(),..request };
+        assert!(reserve_draft(&paths.database,&unknown)?.is_none());
+        assert!(manager.publish_draft("unused",&unknown,"unused").await.unwrap_err().to_string().contains("不确定"));
+        Ok(())
+    }
+
+    #[test]
     fn mime_has_attachment_and_no_send_operation(){
         let dir=tempfile::tempdir().unwrap();
         let pdf=dir.path().join("cv.pdf");
         std::fs::write(&pdf,b"%PDF-test").unwrap();
-        let raw=build_mime("pi@example.edu","测试 subject","Hello",&pdf).unwrap();
+        let raw=build_mime("pi@example.edu","测试 subject","Hello",&std::fs::read(&pdf).unwrap()).unwrap();
         let decoded=URL_SAFE_NO_PAD.decode(raw).unwrap();
         let text=String::from_utf8(decoded).unwrap();
         assert!(text.contains("Content-Disposition: attachment"));

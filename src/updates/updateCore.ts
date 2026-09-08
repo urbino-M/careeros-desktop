@@ -1,3 +1,5 @@
+import { dateLocale, t } from "../i18n";
+
 export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 export const UPDATE_CHECK_TIMEOUT_MS = 15_000;
 
@@ -6,7 +8,7 @@ export function updateProgress(downloaded: number, total?: number) {
   return Math.min(100, Math.round((downloaded / total) * 100));
 }
 
-export function updateErrorMessage(value: unknown) {
+export function updateErrorKey(value: unknown) {
   const raw = value instanceof Error ? value.message : String(value);
   const normalized = raw.toLowerCase();
   if (normalized.includes("signature") || normalized.includes("public key")) {
@@ -21,8 +23,18 @@ export function updateErrorMessage(value: unknown) {
   return "更新没有完成，请稍后重试或前往 GitHub Release 手动下载。";
 }
 
+export function updateErrorMessage(value: unknown) {
+  return t(updateErrorKey(value));
+}
+
+export type UpdateMessage = string | { key: string; values: Array<string | number> };
+
+export function formatUpdateMessage(message: UpdateMessage) {
+  return typeof message === "string" ? t(message) : t(message.key, ...message.values);
+}
+
 export function formatLastChecked(value?: string) {
-  if (!value) return "尚未检查";
+  if (!value) return t("尚未检查");
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "尚未检查" : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? t("尚未检查") : date.toLocaleString(dateLocale());
 }

@@ -19,12 +19,12 @@ mod workflows;
 use codex::CodexManager;
 use base64::Engine;
 use models::{
-    DashboardData, GmailDraftInfo, GmailOAuthStart, GmailStatus, JobGroups,
+    DashboardData, DiscoveredOpportunityPage, GmailDraftInfo, GmailOAuthStart, GmailStatus, JobGroups,
     InboundReplyRequest, MigrationReport, ProviderInfo, ReplyItem, TargetCard,
     TargetDetail, TaskModelDefault,
 };
 use paths::AppPaths;
-use scheduler::{EnqueueRequest, Scheduler};
+use scheduler::{EnqueueRequest, RetryJobRequest, Scheduler};
 use providers::ProviderConnectionRequest;
 use serde_json::Value;
 use std::sync::Arc;
@@ -58,6 +58,21 @@ fn get_dashboard(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn get_discovered_opportunities(
+    state: tauri::State<'_, AppState>,
+    search: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    pending_only: Option<bool>,
+    category: Option<String>,
+    shelved_only: Option<bool>,
+) -> Result<DiscoveredOpportunityPage, String> {
+    db::list_opportunities_by_view(
+        &state.paths.database, search.as_deref(), offset.unwrap_or(0), limit.unwrap_or(10), pending_only.unwrap_or(true), category.as_deref(), shelved_only.unwrap_or(false),
+    ).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn get_contact_targets(
     state: tauri::State<'_, AppState>,
     status: Option<String>,
@@ -66,8 +81,9 @@ fn get_contact_targets(
     search: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
+    category: Option<String>,
 ) -> Result<Vec<TargetCard>, String> {
-    db::list_targets(
+    db::list_targets_by_category(
         &state.paths.database,
         career_track.as_deref().unwrap_or("postdoc"),
         status.as_deref(),
@@ -75,6 +91,7 @@ fn get_contact_targets(
         search.as_deref(),
         offset.unwrap_or(0),
         limit.unwrap_or(20),
+        category.as_deref(),
     )
     .map_err(display_error)
 }
@@ -86,6 +103,11 @@ fn get_contact_target(
 ) -> Result<TargetDetail, String> {
     db::target_detail(&state.paths.database, &state.paths.data_root, &target_id)
         .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn set_opportunity_shelved(state: tauri::State<'_, AppState>, opportunity_id: String, shelved: bool) -> Result<(), String> {
+    db::set_opportunity_shelved(&state.paths.database, &opportunity_id, shelved).map_err(display_error)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -129,16 +151,9 @@ async fn save_manual_material(
     state: tauri::State<'_, AppState>,
     request: materials::ManualRevisionRequest,
 ) -> Result<materials::RevisionResult, String> {
-    let result = materials::save_manual(&state.paths, &request).map_err(display_error)?;
-    if request.artifact_type == "cv_data" {
-        typst::generate_cv(&state.paths, &request.target_id)
-            .await
-            .map_err(display_error)?;
-    } else if request.artifact_type == "cover_letter_text" {
-        cover_letter::regenerate_from_text(&state.paths, &request.target_id)
-            .await
-            .map_err(display_error)?;
-    }
+    let result = materials::save_manual(&state.paths, &request)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
     Ok(result)
 }
 
@@ -263,11 +278,13 @@ fn save_onboarding_profile(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn import_onboarding_cv(
+async fn import_onboarding_cv(
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<String, String> {
-    onboarding::import_cv(&state.paths, std::path::Path::new(&path)).map_err(display_error)
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || onboarding::import_cv(&paths, std::path::Path::new(&path)))
+        .await.map_err(|error| error.to_string())?.map_err(display_error)
 }
 
 #[tauri::command]
@@ -292,8 +309,8 @@ async fn cancel_job(state: tauri::State<'_, AppState>, job_id: String) -> Result
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn retry_job(state: tauri::State<'_, AppState>, job_id: String) -> Result<(), String> {
-    state.scheduler.retry(&job_id).map_err(display_error)
+fn retry_job(state: tauri::State<'_, AppState>, request: RetryJobRequest) -> Result<(), String> {
+    state.scheduler.retry_with_options(request).map_err(display_error)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -362,8 +379,10 @@ async fn start_gmail_oauth(
 fn approve_cv_for_gmail(
     state: tauri::State<'_, AppState>,
     target_id: String,
+    preview_path: String,
+    preview_sha256: String,
 ) -> Result<String, String> {
-    state.gmail.approve_cv(&target_id).map_err(display_error)
+    state.gmail.approve_cv(&target_id, &preview_path, &preview_sha256).map_err(display_error)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -429,6 +448,8 @@ pub fn run() {
             get_app_paths,
             get_dashboard,
             get_contact_targets,
+            get_discovered_opportunities,
+            set_opportunity_shelved,
             get_contact_target,
             set_contact_status,
             set_submission_status,

@@ -1,8 +1,8 @@
 use crate::models::{
     ArtifactItem, ChecklistItem, DashboardData, DashboardMetric, JobGroups, JobSummary,
-    InboundReplyRequest, ProviderInfo, ProviderModelInfo, RegionCount, ReplyItem,
+    InboundReplyRequest, JobEvent, ProviderInfo, ProviderModelInfo, RegionCount, ReplyItem,
     ProviderRuntimeConfig, ProviderRuntimeModel, RevisionItem, TargetCard, TargetDetail,
-    TaskModelDefault,
+    TaskModelDefault, DiscoveredOpportunityPage, DiscoveredOpportunity, OpportunityContact,
 };
 use crate::paths::AppPaths;
 use crate::providers::ProviderDiscovery;
@@ -21,6 +21,14 @@ pub fn connect(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.busy_timeout(Duration::from_secs(10))?;
     Ok(conn)
+}
+
+/// Reserve the SQLite writer before checking the task's right to publish.
+/// Cancellation/lease transfer cannot slip between that check and commit.
+pub(crate) fn publication_transaction(conn: &Connection) -> Result<rusqlite::Transaction<'_>> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    crate::scheduler::ensure_can_publish(&tx)?;
+    Ok(tx)
 }
 
 pub fn dashboard(path: &Path, career_track: &str) -> Result<DashboardData> {
@@ -42,6 +50,7 @@ pub fn dashboard(path: &Path, career_track: &str) -> Result<DashboardData> {
              LEFT JOIN opportunities o ON o.id=t.opportunity_id
              WHERE t.archived_at IS NULL AND t.shelved_at IS NULL
                AND t.status=?2
+               AND (?1<>'postdoc' OR ?2<>'ready_to_contact' OR t.material_status='ready')
                AND (
                     (?1='internship' AND o.opportunity_type='industry_internship')
                     OR (?1='postdoc' AND COALESCE(o.opportunity_type,'')<>'industry_internship')
@@ -172,11 +181,12 @@ pub fn dashboard(path: &Path, career_track: &str) -> Result<DashboardData> {
         &conn,
         career_track,
         if career_track == "postdoc" { Some("ready_to_contact") } else { None },
-        if career_track == "internship" { Some("portal_pending") } else { None },
+        None,
         None,
         0,
         4,
         true,
+        None,
     )?;
     Ok(DashboardData {
         metrics,
@@ -249,7 +259,125 @@ fn is_european_country(country: &str) -> bool {
     )
 }
 
-pub fn list_targets(
+// Legacy prospect types may carry status=open; explicit kind takes precedence.
+const POSTDOC_CATEGORY: &str = "CASE
+    WHEN o.opportunity_type IN ('prospective_contact','prospective_pi','cold_outreach','fellowship_host') THEN 'prospective'
+    WHEN o.status='prospective' THEN 'prospective'
+    WHEN o.opportunity_type IN ('advertised_position','formal_position','formal_postdoc','fellowship','program') THEN 'advertised'
+    ELSE 'uncertain' END";
+
+fn postdoc_category_filter(category: Option<&str>) -> Result<String> {
+    match category {
+        None => Ok("1=1".into()),
+        Some(value @ ("advertised" | "prospective" | "uncertain")) => Ok(format!("({POSTDOC_CATEGORY})='{value}'")),
+        Some(_) => bail!("无效的 Postdoc 机会分类"),
+    }
+}
+
+fn postdoc_category_order(category: Option<&str>, score: &str) -> String {
+    if category == Some("advertised") {
+        // Only exact, valid ISO calendar dates are sortable; text deadlines remain unknown.
+        let date = "CASE WHEN length(trim(o.deadline))=10 AND date(trim(o.deadline),'+0 days')=trim(o.deadline) THEN trim(o.deadline) END";
+        format!("CASE WHEN o.status='closed' OR ({date})<date('now','localtime') THEN 2 WHEN ({date}) IS NULL THEN 1 ELSE 0 END,
+            ({date}) ASC, {score} DESC, o.id ASC")
+    } else {
+        format!("{score} DESC, o.id ASC")
+    }
+}
+
+#[cfg(test)]
+fn list_discovered_opportunities(path: &Path, search: Option<&str>, offset: usize, limit: usize, pending_only: bool) -> Result<DiscoveredOpportunityPage> {
+    list_discovered_opportunities_by_category(path, search, offset, limit, pending_only, None)
+}
+
+pub fn list_discovered_opportunities_by_category(
+    path: &Path,
+    search: Option<&str>,
+    offset: usize,
+    limit: usize,
+    pending_only: bool,
+    category: Option<&str>,
+) -> Result<DiscoveredOpportunityPage> {
+    list_opportunities_by_view(path, search, offset, limit, pending_only, category, false)
+}
+
+pub fn list_opportunities_by_view(path: &Path, search: Option<&str>, offset: usize, limit: usize,
+    pending_only: bool, category: Option<&str>, shelved_only: bool) -> Result<DiscoveredOpportunityPage> {
+    let category_filter = postdoc_category_filter(category)?;
+    let mut conn = connect(path)?;
+    let tx = conn.transaction()?;
+    // Start from opportunities: a discovered role need not have a PI or materials yet.
+    // Do not resurrect opportunities whose only contacts were explicitly archived.
+    let eligible = "COALESCE(o.opportunity_type,'')<>'industry_internship'
+        AND (NOT EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id)
+          OR EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id AND t.archived_at IS NULL))";
+    let matching = "(?1='' OR instr(lower(o.title || ' ' || o.organization || ' ' ||
+        COALESCE(o.summary,'') || ' ' || COALESCE(o.region,'') || ' ' || COALESCE(o.country,'')),lower(?1))>0
+        OR EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id
+            AND t.archived_at IS NULL AND instr(lower(t.name),lower(?1))>0))";
+    let query = search.unwrap_or("").trim();
+    let overall_total = tx.query_row(&format!("SELECT COUNT(*) FROM opportunities o WHERE {eligible}"), [], |r| r.get(0))?;
+    let incomplete = "o.shelved_at IS NULL AND (NOT EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id AND t.archived_at IS NULL)
+        OR EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id AND t.archived_at IS NULL AND t.shelved_at IS NULL AND t.material_status='pending'))";
+    let shelved = "(o.shelved_at IS NOT NULL OR EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id AND t.archived_at IS NULL AND t.shelved_at IS NOT NULL))";
+    let shelved_total = tx.query_row(&format!("SELECT COUNT(*) FROM opportunities o WHERE {eligible} AND {shelved}"), [], |r| r.get(0))?;
+    let pending_total = tx.query_row(&format!("SELECT COUNT(*) FROM opportunities o WHERE {eligible} AND {incomplete}"), [], |r| r.get(0))?;
+    // Filter before counting/pagination; the All tab deliberately includes completed material packages.
+    let eligible = if shelved_only { format!("{eligible} AND {shelved} AND {category_filter}") }
+        else if pending_only { format!("{eligible} AND {incomplete} AND {category_filter}") } else { format!("{eligible} AND {category_filter}") };
+    let order = if category.is_some() { postdoc_category_order(category, "o.fit_score") }
+        else { "COALESCE(o.discovered_at,o.created_at) DESC,o.id ASC".into() };
+    let total = tx.query_row(&format!("SELECT COUNT(*) FROM opportunities o WHERE {eligible} AND {matching}"), [query], |r| r.get(0))?;
+    let mut items = tx.prepare(&format!(
+        "SELECT o.id,o.title,o.organization,o.summary,o.country,o.region,o.deadline,o.source_url,o.status,o.discovered_at,
+            (o.shelved_at IS NOT NULL OR (EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id AND t.archived_at IS NULL)
+              AND NOT EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id AND t.archived_at IS NULL AND t.shelved_at IS NULL)))
+         FROM opportunities o WHERE {eligible} AND {matching}
+         ORDER BY {order} LIMIT ?2 OFFSET ?3"
+    ))?.query_map(params![query, limit.clamp(1, 100) as i64, offset.min(i64::MAX as usize) as i64], |r| {
+        Ok(DiscoveredOpportunity {
+            id:r.get(0)?, title:r.get(1)?, organization:r.get(2)?, summary:r.get(3)?,
+            country:r.get(4)?, region:r.get(5)?, deadline:r.get(6)?, source_url:r.get(7)?,
+            status:r.get(8)?, discovered_at:r.get(9)?, shelved:r.get(10)?, contacts:Vec::new(), latest_job:None,
+        })
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    {
+        let mut contacts = tx.prepare("SELECT id,name,material_status,shelved_at IS NOT NULL FROM contact_targets_v2
+            WHERE opportunity_id=?1 AND archived_at IS NULL ORDER BY name,id")?;
+        for item in &mut items {
+            item.contacts = contacts.query_map([&item.id], |r| Ok(OpportunityContact {
+                id:r.get(0)?, name:r.get(1)?, material_status:r.get(2)?, shelved:r.get(3)?,
+            }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            item.latest_job = continuation_job(&tx, &item.id)?;
+        }
+    }
+    tx.commit()?;
+    Ok(DiscoveredOpportunityPage { items, total, overall_total, pending_total, shelved_total })
+}
+
+pub fn set_opportunity_shelved(path: &Path, id: &str, shelved: bool) -> Result<()> {
+    let mut conn = connect(path)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let changed = tx.execute("UPDATE opportunities SET shelved_at=CASE WHEN ?2 THEN COALESCE(shelved_at,strftime('%Y-%m-%dT%H:%M:%SZ','now')) ELSE NULL END
+        WHERE id=?1 AND COALESCE(opportunity_type,'')<>'industry_internship'", params![id,shelved])?;
+    if changed != 1 { bail!("Postdoc 机会不存在，状态未更新") }
+    // Preserve each contact's actual stage, submission flags and all files.
+    tx.execute("UPDATE contact_targets_v2 SET shelved_at=CASE WHEN ?2 THEN COALESCE(shelved_at,strftime('%Y-%m-%dT%H:%M:%SZ','now')) ELSE NULL END,
+        updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE opportunity_id=?1 AND archived_at IS NULL", params![id,shelved])?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn opportunity_shelved(conn: &Connection, id: &str) -> Result<bool> {
+    Ok(conn.query_row("SELECT shelved_at IS NOT NULL FROM opportunities WHERE id=?1", [id], |r| r.get(0)).optional()?.unwrap_or(false))
+}
+
+#[cfg(test)]
+pub fn list_targets(path: &Path, career_track: &str, status: Option<&str>, submission_status: Option<&str>, search: Option<&str>, offset: usize, limit: usize) -> Result<Vec<TargetCard>> {
+    list_targets_by_category(path, career_track, status, submission_status, search, offset, limit, None)
+}
+
+pub fn list_targets_by_category(
     path: &Path,
     career_track: &str,
     status: Option<&str>,
@@ -257,12 +385,13 @@ pub fn list_targets(
     search: Option<&str>,
     offset: usize,
     limit: usize,
+    category: Option<&str>,
 ) -> Result<Vec<TargetCard>> {
     validate_career_track(career_track)?;
     validate_status_filter(status)?;
     validate_submission_status_filter(submission_status)?;
     let conn = connect(path)?;
-    list_targets_with_conn(&conn, career_track, status, submission_status, search, offset, limit.clamp(1, 100), false)
+    list_targets_with_conn(&conn, career_track, status, submission_status, search, offset, limit.clamp(1, 100), false, category)
 }
 
 fn list_targets_with_conn(
@@ -273,7 +402,8 @@ fn list_targets_with_conn(
     search: Option<&str>,
     offset: usize,
     limit: usize,
-    high_fit_first: bool,
+    dashboard_order: bool,
+    category: Option<&str>,
 ) -> Result<Vec<TargetCard>> {
     validate_career_track(career_track)?;
     validate_status_filter(status)?;
@@ -282,20 +412,27 @@ fn list_targets_with_conn(
     let submission_status = submission_status.filter(|value| *value != "all");
     let search = search.map(str::trim).filter(|value| !value.is_empty());
     let pattern = search.map(|value| format!("%{}%", value.to_lowercase()));
-    let order = if high_fit_first {
-        "t.fit_score DESC, t.priority, t.updated_at DESC"
+    let category_filter = postdoc_category_filter(if career_track == "postdoc" { category } else { None })?;
+    let order = if career_track == "postdoc" && category.is_some() {
+        format!("{},t.id ASC", postdoc_category_order(category, "t.fit_score"))
+    } else if career_track == "internship" && dashboard_order {
+        format!("{},t.id ASC", postdoc_category_order(Some("advertised"), "t.fit_score"))
+    } else if dashboard_order {
+        "t.fit_score DESC, t.priority, t.updated_at DESC".into()
     } else {
-        "t.fit_score DESC, t.updated_at DESC"
+        "t.fit_score DESC, t.updated_at DESC".into()
     };
     let sql = format!(
         "SELECT t.id, t.application_id, t.opportunity_id, t.name, t.email,
                 t.organization, t.title, o.country, o.region, t.fit_score,
                 t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
                 t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at,
-                CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END
+                CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END,
+                t.material_status, t.material_error, o.status
          FROM contact_targets_v2 t
          LEFT JOIN opportunities o ON o.id=t.opportunity_id
          WHERE t.archived_at IS NULL
+           AND {category_filter}
            AND (
                 (?1='internship' AND o.opportunity_type='industry_internship')
                 OR (?1='postdoc' AND COALESCE(o.opportunity_type,'')<>'industry_internship')
@@ -305,6 +442,7 @@ fn list_targets_with_conn(
                 OR (?2='shelved' AND t.shelved_at IS NOT NULL)
                 OR (?2<>'shelved' AND t.shelved_at IS NULL AND t.status=?2)
            )
+           AND (?1<>'postdoc' OR COALESCE(?2,'')<>'ready_to_contact' OR t.material_status='ready')
            AND (?3 IS NULL OR t.submission_status=?3)
            AND (?4 IS NULL OR lower(t.name) LIKE ?4 OR lower(t.organization) LIKE ?4
                 OR lower(t.title) LIKE ?4 OR lower(COALESCE(t.email,'')) LIKE ?4)
@@ -327,7 +465,8 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
                     t.organization, t.title, o.country, o.region, t.fit_score,
                     t.priority, CASE WHEN t.shelved_at IS NOT NULL THEN 'shelved' ELSE t.status END,
                     t.submission_status, o.deadline, COALESCE(t.source_url,o.source_url), t.updated_at,
-                    CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END
+                    CASE WHEN o.opportunity_type='industry_internship' THEN 'internship' ELSE 'postdoc' END,
+                t.material_status, t.material_error, o.status
              FROM contact_targets_v2 t
              LEFT JOIN opportunities o ON o.id=t.opportunity_id
              WHERE t.id=?1 AND t.archived_at IS NULL",
@@ -355,7 +494,7 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
 
     let mut artifacts_statement = conn.prepare(
         "SELECT artifact_type, language, path, updated_at
-         FROM contact_target_artifacts WHERE target_id=?1
+         FROM contact_target_artifacts WHERE target_id=?1 AND artifact_type<>'material_requirements'
          ORDER BY CASE artifact_type
                     WHEN 'cv_pdf' THEN 10 WHEN 'cv_tex' THEN 20 WHEN 'email' THEN 30
                     WHEN 'fit_analysis' THEN 40 WHEN 'pi_profile' THEN 50 ELSE 100 END,
@@ -396,7 +535,7 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
         "SELECT r.id, r.sender, r.subject, r.body, r.received_at, r.created_at
          FROM application_replies r
          JOIN reply_contact_targets m ON m.reply_id=r.id
-         WHERE m.target_id=?1 ORDER BY COALESCE(r.received_at,r.created_at) DESC",
+         WHERE m.target_id=?1 ORDER BY COALESCE(r.received_at,r.created_at) DESC,r.rowid DESC",
     )?;
     let replies = replies_statement
         .query_map([target_id], |row| {
@@ -446,6 +585,12 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
+    let recovery_job = if target.material_status == "pending" {
+        material_recovery_job(&conn,target_id,target.opportunity_id.as_deref())?
+    } else { None };
+    let unpublished_cv = if target.material_status == "pending" && !artifacts.iter().any(|item| item.artifact_type == "cv_data") {
+        unpublished_cv_candidates(data_root,target_id)?
+    } else { Vec::new() };
     Ok(TargetDetail {
         target,
         summary,
@@ -456,15 +601,70 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
         checklist,
         replies,
         revisions,
+        recovery_job,
+        unpublished_cv,
     })
 }
 
+fn material_recovery_job(conn: &Connection, target: &str, opportunity: Option<&str>) -> Result<Option<JobSummary>> {
+    let job = conn.query_row(
+        "SELECT id,job_type,target_id,status,progress,message,provider_id,account_id,model_id,
+                reasoning,thread_id,error,created_at,started_at,finished_at,payload_json FROM native_jobs j
+         WHERE job_type='full_search' AND (
+           json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.opportunityId')=?2
+           OR EXISTS(SELECT 1 FROM json_tree(CASE WHEN json_valid(result_json) THEN result_json ELSE '{}' END)
+             WHERE key='targetId' AND value=?1))
+         ORDER BY CASE WHEN status IN ('running','queued') THEN 0 ELSE 1 END,created_at DESC,rowid DESC LIMIT 1",
+        params![target,opportunity],job_from_row).optional()?;
+    let Some(job)=job else { return Ok(None) };
+    let mut jobs=vec![job]; attach_result_targets(conn,&mut jobs)?; attach_job_events(conn,&mut jobs)?;
+    Ok(jobs.pop())
+}
+
+fn unpublished_cv_candidates(root: &Path, target: &str) -> Result<Vec<ArtifactItem>> {
+    // Only inspect this contact's version directories, never the broad search output.
+    if !target.chars().all(|c| c.is_ascii_alphanumeric() || c=='-' || c=='_') { return Ok(Vec::new()) }
+    let versions=root.join("generated/contact-targets").join(target).join("versions");
+    if !versions.is_dir() { return Ok(Vec::new()) }
+    let root=root.canonicalize()?;
+    let owned_versions=root.join("generated/contact-targets").join(target).join("versions");
+    if versions.canonicalize()? != owned_versions { return Ok(Vec::new()) }
+    let mut candidates=Vec::new();
+    for entry in std::fs::read_dir(versions)? {
+        let directory=entry?.path();
+        if !directory.is_dir() || directory.join("provenance.json").exists() { continue; }
+        let data=directory.join("cv-data.json");
+        if !data.is_file() || !data.canonicalize()?.starts_with(&owned_versions) { continue; }
+        candidates.push((data.metadata()?.modified()?,directory));
+    }
+    candidates.sort_by(|a,b| b.0.cmp(&a.0));
+    let Some((_,directory))=candidates.first() else { return Ok(Vec::new()) };
+    let mut result=Vec::new();
+    for (kind,lang,name) in [("cv_data","und","cv-data.json"),("cv_pdf","en","cv.pdf")] {
+        let path=directory.join(name);
+        if path.is_file() && path.canonicalize()?.starts_with(&owned_versions) {
+            result.push(ArtifactItem {artifact_type:kind.into(),language:lang.into(),path:path.display().to_string(),exists:true,updated_at:String::new()});
+        }
+    }
+    Ok(result)
+}
+
 pub fn update_target_status(path: &Path, target_id: &str, status: &str) -> Result<()> {
+    let mut conn = connect(path)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    update_target_status_with_conn(&tx, target_id, status)?;
+    if status != "shelved" {
+        tx.execute("UPDATE opportunities SET shelved_at=NULL WHERE id=(SELECT opportunity_id FROM contact_targets_v2 WHERE id=?1)", [target_id])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn update_target_status_with_conn(conn: &Connection, target_id: &str, status: &str) -> Result<()> {
     validate_status_filter(Some(status))?;
     if status == "all" {
         bail!("“全部”只是筛选条件，不能保存为状态")
     }
-    let conn = connect(path)?;
     let changed = conn.execute(
         "UPDATE contact_targets_v2
          SET status=CASE WHEN ?2='shelved' THEN status ELSE ?2 END,
@@ -483,6 +683,24 @@ pub fn update_target_status(path: &Path, target_id: &str, status: &str) -> Resul
         bail!("联系目标不存在，状态未更新")
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub fn apply_agent_status(path: &Path, target_id: &str, status: &str, expected_version: Option<i64>) -> Result<bool> {
+    let mut conn = connect(path)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let applied = apply_agent_status_in_transaction(&tx, target_id, status, expected_version)?;
+    tx.commit()?;
+    Ok(applied)
+}
+
+pub(crate) fn apply_agent_status_in_transaction(tx: &rusqlite::Transaction<'_>, target_id: &str, status: &str, expected_version: Option<i64>) -> Result<bool> {
+    // Old jobs have no snapshot: keep their recommendation, never guess user intent.
+    let Some(expected) = expected_version else { return Ok(false) };
+    let current: Option<i64> = tx.query_row("SELECT status_version FROM contact_targets_v2 WHERE id=?1 AND archived_at IS NULL", [target_id], |row| row.get(0)).optional()?;
+    if current != Some(expected) { return Ok(false); }
+    update_target_status_with_conn(tx, target_id, status)?;
+    Ok(true)
 }
 
 pub fn update_submission_status(path: &Path, target_id: &str, status: &str) -> Result<()> {
@@ -559,6 +777,11 @@ pub fn save_inbound_reply(path: &Path, request: &InboundReplyRequest) -> Result<
              updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
          WHERE id=?1 AND archived_at IS NULL",
         params![request.target_id, request.received_at],
+    )?;
+    tx.execute(
+        "UPDATE opportunities SET shelved_at=NULL
+         WHERE id=(SELECT opportunity_id FROM contact_targets_v2 WHERE id=?1)",
+        [&request.target_id],
     )?;
     let result = tx.query_row(
         "SELECT id,sender,subject,body,received_at,created_at
@@ -933,7 +1156,8 @@ pub fn job_groups(path: &Path, page_size: usize) -> Result<JobGroups> {
 fn query_native_jobs(conn: &Connection, status: Option<&str>, limit: usize) -> Result<Vec<JobSummary>> {
     let mut statement = conn.prepare(
         "SELECT id, job_type, target_id, status, progress, message, provider_id,
-                account_id, model_id, reasoning, thread_id, error, created_at, started_at, finished_at
+                account_id, model_id, reasoning, thread_id, error, created_at, started_at, finished_at,
+                payload_json
          FROM native_jobs
          WHERE (?1 IS NULL OR status=?1)
          ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
@@ -943,7 +1167,24 @@ fn query_native_jobs(conn: &Connection, status: Option<&str>, limit: usize) -> R
         .query_map(params![status, limit as i64], job_from_row)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     attach_result_targets(conn, &mut jobs)?;
+    attach_job_events(conn, &mut jobs)?;
     Ok(jobs)
+}
+
+fn continuation_job(conn: &Connection, opportunity_id: &str) -> Result<Option<JobSummary>> {
+    let job = conn.query_row(
+        "SELECT id,job_type,target_id,status,progress,message,provider_id,account_id,model_id,
+                reasoning,thread_id,error,created_at,started_at,finished_at,payload_json
+         FROM native_jobs
+         WHERE job_type='full_search' AND json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.opportunityId')=?1
+         ORDER BY CASE WHEN status IN ('running','queued') THEN 0 ELSE 1 END,created_at DESC,rowid DESC LIMIT 1",
+        [opportunity_id], job_from_row,
+    ).optional()?;
+    let Some(job) = job else { return Ok(None) };
+    let mut jobs = vec![job];
+    attach_result_targets(conn, &mut jobs)?;
+    attach_job_events(conn, &mut jobs)?;
+    Ok(jobs.pop())
 }
 
 
@@ -966,10 +1207,23 @@ fn target_from_row(row: &Row<'_>) -> rusqlite::Result<TargetCard> {
         source_url: row.get(14)?,
         updated_at: row.get(15)?,
         career_track: row.get(16)?,
+        material_status: row.get(17)?,
+        material_error: row.get(18)?,
+        opportunity_status: row.get(19)?,
     })
 }
 
 fn job_from_row(row: &Row<'_>) -> rusqlite::Result<JobSummary> {
+    let payload_raw: String = row.get(15)?;
+    let payload: serde_json::Value = serde_json::from_str(&payload_raw).unwrap_or_default();
+    let non_empty = |key: &str| {
+        payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
     Ok(JobSummary {
         id: row.get(0)?,
         job_type: row.get(1)?,
@@ -987,6 +1241,15 @@ fn job_from_row(row: &Row<'_>) -> rusqlite::Result<JobSummary> {
         created_at: row.get(12)?,
         started_at: row.get(13)?,
         finished_at: row.get(14)?,
+        request_summary: non_empty("query")
+            .or_else(|| non_empty("instruction"))
+            .or_else(|| non_empty("sourceUrl")),
+        prompt: non_empty("prompt"),
+        max_results: payload
+            .get("maxResults")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok()),
+        events: Vec::new(),
     })
 }
 
@@ -999,6 +1262,33 @@ fn attach_result_targets(conn: &Connection, jobs: &mut [JobSummary]) -> Result<(
     for job in jobs {
         job.result_target_ids = statement
             .query_map([&job.id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+    }
+    Ok(())
+}
+
+fn attach_job_events(conn: &Connection, jobs: &mut [JobSummary]) -> Result<()> {
+    let mut statement = conn.prepare(
+        "SELECT event_type,progress,message,created_at
+         FROM (
+            SELECT id,event_type,progress,message,created_at
+            FROM native_job_events
+            WHERE job_id=?1
+            ORDER BY id DESC
+            LIMIT 8
+         )
+         ORDER BY id",
+    )?;
+    for job in jobs {
+        job.events = statement
+            .query_map([&job.id], |row| {
+                Ok(JobEvent {
+                    event_type: row.get(0)?,
+                    progress: row.get(1)?,
+                    message: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
     }
     Ok(())
@@ -1083,14 +1373,222 @@ mod tests {
     use crate::providers::{AdapterModel, ModelCapabilities};
     use tempfile::TempDir;
 
+    fn empty_jobs_fixture(conn: &Connection) -> Result<()> {
+        conn.execute_batch("CREATE TABLE native_jobs(id TEXT,job_type TEXT,target_id TEXT,status TEXT,progress INTEGER,
+            message TEXT,provider_id TEXT,account_id TEXT,model_id TEXT,reasoning TEXT,thread_id TEXT,error TEXT,
+            created_at TEXT,started_at TEXT,finished_at TEXT,payload_json TEXT);")?;
+        Ok(())
+    }
+
+    #[test]
+    fn postdoc_categories_filter_all_stages_and_sort_before_pagination() -> Result<()> {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("categories.sqlite3");
+        let conn = connect(&path)?;
+        empty_jobs_fixture(&conn)?;
+        conn.execute_batch("CREATE TABLE opportunities(
+            id TEXT PRIMARY KEY,title TEXT DEFAULT 'Role',organization TEXT DEFAULT 'University',summary TEXT,
+            country TEXT,region TEXT,deadline TEXT,source_url TEXT,status TEXT DEFAULT 'open',
+            discovered_at TEXT,created_at TEXT DEFAULT '2026-09-01',opportunity_type TEXT,fit_score REAL,shelved_at TEXT);
+            CREATE TABLE contact_targets_v2(id TEXT PRIMARY KEY,application_id TEXT DEFAULT 'app',opportunity_id TEXT,
+                name TEXT DEFAULT 'Contact',email TEXT,organization TEXT DEFAULT 'University',title TEXT DEFAULT 'Role',
+                fit_score REAL,priority INTEGER DEFAULT 0,status TEXT DEFAULT 'ready_to_contact',
+                submission_status TEXT DEFAULT 'not_set',material_status TEXT DEFAULT 'ready',material_error TEXT,
+                archived_at TEXT,shelved_at TEXT,source_url TEXT,updated_at TEXT DEFAULT '2026-09-01');
+            INSERT INTO opportunities(id,opportunity_type,deadline,fit_score) VALUES
+                ('near','advertised_position','2099-01-02',10),('later','formal_postdoc','2099-11-01',99),
+                ('rolling','formal_position','until filled',50),('expired','fellowship','2000-01-01',100),
+                ('invalid','formal_position','2099-02-31',20),
+                ('prospect-high','prospective_pi',NULL,90),('prospect-low','cold_outreach',NULL,40),
+                ('unknown','hiring_signal',NULL,80),('intern','industry_internship',NULL,99);
+            INSERT INTO contact_targets_v2(id,opportunity_id,fit_score) SELECT id,id,fit_score FROM opportunities;
+            INSERT INTO opportunities(id,opportunity_type,fit_score) VALUES('orphan','fellowship_host',30);")?;
+        drop(conn);
+        let public = list_discovered_opportunities_by_category(&path, None, 0, 10, false, Some("advertised"))?;
+        assert_eq!(public.items.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), vec!["near","later","rolling","invalid","expired"]);
+        assert_eq!(public.overall_total, 9);
+        assert_eq!(public.pending_total, 1);
+        assert_eq!(list_discovered_opportunities_by_category(&path,None,1,1,false,Some("advertised"))?.items[0].id,"later");
+        let prospect = list_discovered_opportunities_by_category(&path,None,0,10,false,Some("prospective"))?;
+        assert_eq!(prospect.items.iter().map(|o|o.id.as_str()).collect::<Vec<_>>(),vec!["prospect-high","prospect-low","orphan"]);
+        assert_eq!(list_discovered_opportunities_by_category(&path,None,0,10,true,Some("prospective"))?.items[0].id,"orphan");
+        assert_eq!(list_discovered_opportunities_by_category(&path,None,0,10,false,Some("uncertain"))?.items[0].id,"unknown");
+        assert!(list_discovered_opportunities_by_category(&path,None,0,10,false,Some("bad' OR 1=1" )).is_err());
+        for stage in ["ready_to_contact","contacted","replied","follow_up","shelved"] {
+            let conn = connect(&path)?;
+            conn.execute("UPDATE contact_targets_v2 SET status=?1,shelved_at=CASE WHEN ?1='shelved' THEN '2026-09-01' END",[stage])?;
+            drop(conn);
+            let targets = list_targets_by_category(&path,"postdoc",Some(stage),None,None,0,1,Some("advertised"))?;
+            assert_eq!(targets[0].id,"near");
+            let next = list_targets_by_category(&path,"postdoc",Some(stage),None,None,1,1,Some("advertised"))?;
+            assert_eq!(next[0].id,"later");
+            let targets = list_targets_by_category(&path,"postdoc",Some(stage),None,None,0,10,Some("prospective"))?;
+            assert_eq!(targets.len(),2);
+            assert_eq!(targets[0].id,"prospect-high");
+        }
+        assert_eq!(list_targets_by_category(&path,"internship",None,None,None,0,10,None)?.len(),1);
+        assert!(list_targets_by_category(&path,"postdoc",None,None,None,0,10,Some("invalid")).is_err());
+        let conn = connect(&path)?;
+        conn.execute_batch("INSERT INTO opportunities(id,opportunity_type,deadline,fit_score) VALUES
+            ('intern-near','industry_internship','2099-01-01',1),
+            ('intern-later','industry_internship','2099-11-01',100),
+            ('intern-expired','industry_internship','2000-01-01',100);
+            INSERT INTO contact_targets_v2(id,opportunity_id,fit_score,submission_status)
+                SELECT id,id,fit_score,CASE WHEN id='intern-near' THEN 'submitted' ELSE 'portal_pending' END FROM opportunities WHERE id LIKE 'intern-%';")?;
+        let intern_dashboard = list_targets_with_conn(&conn,"internship",None,None,None,0,4,true,None)?;
+        assert_eq!(intern_dashboard.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),vec!["intern-near","intern-later","intern","intern-expired"]);
+        assert_eq!(intern_dashboard[0].submission_status,"submitted");
+        assert!(intern_dashboard.iter().all(|t| t.career_track == "internship"));
+        let internship_default = list_targets_with_conn(&conn,"internship",None,None,None,0,1,false,None)?;
+        assert_ne!(internship_default[0].id,"intern-near"); // Application list sorting is unchanged.
+        conn.execute_batch("UPDATE contact_targets_v2 SET status='ready_to_contact',shelved_at=NULL;
+            UPDATE contact_targets_v2 SET material_status='pending' WHERE id='near';")?;
+        let ready=list_targets_with_conn(&conn,"postdoc",Some("ready_to_contact"),None,None,0,100,false,None)?;
+        assert!(!ready.iter().any(|target|target.id=="near"));
+        assert!(list_targets_with_conn(&conn,"postdoc",None,None,None,0,100,false,None)?.iter().any(|target|target.id=="near"));
+        assert!(list_discovered_opportunities(&path,None,0,100,true)?.items.iter().any(|opportunity|opportunity.id=="near"));
+        conn.execute("UPDATE contact_targets_v2 SET status='contacted' WHERE id='near'",[])?;
+        assert!(list_targets_with_conn(&conn,"postdoc",Some("contacted"),None,None,0,100,false,None)?.iter().any(|target|target.id=="near"));
+        conn.execute("UPDATE contact_targets_v2 SET status='ready_to_contact',material_status='ready' WHERE id='near'",[])?;
+        assert!(list_targets_with_conn(&conn,"postdoc",Some("ready_to_contact"),None,None,0,100,false,None)?.iter().any(|target|target.id=="near"));
+        assert!(!list_discovered_opportunities(&path,None,0,100,true)?.items.iter().any(|opportunity|opportunity.id=="near"));
+        Ok(())
+    }
+
+    #[test]
+    fn material_recovery_matches_original_target_and_prioritizes_active_scoped_job() -> Result<()> {
+        let conn=Connection::open_in_memory()?;
+        empty_jobs_fixture(&conn)?;
+        conn.execute_batch("ALTER TABLE native_jobs ADD COLUMN result_json TEXT;
+            CREATE TABLE native_job_results(job_id TEXT,target_id TEXT,created_at TEXT);
+            CREATE TABLE native_job_events(id INTEGER,job_id TEXT,event_type TEXT,progress INTEGER,message TEXT,created_at TEXT);
+            INSERT INTO native_jobs(id,job_type,status,progress,provider_id,created_at,payload_json,result_json) VALUES
+            ('original','full_search','needs_review',90,'openai','2026-09-06','{}','{\"business\":{\"pending\":[{\"targetId\":\"target-a\"}]}}'),
+            ('unrelated','full_search','failed',0,'openai','2026-09-07','{}','{\"targetId\":\"target-b\"}'),
+            ('broken','full_search','failed',0,'openai','2026-09-08','invalid','invalid');")?;
+        assert_eq!(material_recovery_job(&conn,"target-a",Some("opp-a"))?.unwrap().id,"original");
+        assert!(material_recovery_job(&conn,"missing",None)?.is_none());
+        conn.execute("INSERT INTO native_jobs(id,job_type,status,progress,provider_id,created_at,payload_json)
+            VALUES('scoped','full_search','queued',0,'openai','2026-09-01','{\"opportunityId\":\"opp-a\"}')",[])?;
+        assert_eq!(material_recovery_job(&conn,"target-a",Some("opp-a"))?.unwrap().id,"scoped");
+        Ok(())
+    }
+
+    #[test]
+    fn unpublished_candidate_is_target_owned_and_never_a_published_version() -> Result<()> {
+        let temp=TempDir::new()?;
+        let root=temp.path();
+        let versions=root.join("generated/contact-targets/target-a/versions");
+        let failed=versions.join("failed");
+        let published=versions.join("published");
+        for directory in [&failed,&published] {
+            std::fs::create_dir_all(directory)?;
+            std::fs::write(directory.join("cv-data.json"),"{}")?;
+            std::fs::write(directory.join("cv.pdf"),"test")?;
+        }
+        std::fs::write(published.join("provenance.json"),"{}")?;
+        let candidate=unpublished_cv_candidates(root,"target-a")?;
+        assert_eq!(candidate.len(),2);
+        assert!(candidate.iter().all(|item|Path::new(&item.path).starts_with(&failed)));
+        assert!(unpublished_cv_candidates(root,"target-b")?.is_empty());
+        assert!(unpublished_cv_candidates(root,"../target-a")?.is_empty());
+        #[cfg(unix)] {
+            std::os::unix::fs::symlink(&versions,root.join("generated/contact-targets/target-b"))?;
+            assert!(unpublished_cv_candidates(root,"target-b")?.is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn discovered_opportunities_include_orphans_without_duplicating_contacts() -> Result<()> {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("discoveries.sqlite3");
+        let conn = connect(&path)?;
+        empty_jobs_fixture(&conn)?;
+        conn.execute_batch("CREATE TABLE opportunities(
+            id TEXT PRIMARY KEY,title TEXT,organization TEXT,summary TEXT,country TEXT,region TEXT,
+            deadline TEXT,source_url TEXT,status TEXT DEFAULT 'discovered',discovered_at TEXT,
+            created_at TEXT DEFAULT '2026-09-01',opportunity_type TEXT DEFAULT 'advertised_position',shelved_at TEXT);
+            CREATE TABLE contact_targets_v2(id TEXT PRIMARY KEY,opportunity_id TEXT,name TEXT,
+                material_status TEXT DEFAULT 'ready',archived_at TEXT,shelved_at TEXT);
+            INSERT INTO opportunities(id,title,organization,discovered_at) VALUES
+                ('orphan','Acoustics','University A','2026-09-05'),
+                ('linked','Physics','University B','2026-09-04'),
+                ('hidden','Archived','University C','2026-09-03'),
+                ('internship','Engineering','Company','2026-09-06');
+            UPDATE opportunities SET opportunity_type='industry_internship' WHERE id='internship';
+            INSERT INTO contact_targets_v2(id,opportunity_id,name,material_status,archived_at) VALUES
+                ('t1','linked','Alpha','pending',NULL),('t2','linked','Beta','ready',NULL),
+                ('t3','linked','Hidden PI','ready','2026-09-01'),
+                ('t4','hidden','Archived PI','ready','2026-09-01');")?;
+        drop(conn);
+        let first = list_discovered_opportunities(&path, None, 0, 1, false)?;
+        assert_eq!(first.total, 2);
+        assert_eq!(first.overall_total, 2);
+        assert_eq!(first.items.len(), 1);
+        assert_eq!(first.items[0].id, "orphan");
+        assert!(first.items[0].contacts.is_empty());
+        assert_eq!(first.items[0].status, "discovered");
+        let second = list_discovered_opportunities(&path, None, 1, 1, false)?;
+        assert_eq!(second.items[0].id, "linked");
+        assert_eq!(second.items[0].contacts.len(), 2);
+        assert_eq!(second.items[0].contacts[0].material_status, "pending");
+        assert_eq!(second.items[0].contacts[1].material_status, "ready");
+        let search = list_discovered_opportunities(&path, Some(" alpha "), 0, 10, false)?;
+        assert_eq!(search.total, 1);
+        assert_eq!(search.overall_total, 2);
+        assert_eq!(search.items[0].id, "linked");
+        assert_eq!(list_discovered_opportunities(&path, Some("ACOUSTICS"), 0, 10, false)?.total, 1);
+        assert_eq!(list_discovered_opportunities(&path, Some("Hidden PI"), 0, 10, false)?.total, 0);
+        assert_eq!(list_discovered_opportunities(&path, Some("%' OR 1=1 --"), 0, 10, false)?.total, 0);
+        assert!(list_discovered_opportunities(&path, None, 10, 10, false)?.items.is_empty());
+        let json = serde_json::to_value(first)?;
+        assert_eq!(json["overallTotal"], 2);
+        assert!(json["items"][0]["sourceUrl"].is_null());
+        assert_eq!(json["pendingTotal"], 2);
+
+        let conn = connect(&path)?;
+        conn.execute_batch("INSERT INTO opportunities(id,title,organization,discovered_at) VALUES
+            ('complete','Complete package','University D','2026-09-06');
+            INSERT INTO contact_targets_v2(id,opportunity_id,name) VALUES('t5','complete','Ready PI');")?;
+        drop(conn);
+        let pending = list_discovered_opportunities(&path, None, 0, 1, true)?;
+        assert_eq!(pending.overall_total, 3);
+        assert_eq!(pending.pending_total, 2);
+        assert_eq!(pending.total, 2);
+        assert_eq!(pending.items[0].id, "orphan"); // Completed newest record is excluded before pagination.
+        assert_eq!(list_discovered_opportunities(&path, None, 1, 1, true)?.items[0].id, "linked");
+        assert_eq!(list_discovered_opportunities(&path, Some("Ready PI"), 0, 10, true)?.total, 0);
+        assert_eq!(list_discovered_opportunities(&path, Some("Ready PI"), 0, 10, false)?.total, 1);
+
+        let conn = connect(&path)?;
+        conn.execute("UPDATE contact_targets_v2 SET material_status='ready' WHERE id='t1'", [])?;
+        drop(conn);
+        let pending = list_discovered_opportunities(&path, None, 0, 10, true)?;
+        assert_eq!(pending.pending_total, 1);
+        assert_eq!(pending.items[0].id, "orphan");
+        assert_eq!(list_discovered_opportunities(&path, None, 0, 10, false)?.total, 3);
+        assert_eq!(list_discovered_opportunities(&path, Some("Alpha"), 0, 10, true)?.total, 0);
+        let conn = connect(&path)?;
+        conn.execute("INSERT INTO contact_targets_v2(id,opportunity_id,name) VALUES('t6','orphan','New contact')", [])?;
+        drop(conn);
+        let pending = list_discovered_opportunities(&path, None, 0, 10, true)?;
+        assert_eq!(pending.pending_total, 0);
+        assert!(pending.items.is_empty());
+        assert_eq!(pending.overall_total, 3);
+        Ok(())
+    }
+
     #[test]
     fn shelving_preserves_underlying_stage_and_submission_is_independent() -> Result<()> {
         let temp = TempDir::new()?;
         let database = temp.path().join("status.sqlite3");
         let conn = connect(&database)?;
         conn.execute_batch(
-            "CREATE TABLE contact_targets_v2(
+            "CREATE TABLE opportunities(id TEXT PRIMARY KEY,shelved_at TEXT);
+             CREATE TABLE contact_targets_v2(
                 id TEXT PRIMARY KEY,
+                opportunity_id TEXT,
                 status TEXT NOT NULL,
                 shelved_at TEXT,
                 submission_status TEXT NOT NULL DEFAULT 'not_set',
@@ -1102,6 +1600,8 @@ mod tests {
              );
              INSERT INTO contact_targets_v2(id,status) VALUES('target-1','replied');",
         )?;
+        empty_jobs_fixture(&conn)?;
+        conn.execute_batch(include_str!("../migrations/0013_contact_status_version.sql"))?;
         drop(conn);
 
         update_target_status(&database, "target-1", "shelved")?;
@@ -1127,7 +1627,101 @@ mod tests {
         assert_eq!(status, "follow_up");
         assert!(shelved.is_none());
         assert!(update_submission_status(&database, "target-1", "invalid").is_err());
+        let version: i64 = conn.query_row("SELECT status_version FROM contact_targets_v2 WHERE id='target-1'", [], |row|row.get(0))?;
+        update_target_status(&database,"target-1","shelved")?;
+        update_target_status(&database,"target-1","follow_up")?; // ABA, possibly in the same second.
+        assert!(!apply_agent_status(&database,"target-1","shelved",Some(version))?);
+        assert!(!apply_agent_status(&database,"target-1","shelved",None)?);
+        update_submission_status(&database,"target-1","submitted")?;
+        assert!(apply_agent_status(&database,"target-1","replied",Some(version+2))?);
         Ok(())
+    }
+
+    #[test]
+    fn inbound_reply_restores_its_opportunity_without_restoring_other_contacts() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = reply_fixture(&temp)?;
+        let conn = connect(&paths.database)?;
+        conn.execute("UPDATE contact_targets_v2 SET material_status='pending',submission_status='submitted' WHERE id='target'", [])?;
+        set_opportunity_shelved(&paths.database, "opportunity", true)?;
+        let request = InboundReplyRequest {
+            target_id: "target".into(), sender: None, subject: None,
+            body: "Please send more details about your research.".into(), received_at: None,
+        };
+        let reply = save_inbound_reply(&paths.database, &request)?;
+        assert!(!opportunity_shelved(&conn, "opportunity")?);
+        let state: (String, bool, String) = conn.query_row(
+            "SELECT status,shelved_at IS NOT NULL,submission_status FROM contact_targets_v2 WHERE id='target'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(state, ("replied".into(), false, "submitted".into()));
+        let sibling: (String, bool) = conn.query_row(
+            "SELECT status,shelved_at IS NOT NULL FROM contact_targets_v2 WHERE id='sibling'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(sibling, ("follow_up".into(), true));
+        assert_eq!(list_discovered_opportunities(&paths.database, None, 0, 10, true)?.pending_total, 1);
+        // Re-saving existing evidence must perform the same explicit restoration.
+        set_opportunity_shelved(&paths.database, "opportunity", true)?;
+        assert_eq!(save_inbound_reply(&paths.database, &request)?.id, reply.id);
+        assert!(!opportunity_shelved(&conn, "opportunity")?);
+        Ok(())
+    }
+
+    #[test]
+    fn inbound_reply_and_opportunity_restoration_commit_together() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = reply_fixture(&temp)?;
+        set_opportunity_shelved(&paths.database, "opportunity", true)?;
+        let conn = connect(&paths.database)?;
+        let version: i64 = conn.query_row("SELECT status_version FROM contact_targets_v2 WHERE id='target'", [], |row| row.get(0))?;
+        conn.execute_batch("CREATE TRIGGER fail_restore BEFORE UPDATE OF shelved_at ON opportunities
+            WHEN NEW.shelved_at IS NULL BEGIN SELECT RAISE(ABORT,'fixture restoration failure'); END;")?;
+        assert!(save_inbound_reply(&paths.database, &InboundReplyRequest {
+            target_id: "target".into(), sender: None, subject: None,
+            body: "Please send more details about your research.".into(), received_at: None,
+        }).is_err());
+        assert!(opportunity_shelved(&conn, "opportunity")?);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM application_replies", [], |row| row.get::<_, i64>(0))?, 0);
+        assert_eq!(conn.query_row("SELECT status_version FROM contact_targets_v2 WHERE id='target' AND shelved_at IS NOT NULL", [], |row| row.get::<_, i64>(0))?, version);
+        Ok(())
+    }
+
+    #[test]
+    fn reply_detail_uses_the_same_latest_reply_tiebreaker_as_import() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = reply_fixture(&temp)?;
+        let save = |body: &str, received: &str| save_inbound_reply(&paths.database, &InboundReplyRequest {
+            target_id: "target".into(), sender: None, subject: None,
+            body: body.into(), received_at: Some(received.into()),
+        });
+        let first = save("Please send details about your research.", "2026-09-08T12:00:00Z")?;
+        let second = save("Can we schedule an interview next week?", "2026-09-08T12:00:00Z")?;
+        let older = save("Thank you for your initial enquiry.", "2026-09-07T12:00:00Z")?;
+        let detail = target_detail(&paths.database, &paths.data_root, "target")?;
+        assert_eq!(detail.replies.iter().map(|reply| &reply.id).collect::<Vec<_>>(), vec![&second.id, &first.id, &older.id]);
+        let conn = connect(&paths.database)?;
+        let importer_latest: String = conn.query_row(
+            "SELECT r.id FROM application_replies r JOIN reply_contact_targets m ON m.reply_id=r.id
+             WHERE m.target_id=?1 ORDER BY COALESCE(r.received_at,r.created_at) DESC,r.rowid DESC LIMIT 1",
+            ["target"], |row| row.get(0),
+        )?;
+        assert_eq!(detail.replies[0].id, importer_latest);
+        Ok(())
+    }
+
+    fn reply_fixture(temp: &TempDir) -> Result<AppPaths> {
+        let paths = crate::materials::tests::publication_fixture(temp.path())?;
+        let conn = connect(&paths.database)?;
+        conn.execute_batch(include_str!("../migrations/0013_contact_status_version.sql"))?;
+        conn.execute_batch(include_str!("../migrations/0014_opportunity_shelving.sql"))?;
+        conn.execute_batch("INSERT INTO opportunities(id,title,organization,opportunity_type,status)
+            VALUES('opportunity','Postdoc role','University','advertised_position','open');
+            UPDATE contact_targets_v2 SET opportunity_id='opportunity' WHERE id='target';
+            INSERT INTO applications(id,opportunity_id,status) VALUES('sibling-app','opportunity','draft');
+            INSERT INTO contact_targets_v2(id,application_id,opportunity_id,name,normalized_name,organization,title,identity_key,status)
+            VALUES('sibling','sibling-app','opportunity','Another Contact','anothercontact','University','Postdoc role','sibling','follow_up');")?;
+        Ok(paths)
     }
 
     #[test]
@@ -1147,21 +1741,30 @@ mod tests {
         let database = temp.path().join("jobs.sqlite3");
         let conn = connect(&database)?;
         conn.execute_batch(
-            "CREATE TABLE native_jobs(
+            r#"CREATE TABLE native_jobs(
                 id TEXT PRIMARY KEY, job_type TEXT NOT NULL, target_id TEXT,
                 status TEXT NOT NULL, progress INTEGER NOT NULL, message TEXT,
                 provider_id TEXT NOT NULL, account_id TEXT, model_id TEXT,
                 reasoning TEXT, thread_id TEXT, error TEXT, created_at TEXT NOT NULL,
-                started_at TEXT, finished_at TEXT
+                started_at TEXT, finished_at TEXT, payload_json TEXT NOT NULL DEFAULT '{}'
              );
              CREATE TABLE native_job_results(
                 job_id TEXT NOT NULL, target_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
              );
+             CREATE TABLE native_job_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL,
+                event_type TEXT NOT NULL, progress INTEGER, message TEXT,
+                payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+             );
              CREATE TABLE jobs(id TEXT PRIMARY KEY);
              INSERT INTO native_jobs(
-                id,job_type,status,progress,provider_id,created_at
-             ) VALUES('native-1','full_search','completed',100,'openai','2026-09-02T01:00:00Z');
-             INSERT INTO jobs(id) VALUES('legacy-1');",
+                id,job_type,status,progress,provider_id,created_at,payload_json
+             ) VALUES('native-1','full_search','completed',100,'openai','2026-09-02T01:00:00Z',
+                 '{"query":"robotics postdoc","prompt":"Search official opportunities.","maxResults":3}');
+             INSERT INTO native_job_events(job_id,event_type,progress,message,created_at)
+             VALUES('native-1','queued',0,'任务已加入队列','2026-09-02T01:00:01Z'),
+                   ('native-1','completed',100,'结果已完成','2026-09-02T01:02:00Z');
+             INSERT INTO jobs(id) VALUES('legacy-1');"#,
         )?;
         drop(conn);
 
@@ -1169,6 +1772,11 @@ mod tests {
         assert_eq!(groups.recent_total, 1);
         assert_eq!(groups.recent.len(), 1);
         assert_eq!(groups.recent[0].id, "native-1");
+        assert_eq!(groups.recent[0].request_summary.as_deref(), Some("robotics postdoc"));
+        assert_eq!(groups.recent[0].prompt.as_deref(), Some("Search official opportunities."));
+        assert_eq!(groups.recent[0].max_results, Some(3));
+        assert_eq!(groups.recent[0].events.len(), 2);
+        assert_eq!(groups.recent[0].events[1].message.as_deref(), Some("结果已完成"));
 
         let conn = connect(&database)?;
         let imported_count: i64 = conn.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;

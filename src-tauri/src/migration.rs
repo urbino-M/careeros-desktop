@@ -15,7 +15,7 @@ const NATIVE_MIGRATION: &str = include_str!("../migrations/0008_native_desktop.s
 const REPLY_ROUTING_MIGRATION: &str = include_str!("../migrations/0009_reply_routing_and_submission_status.sql");
 const RESPONSES_PROVIDERS_MIGRATION: &str = include_str!("../migrations/0010_responses_model_providers.sql");
 const SCHEDULER_LEASES_MIGRATION: &str = include_str!("../migrations/0011_scheduler_leases.sql");
-const LATEST_NATIVE_SCHEMA_VERSION: i64 = 11;
+const LATEST_NATIVE_SCHEMA_VERSION: i64 = 14;
 
 pub fn initialize(paths: &AppPaths) -> Result<MigrationReport> {
     initialize_with_legacy_root(paths, None)
@@ -167,7 +167,7 @@ fn backup_before_native_migration(paths: &AppPaths) -> Result<Option<PathBuf>> {
     let destination = paths
         .backups
         .join(format!("{label}-{timestamp}.sqlite3"));
-    fs::copy(&paths.database, &destination)?;
+    snapshot_sqlite(&paths.database, &destination)?;
     Ok(Some(destination))
 }
 
@@ -184,6 +184,15 @@ fn apply_native_schema(conn: &mut Connection) -> Result<()> {
     apply_reply_routing_schema(conn)?;
     apply_responses_provider_schema(conn)?;
     apply_scheduler_leases_schema(conn)?;
+    apply_discovery_material_schema(conn)?;
+    apply_contact_status_version_schema(conn)?;
+    let tx = conn.transaction()?;
+    let applied: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=14)", [], |r| r.get(0))?;
+    if !applied {
+        tx.execute_batch(include_str!("../migrations/0014_opportunity_shelving.sql"))?;
+        tx.execute("INSERT INTO native_schema_migrations(version,name) VALUES(14,'opportunity-shelving')", [])?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -236,6 +245,30 @@ fn apply_scheduler_leases_schema(conn: &mut Connection) -> Result<()> {
             "INSERT INTO native_schema_migrations(version,name) VALUES(11,'scheduler-leases')",
             [],
         )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn apply_discovery_material_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let applied: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=12)", [], |row| row.get(0),
+    )?;
+    if !applied {
+        tx.execute_batch(include_str!("../migrations/0012_discovery_material_state.sql"))?;
+        tx.execute("INSERT INTO native_schema_migrations(version,name) VALUES(12,'discovery-material-state')", [])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn apply_contact_status_version_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let applied: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=13)", [], |row| row.get(0))?;
+    if !applied {
+        tx.execute_batch(include_str!("../migrations/0013_contact_status_version.sql"))?;
+        tx.execute("INSERT INTO native_schema_migrations(version,name) VALUES(13,'contact-status-version')", [])?;
     }
     tx.commit()?;
     Ok(())
@@ -857,6 +890,32 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(version_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn v12_status_migration_backs_up_and_is_idempotent() -> Result<()> {
+        let temp=TempDir::new()?;
+        let root=temp.path().to_path_buf();
+        let paths=AppPaths { database:root.join("database/test.sqlite3"),generated:root.join("generated"),profile:root.join("profile"),
+            workspaces:root.join("workspaces"),codex_home:root.join("codex"),backups:root.join("backups"),cache:root.join("cache"),
+            logs:root.join("logs"),runtime:root.join("runtime"),data_root:root };
+        paths.ensure()?;
+        let mut conn=open_migration_connection(&paths.database)?;
+        conn.execute_batch("CREATE TABLE native_schema_migrations(version INTEGER PRIMARY KEY,name TEXT);
+            INSERT INTO native_schema_migrations VALUES(12,'v12');
+            CREATE TABLE contact_targets_v2(id TEXT PRIMARY KEY,status TEXT,shelved_at TEXT);
+            INSERT INTO contact_targets_v2 VALUES('old','replied','2026-01-01');
+            CREATE TABLE native_jobs(payload_json TEXT,created_at TEXT,job_type TEXT);")?;
+        let backup=backup_before_native_migration(&paths)?.context("expected backup")?;
+        apply_contact_status_version_schema(&mut conn)?;
+        apply_contact_status_version_schema(&mut conn)?;
+        assert_eq!(conn.query_row("SELECT status_version FROM contact_targets_v2 WHERE id='old'",[],|row|row.get::<_,i64>(0))?,0);
+        conn.execute("UPDATE contact_targets_v2 SET status='replied' WHERE id='old'",[])?;
+        assert_eq!(conn.query_row("SELECT status_version FROM contact_targets_v2 WHERE id='old'",[],|row|row.get::<_,i64>(0))?,1);
+        let snapshot=Connection::open(backup)?;
+        assert_eq!(snapshot.query_row("SELECT shelved_at FROM contact_targets_v2 WHERE id='old'",[],|row|row.get::<_,String>(0))?,"2026-01-01");
+        assert!(snapshot.prepare("SELECT status_version FROM contact_targets_v2").is_err());
         Ok(())
     }
 

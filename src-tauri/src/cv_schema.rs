@@ -1,7 +1,27 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+const RESEARCH_PROFILE_TITLE: &str = "Research Profile";
+const RESEARCH_OUTPUTS_TITLE: &str = "Selected Research Outputs";
+const PATENTS_TITLE: &str = "Selected Patents";
+const PROJECTS_TITLE: &str = "Selected Research Projects";
+const EDUCATION_TITLE: &str = "Education & Current Stage";
+const CAPABILITIES_TITLE: &str = "Technical Capabilities";
+const HONORS_SERVICE_TITLE: &str = "Honors, Teaching & Service";
+const REFERENCES_TITLE: &str = "References";
+
+const STANDARD_SECTION_ORDER: [&str; 8] = [
+    RESEARCH_PROFILE_TITLE,
+    RESEARCH_OUTPUTS_TITLE,
+    PATENTS_TITLE,
+    PROJECTS_TITLE,
+    EDUCATION_TITLE,
+    CAPABILITIES_TITLE,
+    HONORS_SERVICE_TITLE,
+    REFERENCES_TITLE,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -11,8 +31,11 @@ pub(crate) struct CvData {
     pub(crate) name: String,
     #[serde(default)]
     pub(crate) author_name: String,
+    #[serde(default)]
     pub(crate) tagline: String,
+    #[serde(default)]
     pub(crate) contact: String,
+    #[serde(default)]
     pub(crate) affiliations: String,
     pub(crate) sections: Vec<CvSection>,
 }
@@ -39,11 +62,65 @@ pub(crate) fn contract() -> Value {
         "tagline": "targeted research headline",
         "contact": "email · phone",
         "affiliations": "current affiliations separated by ·",
-        "sections": [{
-            "title": "section title",
-            "entries": [{"key": "date, status, or short label", "body": "complete factual entry"}]
-        }]
+        "sections": [
+            {"title": RESEARCH_OUTPUTS_TITLE, "entries": [{"key": "year or status", "body": "complete verified publication or research-output entry"}]},
+            {"title": PATENTS_TITLE, "entries": [{"key": "status", "body": "complete verified patent entry; include this section when the profile has usable patents"}]},
+            {"title": PROJECTS_TITLE, "entries": [{"key": "short project label", "body": "complete verified target-relevant project entry"}]},
+            {"title": EDUCATION_TITLE, "entries": [{"key": "date or stage", "body": "complete verified education or current-stage entry"}]},
+            {"title": CAPABILITIES_TITLE, "entries": [{"key": "short capability label", "body": "complete verified methods, tools, or domain-capability entry"}]},
+            {"title": HONORS_SERVICE_TITLE, "entries": [{"key": "short label", "body": "complete verified honor, teaching, reviewing, or service entry"}]},
+            {"title": REFERENCES_TITLE, "entries": [
+                {"key": "source CV reference", "body": "only supplied reference details; omit this section when absent"}
+            ]}
+        ]
     })
+}
+
+pub(crate) fn generation_policy_contract() -> Value {
+    json!({
+        "suggestedSectionOrder": STANDARD_SECTION_ORDER,
+        "sectionOrder": "Current user instructions control section order, titles and selection. The current CV is a starting point, never a locked template.",
+        "suggestedSectionNames": {
+            "publications": RESEARCH_OUTPUTS_TITLE,
+            "patents": PATENTS_TITLE,
+            "projects": PROJECTS_TITLE,
+            "education": EDUCATION_TITLE,
+            "skills": CAPABILITIES_TITLE,
+            "honors_and_service": HONORS_SERVICE_TITLE
+        },
+        "references": {
+            "title": REFERENCES_TITLE,
+            "mode": "fromSourceCv",
+            "customizable": true,
+            "fixedCount": false,
+            "source": "Preserve references from the source CV by default; omit when absent. User customization may select, reorder or hide them. Never invent missing details."
+        },
+        "largeEntryStructure": {
+            "source": "Source CV facts and current user instructions; legacy cv_structure.json is not a constraint",
+            "preserveSectionOrder": false,
+            "preserveEachSectionLargeEntryCount": false,
+            "referencesCountAsLargeEntries": false,
+            "tailoringAllowed": "Add, remove, rename and reorder sections or entries as requested, using source-backed facts. Never invent facts or make unrelated changes."
+        },
+        "contentQuality": {
+            "targetRelevant": true,
+            "sourceBackedOnly": true,
+            "distinct": true,
+            "rejectPlaceholdersAndGenericPadding": true
+        },
+        "customization": "User page count and enabled customization guide selection, structure, language and reference display. Never invent facts. No fixed section or entry counts apply, including from legacy settings."
+    })
+}
+
+pub(crate) fn generation_rules() -> Vec<&'static str> {
+    vec![
+        "Use a CV structure suitable for the source CV, discipline, requested language, and target opportunity. Sample section titles and order are suggestions, not a mandatory template. Honor user-requested additions, removals, renamed sections and order. For revisions use the immutable current CV as the starting point, not a locked structure.",
+        "Preserve important source-backed experience and tailor emphasis and detail to the target. Never freeze section or entry counts, even if legacy cvCustomization.preserveStructure is true.",
+        "Include references present in the source CV by default; omit when absent. Enabled customization may select, reorder or hide references. No fixed count or mandatory role, institution, email or confirmation flag. Never invent missing details.",
+        "Honor requested page count, language and customization. Automatic length should be readable and substantive; do not pad or invent material to fill pages.",
+        "Treat explicit source CV statements as user-provided facts, not externally verified claims. Preserve dates, publication status, names and uncertainty accurately.",
+        "Use the supplied publication-author form in cvData.authorName when available; do not infer an unfamiliar name convention.",
+    ]
 }
 
 pub(crate) fn normalize_value(value: &Value) -> Result<Value> {
@@ -75,7 +152,7 @@ pub(crate) fn normalize(value: &Value) -> Result<CvData> {
     if data.author_name.trim().is_empty() {
         data.author_name = inferred_publication_name(&data.name);
     }
-    let data = deduplicate(data);
+    let data = normalize_structure(data)?;
     validate(&data)?;
     Ok(data)
 }
@@ -88,53 +165,18 @@ fn canonical_section(title: &str) -> String {
     title.trim().to_lowercase().replace("(continued)", "").trim().to_owned()
 }
 
+fn is_reference_section(title: &str) -> bool {
+    matches!(canonical_section(title).as_str(),
+        "references" | "referees" | "recommenders" | "professional references" |
+        "academic references" | "推荐人" | "推荐人信息" | "推荐人联系方式")
+}
+
 fn inferred_publication_name(full_name: &str) -> String {
     let parts = full_name.split_whitespace().collect::<Vec<_>>();
     if parts.len() < 2 { return full_name.trim().to_owned() }
     let surname = parts.last().copied().unwrap_or_default().trim_matches(',');
     let initial = parts.first().and_then(|part| part.chars().next());
     initial.map(|value| format!("{surname}, {value}.")).unwrap_or_else(|| full_name.trim().to_owned())
-}
-
-fn research_section_order(title: &str) -> Option<u8> {
-    let title = canonical_section(title);
-    if ["research output", "publication", "paper", "article"]
-        .iter()
-        .any(|label| title.contains(label))
-    {
-        Some(0)
-    } else if title.contains("patent") || title.contains("intellectual property") {
-        Some(1)
-    } else if title.contains("project") {
-        Some(2)
-    } else {
-        None
-    }
-}
-
-fn order_research_sections(sections: &mut Vec<CvSection>) {
-    let Some(first_research_position) = sections
-        .iter()
-        .position(|section| research_section_order(&section.title).is_some())
-    else {
-        return;
-    };
-    let insert_at = sections[..first_research_position]
-        .iter()
-        .filter(|section| research_section_order(&section.title).is_none())
-        .count();
-    let mut ordered = sections
-        .iter()
-        .filter(|section| research_section_order(&section.title).is_some())
-        .cloned()
-        .collect::<Vec<_>>();
-    ordered.sort_by_key(|section| research_section_order(&section.title));
-    let mut retained = std::mem::take(sections)
-        .into_iter()
-        .filter(|section| research_section_order(&section.title).is_none())
-        .collect::<Vec<_>>();
-    retained.splice(insert_at..insert_at, ordered);
-    *sections = retained;
 }
 
 fn canonical_entry(body: &str) -> String {
@@ -147,34 +189,60 @@ fn canonical_entry(body: &str) -> String {
         .join(" ")
 }
 
-/// Agent output is already the target-specific selection. Normalize repeated
-/// continuation sections and exact repeated claims inside that one target only;
-/// never borrow entries from another contact's CV.
-fn deduplicate(mut data: CvData) -> CvData {
-    let mut sections = Vec::<CvSection>::new();
-    let mut section_positions = HashMap::<String, usize>::new();
-    let mut seen_entries = HashSet::<String>::new();
-
-    for mut section in data.sections {
-        let section_key = canonical_section(&section.title);
-        section.entries.retain(|entry| {
-            let key = canonical_entry(&entry.body);
-            !key.is_empty() && seen_entries.insert(key)
-        });
-        if section.entries.is_empty() {
-            continue;
-        }
-        if let Some(index) = section_positions.get(&section_key).copied() {
-            sections[index].entries.extend(section.entries);
-        } else {
-            section.title = section.title.replace(" (continued)", "").replace("(continued)", "");
-            section_positions.insert(section_key, sections.len());
-            sections.push(section);
+/// Normalization must not rewrite user-selected titles, order or entry counts.
+/// Reject duplicates without merging, sorting or silently dropping content.
+fn normalize_structure(data: CvData) -> Result<CvData> {
+    let mut seen_sections = HashSet::<String>::new();
+    for section in &data.sections {
+        if !seen_sections.insert(canonical_section(&section.title)) {
+            bail!("CV 重复包含章节“{}”；请使用唯一章节标题", section.title)
         }
     }
-    order_research_sections(&mut sections);
-    data.sections = sections;
-    data
+    Ok(data)
+}
+
+pub(crate) fn validate_generation_policy(
+    data: &CvData,
+    _master_profile: &Value,
+) -> Result<()> {
+    validate_substantive_entries(data)?;
+    Ok(())
+}
+
+fn validate_substantive_entries(data: &CvData) -> Result<()> {
+    const GENERIC_PADDING: [&str; 8] = [
+        "lorem ipsum",
+        "placeholder",
+        "to be added",
+        "additional relevant evidence",
+        "other verified evidence",
+        "target relevant evidence",
+        "supporting detail",
+        "miscellaneous experience",
+    ];
+    let mut seen_entries = HashSet::new();
+    for section in &data.sections {
+        for entry in &section.entries {
+            let normalized_key = canonical_entry(&entry.key);
+            let normalized_body = canonical_entry(&entry.body);
+            if !is_reference_section(&section.title)
+                && matches!(normalized_key.as_str(), "selected" | "item" | "additional" | "other" | "evidence")
+            {
+                bail!("CV 章节“{}”含有低价值通用标签“{}”", section.title, entry.key)
+            }
+            if GENERIC_PADDING.iter().any(|phrase| normalized_body.contains(phrase)) {
+                bail!("CV 章节“{}”含有占位或通用凑数内容：{}", section.title, entry.body)
+            }
+            if !seen_entries.insert(format!("{normalized_key}:{normalized_body}")) {
+                bail!(
+                    "CV 章节“{}”重复包含条目“{}”；请删除重复内容或明确区分不同成果",
+                    section.title,
+                    entry.key,
+                )
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate(data: &CvData) -> Result<()> {
@@ -354,6 +422,53 @@ fn humanize(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn policy_profile() -> Value {
+        json!({
+            "publications":[{"title":"Publication"}],
+            "patents":[{"title":"Patent"}],
+            "projects":[{"title":"Project"}],
+            "education":[{"degree":"PhD"}],
+            "skills":{"methods":["Method"]},
+            "honors_and_service":{"honors":["Honor"]},
+            "referees":[
+                {"name":"Prof. Ada One","role":"Professor","institution":"University One","email":"ada.one@example.org","claim_status":"usable"},
+                {"name":"Dr. Ben Two","role":"Associate Professor","institution":"University Two","email":"ben.two@example.org","claim_status":"verified"},
+                {"name":"Prof. Cy Three","role":"Professor","institution":"University Three","email":"cy.three@example.org","claim_status":"approved"}
+            ]
+        })
+    }
+
+    fn evidence_entries(prefix: &str, count: usize) -> Vec<Value> {
+        (0..count).map(|index| json!({
+            "key": format!("{prefix} {index}"),
+            "body": format!("Distinct verified {prefix} evidence number {index} with specific methods, context, contribution, and outcome for the target role.")
+        })).collect()
+    }
+
+    fn policy_cv() -> Result<CvData> {
+        normalize(&json!({
+            "schemaVersion":1,
+            "name":"Alex Morgan",
+            "authorName":"Morgan, A.",
+            "tagline":"Targeted profile",
+            "contact":"candidate@example.org",
+            "affiliations":"Example Institute",
+            "sections":[
+                {"title":"Selected Publications","entries":evidence_entries("publication", 4)},
+                {"title":"Patents","entries":evidence_entries("patent", 1)},
+                {"title":"Research Experience","entries":evidence_entries("project", 6)},
+                {"title":"Education","entries":evidence_entries("education", 2)},
+                {"title":"Core Methods and Tools","entries":evidence_entries("capability", 4)},
+                {"title":"Honours and Service","entries":evidence_entries("honor", 3)},
+                {"title":"Referees","entries":[
+                    {"key":"Prof. Ada One","body":"Prof. Ada One, Professor, University One, ada.one@example.org"},
+                    {"key":"Dr. Ben Two","body":"Dr. Ben Two, Associate Professor, University Two, ben.two@example.org"},
+                    {"key":"Prof. Cy Three","body":"Prof. Cy Three, Professor, University Three, cy.three@example.org"}
+                ]}
+            ]
+        }))
+    }
+
     #[test]
     fn accepts_canonical_camel_case() -> Result<()> {
         let data = normalize(&json!({
@@ -394,7 +509,7 @@ mod tests {
             ]
         }))?;
         let sections = value["sections"].as_array().context("sections missing")?;
-        let references = sections.iter().find(|section| section["title"] == "References")
+        let references = sections.iter().find(|section| section["title"].as_str().is_some_and(is_reference_section))
             .context("references section missing")?;
         assert_eq!(references["entries"].as_array().context("entries missing")?.len(), 2);
         Ok(())
@@ -424,8 +539,8 @@ mod tests {
     }
 
     #[test]
-    fn repeated_sections_and_claims_are_collapsed_within_one_target() -> Result<()> {
-        let data = normalize(&json!({
+    fn repeated_sections_are_rejected_without_changing_large_entry_structure() -> Result<()> {
+        let error = normalize(&json!({
             "schemaVersion":1,"name":"Alex Morgan","tagline":"Target headline",
             "contact":"verified@example.org","affiliations":"Example Institute",
             "sections":[
@@ -437,37 +552,90 @@ mod tests {
                     {"key":"Two","body":"Independent field validation."}
                 ]}
             ]
-        }))?;
-        assert_eq!(data.sections.len(), 1);
-        assert_eq!(data.sections[0].title, "Selected Research Experience");
-        assert_eq!(data.sections[0].entries.len(), 2);
+        })).unwrap_err();
+        assert!(format!("{error:#}").contains("唯一章节标题"));
         Ok(())
     }
 
     #[test]
-    fn outputs_and_patents_are_ordered_before_projects() -> Result<()> {
-        let data = normalize(&json!({
-            "schemaVersion":1,"name":"Alex Morgan","tagline":"Target headline",
-            "contact":"verified@example.org","affiliations":"Example Institute",
-            "sections":[
-                {"title":"Education","entries":[{"key":"Degree","body":"Verified education."}]},
-                {"title":"Selected Research Projects","entries":[{"key":"Project","body":"Verified project."}]},
-                {"title":"Technical Expertise","entries":[{"key":"Skill","body":"Verified skill."}]},
-                {"title":"Selected Patents","entries":[{"key":"Patent","body":"Verified patent."}]},
-                {"title":"Selected Publications","entries":[{"key":"Paper","body":"Verified publication."}]}
-            ]
-        }))?;
-        let titles = data.sections.iter().map(|section| section.title.as_str()).collect::<Vec<_>>();
-        assert_eq!(
-            titles,
-            vec![
-                "Education",
-                "Selected Publications",
-                "Selected Patents",
-                "Selected Research Projects",
-                "Technical Expertise",
-            ]
-        );
+    fn normalization_preserves_user_titles_order_and_separate_disciplines() -> Result<()> {
+        let raw = json!({"schemaVersion":1,"name":"Example Candidate","sections":[
+            {"title":"Education","entries":[{"key":"Degree","body":"Documented doctoral education."}]},
+            {"title":"Teaching","entries":[{"key":"Course","body":"Taught documented methods."}]},
+            {"title":"Honors","entries":[{"key":"Award","body":"Received a documented award."}]},
+            {"title":"Selected Publications","entries":[{"key":"Paper","body":"Published source-backed research."}]}
+        ]});
+        let data = normalize(&raw)?;
+        assert_eq!(data.sections.iter().map(|s|s.title.as_str()).collect::<Vec<_>>(),
+            vec!["Education","Teaching","Honors","Selected Publications"]);
+        assert_eq!(normalize(&serde_json::to_value(&data)?)?,data);
+        assert!(generation_policy_contract().get("standardSectionOrder").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn user_section_order_is_preserved() -> Result<()> {
+        let data=policy_cv()?;
+        let mut reordered=data.clone();
+        let index=reordered.sections.iter().position(|s|s.title=="Education").unwrap();
+        let education=reordered.sections.remove(index);
+        reordered.sections.insert(0,education);
+        let normalized=normalize(&serde_json::to_value(&reordered)?)?;
+        assert_eq!(normalized.sections[0].title,"Education");
+        validate_generation_policy(&normalized,&json!({}))?;
+        assert_eq!(normalized.sections[0].title,"Education");
+        Ok(())
+    }
+
+    #[test]
+    fn generation_policy_allows_source_references_or_no_references() -> Result<()> {
+        let original = policy_cv()?;
+        for count in [0, 1, 2, 3, 4] {
+            let mut data = original.clone();
+            data.sections.retain(|section| !is_reference_section(&section.title));
+            if count > 0 {
+                data.sections.push(CvSection { title: REFERENCES_TITLE.into(), entries: (0..count).map(|n| CvEntry {
+                    key: format!("Referee {n}"), body: format!("Source CV reference {n}"),
+                }).collect() });
+            }
+            validate_generation_policy(&data, &json!({}))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generation_policy_rejects_generic_padding() -> Result<()> {
+        let mut data = policy_cv()?;
+        data.sections[0].entries[0].body = "Additional relevant evidence placeholder".into();
+        let error = validate_generation_policy(&data, &policy_profile()).unwrap_err();
+        assert!(format!("{error:#}").contains("占位或通用凑数内容"));
+        Ok(())
+    }
+
+    #[test]
+    fn content_policy_does_not_lock_entry_counts_or_section_titles() -> Result<()> {
+        let data = policy_cv()?;
+        validate_generation_policy(&data, &policy_profile())?;
+
+        let mut removed = data.clone();
+        removed.sections[0].entries.pop();
+        validate_generation_policy(&removed, &policy_profile())?;
+
+        let mut reordered = data;
+        reordered.sections.swap(0, 1);
+        validate_generation_policy(&reordered, &policy_profile())?;
+        reordered.sections[0].title = "Replacement section".into();
+        validate_generation_policy(&reordered, &policy_profile())?;
+        Ok(())
+    }
+
+    #[test]
+    fn references_can_follow_user_customized_order() -> Result<()> {
+        let mut data = policy_cv()?;
+        let references = data.sections.iter_mut().find(|section| is_reference_section(&section.title))
+            .context("references missing")?;
+        references.entries.swap(0, 1);
+        validate_generation_policy(&data, &json!({}))?;
         Ok(())
     }
 }

@@ -1,3 +1,5 @@
+import { dateLocale, t } from "../i18n";
+import { useUiPreferences } from "../uiPreferences";
 import { getVersion } from "@tauri-apps/api/app";
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -6,7 +8,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { CheckCircle2, Download, ExternalLink, RefreshCw, ShieldCheck, Sparkles, X } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { UPDATE_CHECK_INTERVAL_MS, UPDATE_CHECK_TIMEOUT_MS, formatLastChecked, updateErrorMessage, updateProgress } from "./updateCore";
+import { UPDATE_CHECK_INTERVAL_MS, UPDATE_CHECK_TIMEOUT_MS, formatLastChecked, formatUpdateMessage, updateErrorKey, updateProgress, type UpdateMessage } from "./updateCore";
 
 const RELEASE_URL = "https://github.com/urbino-M/careeros-desktop/releases/latest";
 const SKIPPED_VERSION_KEY = "careeros.updates.skipped-version";
@@ -40,12 +42,13 @@ export function useDesktopUpdates() {
 }
 
 export function UpdateManager({ children }: { children: React.ReactNode }) {
+  const { locale } = useUiPreferences();
   const updateRef = useRef<Update | null>(null);
   const downloadedRef = useRef(false);
   const [currentVersion, setCurrentVersion] = useState("—");
   const [lastChecked, setLastChecked] = useState<string | undefined>(() => localStorage.getItem(LAST_CHECKED_KEY) || undefined);
   const [phase, setPhase] = useState<UpdatePhase>("idle");
-  const [message, setMessage] = useState("启动后会自动检查 GitHub Release");
+  const [message, setMessage] = useState<UpdateMessage>("启动后会自动检查 GitHub Release");
   const [available, setAvailable] = useState<AvailableUpdate>();
   const [visible, setVisible] = useState(false);
   const [downloaded, setDownloaded] = useState(0);
@@ -88,18 +91,18 @@ export function UpdateManager({ children }: { children: React.ReactNode }) {
         await result.close();
         setAvailable(metadata);
         setPhase("idle");
-        setMessage(`已跳过 v${result.version}`);
+        setMessage({ key: "已跳过 v{0}", values: [result.version] });
         return;
       }
       updateRef.current = result;
       downloadedRef.current = false;
       setAvailable(metadata);
       setPhase("available");
-      setMessage(`发现新版本 v${result.version}`);
+      setMessage({ key: "发现新版本 v{0}", values: [result.version] });
       setVisible(true);
     } catch (value) {
       setPhase("error");
-      setMessage(updateErrorMessage(value));
+      setMessage(updateErrorKey(value));
       if (manual) setVisible(false);
     }
   }, [releaseUpdate]);
@@ -125,7 +128,7 @@ export function UpdateManager({ children }: { children: React.ReactNode }) {
     if (phase === "downloading" || phase === "installing") return;
     setVisible(false);
     setPhase("idle");
-    setMessage(available ? `v${available.version} 可用，稍后可以在设置中继续` : "");
+    setMessage(available ? { key: "v{0} 可用，稍后可以在设置中继续", values: [available.version] } : "");
     await releaseUpdate();
   };
 
@@ -134,7 +137,7 @@ export function UpdateManager({ children }: { children: React.ReactNode }) {
     localStorage.setItem(SKIPPED_VERSION_KEY, available.version);
     setVisible(false);
     setPhase("idle");
-    setMessage(`已跳过 v${available.version}`);
+    setMessage({ key: "已跳过 v{0}", values: [available.version] });
     await releaseUpdate();
   };
 
@@ -163,7 +166,7 @@ export function UpdateManager({ children }: { children: React.ReactNode }) {
       await relaunch();
     } catch (value) {
       setPhase("error");
-      setMessage(updateErrorMessage(value));
+      setMessage(updateErrorKey(value));
     }
   };
 
@@ -172,10 +175,10 @@ export function UpdateManager({ children }: { children: React.ReactNode }) {
     lastChecked,
     lastCheckedLabel: formatLastChecked(lastChecked),
     phase,
-    message,
+    message: formatUpdateMessage(message),
     available,
     checkNow,
-  }), [available, checkNow, currentVersion, lastChecked, message, phase]);
+  }), [available, checkNow, currentVersion, lastChecked, message, phase, locale]);
   const progress = updateProgress(downloaded, downloadTotal);
   const busy = phase === "downloading" || phase === "installing";
 
@@ -187,29 +190,29 @@ export function UpdateManager({ children }: { children: React.ReactNode }) {
           <section className="update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-title">
             <header>
               <div className="update-dialog-symbol"><Sparkles size={24} /></div>
-              <div><span>DESKTOP UPDATE</span><h2 id="update-title">发现新版本</h2></div>
-              <button aria-label="稍后更新" disabled={busy} onClick={() => void dismiss()}><X size={21} /></button>
+              <div><span>{t("桌面更新")}</span><h2 id="update-title">{t("发现新版本")}</h2></div>
+              <button aria-label={t("稍后更新")} disabled={busy} onClick={() => void dismiss()}><X size={21} /></button>
             </header>
             <div className="update-dialog-body">
               <div className="update-version-row">
-                <div><span>当前版本</span><strong>v{available.currentVersion}</strong></div>
+                <div><span>{t("当前版本")}</span><strong>v{available.currentVersion}</strong></div>
                 <div className="update-version-line" />
-                <div><span>可用版本</span><strong>v{available.version}</strong></div>
+                <div><span>{t("可用版本")}</span><strong>v{available.version}</strong></div>
               </div>
-              <div className="update-trust-strip"><ShieldCheck size={17} /><span>安装前会强制校验 CareerOS 发布签名</span>{available.date && <time>{new Date(available.date).toLocaleDateString()}</time>}</div>
+              <div className="update-trust-strip"><ShieldCheck size={17} /><span>{t("安装前会强制校验 CareerOS 发布签名")}</span>{available.date && <time>{new Date(available.date).toLocaleDateString(dateLocale())}</time>}</div>
               <div className="update-notes">
-                <h3>更新内容</h3>
-                {available.notes ? <ReactMarkdown components={{ a: ({ href, children: linkChildren }) => <button className="update-note-link" onClick={() => href && void openUrl(href)}>{linkChildren} <ExternalLink size={12} /></button> }}>{available.notes}</ReactMarkdown> : <p>此版本没有附加更新说明。</p>}
+                <h3>{t("更新内容")}</h3>
+                {available.notes ? <ReactMarkdown components={{ a: ({ href, children: linkChildren }) => <button className="update-note-link" onClick={() => href && void openUrl(href)}>{linkChildren} <ExternalLink size={12} /></button> }}>{available.notes}</ReactMarkdown> : <p>{t("此版本没有附加更新说明。")}</p>}
               </div>
-              {busy && <div className="update-progress"><div><span>{phase === "downloading" ? "下载并校验" : "正在安装"}</span><strong>{progress === undefined ? "处理中" : `${progress}%`}</strong></div><div className="update-progress-track"><span style={{ width: progress === undefined ? "38%" : `${progress}%` }} /></div></div>}
-              {phase === "error" && <div className="update-error">{message}</div>}
+              {busy && <div className="update-progress"><div><span>{phase === "downloading" ? t("下载并校验") : t("正在安装")}</span><strong>{progress === undefined ? t("处理中") : `${progress}%`}</strong></div><div className="update-progress-track"><span style={{ width: progress === undefined ? "38%" : `${progress}%` }} /></div></div>}
+              {phase === "error" && <div className="update-error">{formatUpdateMessage(message)}</div>}
             </div>
             <footer>
-              <button className="button ghost" disabled={busy} onClick={() => void openUrl(RELEASE_URL)}>在 GitHub 查看</button>
+              <button className="button ghost" disabled={busy} onClick={() => void openUrl(RELEASE_URL)}>{t("在 GitHub 查看")}</button>
               <div>
-                <button className="button secondary" disabled={busy} onClick={() => void skip()}>跳过此版本</button>
-                <button className="button secondary" disabled={busy} onClick={() => void dismiss()}>稍后</button>
-                <button className="button primary" disabled={busy} onClick={() => void install()}>{phase === "error" ? <RefreshCw size={17} /> : phase === "installing" ? <CheckCircle2 size={17} /> : <Download size={17} />}{phase === "error" ? "重试" : busy ? "更新中…" : "立即更新"}</button>
+                <button className="button secondary" disabled={busy} onClick={() => void skip()}>{t("跳过此版本")}</button>
+                <button className="button secondary" disabled={busy} onClick={() => void dismiss()}>{t("稍后")}</button>
+                <button className="button primary" disabled={busy} onClick={() => void install()}>{phase === "error" ? <RefreshCw size={17} /> : phase === "installing" ? <CheckCircle2 size={17} /> : <Download size={17} />}{phase === "error" ? t("重试") : busy ? t("更新中…") : t("立即更新")}</button>
               </div>
             </footer>
           </section>

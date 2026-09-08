@@ -39,16 +39,17 @@
 }
 
 #let styled-body(section, body) = {
-  if section.contains("Research Outputs") or section.contains("Publications") or section.contains("Papers") or section.contains("Articles") {
+  let title = lower(section)
+  if title.contains("research outputs") or title.contains("publication") or title.contains("papers") or title.contains("articles") or title.contains("论文") or title.contains("出版") {
     author-body(body)
-  } else if section == "Research Profile" {
+  } else if title == "research profile" or title == "target alignment" {
     let parts = body.split(":")
     if parts.len() > 1 {
       strong(parts.at(0) + ":")
       h(2pt)
       parts.slice(1).join(":")
     } else { body }
-  } else if section == "Education" or section.contains("Research Experience") {
+  } else if title.contains("education") or title.contains("academic background") or title.contains("project") or title.contains("research experience") or title.contains("教育") or title.contains("学历") {
     let parts = body.split(". ")
     if parts.len() > 1 {
       strong(parts.at(0) + ".")
@@ -64,7 +65,13 @@
   row-gutter: 0pt,
   inset: (y: 0.9pt),
   [#align(top)[#v(1.4pt)#rect(width: 3.4pt, height: 8pt, fill: burgundy)]],
-  [#styled-body(section, item.body)],
+  [
+    #context {
+      let position = here().position()
+      [#metadata((kind: "entry", page: counter(page).get().first(), y: position.y.pt(), characters: item.key.len() + item.body.len())) <cv-entry>]
+    }
+    #styled-body(section, item.body)
+  ],
   [#align(right)[#text(size: 8.8pt, fill: quiet)[#item.key]]],
 )
 
@@ -90,7 +97,11 @@
 ]
 
 #for (index, section) in data.sections.enumerate() [
-  #if index > 0 and section.title.contains("(continued)") [#pagebreak()]
   #section-title(section.title)
   #for item in section.entries [#entry(section.title, item)]
 ]
+
+#context {
+  let position = here().position()
+  [#metadata((kind: "contentEnd", page: counter(page).get().first(), y: position.y.pt())) <cv-content-end>]
+}

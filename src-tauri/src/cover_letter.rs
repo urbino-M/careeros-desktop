@@ -90,30 +90,22 @@ pub async fn generate(paths: &AppPaths, target_id: &str) -> Result<CoverLetterGe
     let cv_data = load_cv_data(paths, &conn, target_id);
     let data = build_data(&target, &email_text, cv_data.as_ref());
     drop(conn);
-    render_and_persist(paths, target_id, &target.application_id, data, true).await
+    render_and_persist(paths, target_id, &target.application_id, data, true, None, |_,_| Ok(())).await
 }
 
-pub async fn regenerate_from_text(
-    paths: &AppPaths,
-    target_id: &str,
+pub(crate) async fn revise_text(
+    paths: &AppPaths, target_id: &str, text: &str,
+    publish_revision: impl FnOnce(&rusqlite::Connection, &Path) -> Result<()>,
 ) -> Result<CoverLetterGenerationResult> {
     let conn = db::connect(&paths.database)?;
-    let (application_id, data_stored, text_stored): (String, String, String) = conn.query_row(
-        "SELECT t.application_id,d.path,m.path
-         FROM contact_targets_v2 t
-         JOIN contact_target_artifacts d ON d.target_id=t.id AND d.artifact_type='cover_letter_data' AND d.language='und'
-         JOIN contact_target_artifacts m ON m.target_id=t.id AND m.artifact_type='cover_letter_text' AND m.language='en'
-         WHERE t.id=?1 AND t.archived_at IS NULL",
-        [target_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).context("当前联系人还没有可编辑的 Cover Letter；请先点击“添加 Cover Letter”")?;
-    let data_path = resolve_data_path(&paths.data_root, &data_stored);
-    let text_path = resolve_data_path(&paths.data_root, &text_stored);
-    let existing: CoverLetterData = serde_json::from_slice(&fs::read(&data_path)?)
-        .context("Cover Letter 结构化内容无效")?;
-    let revised = parse_rendered_markdown(&fs::read_to_string(&text_path)?, existing)?;
-    drop(conn);
-    render_and_persist(paths, target_id, &application_id, revised, false).await
+    let (application_id,stored): (String,String) = conn.query_row(
+        "SELECT t.application_id,a.path FROM contact_targets_v2 t JOIN contact_target_artifacts a ON a.target_id=t.id
+         WHERE t.id=?1 AND t.archived_at IS NULL AND a.artifact_type='cover_letter_data' AND a.language='und'",
+        [target_id], |r| Ok((r.get(0)?,r.get(1)?)),
+    )?;
+    let data = serde_json::from_slice(&fs::read(resolve_data_path(&paths.data_root,&stored))?)?;
+    let revised = parse_rendered_markdown(text,data)?;
+    render_and_persist(paths,target_id,&application_id,revised,false,Some(text),publish_revision).await
 }
 
 async fn render_and_persist(
@@ -122,10 +114,13 @@ async fn render_and_persist(
     application_id: &str,
     data: CoverLetterData,
     write_text: bool,
+    replacement_text: Option<&str>,
+    publish_revision: impl FnOnce(&rusqlite::Connection, &Path) -> Result<()>,
 ) -> Result<CoverLetterGenerationResult> {
     let conn = db::connect(&paths.database)?;
 
-    let directory = target_material_dir(paths, target_id);
+    let fingerprint = crate::materials::artifact_fingerprint(&conn,paths,target_id,"%")?;
+    let directory = crate::materials::new_material_version(paths, target_id);
     let revisions_dir = directory.join("revisions");
     fs::create_dir_all(&revisions_dir)?;
     let source_path = directory.join("cover-letter.typ");
@@ -133,13 +128,19 @@ async fn render_and_persist(
     let text_path = directory.join("cover-letter.md");
     fs::write(&source_path, COVER_LETTER_TEMPLATE)?;
     fs::write(&data_path, serde_json::to_vec_pretty(&data)?)?;
-    if write_text {
+    if let Some(text) = replacement_text {
+        fs::write(&text_path,text)?;
+    } else if write_text {
         fs::write(&text_path, render_markdown(&data))?;
+    } else {
+        let stored: String = conn.query_row("SELECT path FROM contact_target_artifacts WHERE target_id=?1 AND artifact_type='cover_letter_text' AND language='en'",[target_id],|r|r.get(0))?;
+        fs::copy(resolve_data_path(&paths.data_root,&stored),&text_path)?;
     }
 
     let binary = locate_typst_binary(paths)?;
     let temporary = directory.join(format!("cover-letter-{}.tmp.pdf", Uuid::new_v4().simple()));
     let output = Command::new(&binary)
+        .kill_on_drop(true)
         .arg("compile")
         .arg("--root")
         .arg(&directory)
@@ -194,7 +195,13 @@ async fn render_and_persist(
         before: if backup.is_some() { "旧 Cover Letter PDF".into() } else { "没有 Cover Letter".into() },
         after: "新的 1 页 Typst Cover Letter PDF".into(),
     }];
-    let tx = conn.unchecked_transaction()?;
+    let tx = db::publication_transaction(&conn)?;
+    let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM contact_targets_v2 WHERE id=?1 AND archived_at IS NULL)",[target_id],|r|r.get(0))?;
+    if !active { bail!("联系人已归档；新 Cover Letter 未发布") }
+    if crate::materials::artifact_fingerprint(&tx,paths,target_id,"%")? != fingerprint {
+        bail!("材料在 Cover Letter 生成期间已改变；候选版本已保留，未替换当前材料")
+    }
+    publish_revision(&tx,&text_path)?;
     for (artifact_type, language, path) in [
         ("cover_letter", "en", relative_pdf.as_str()),
         ("cover_letter_typst", "en", relative_source.as_str()),
@@ -239,6 +246,7 @@ async fn render_and_persist(
             serde_json::to_string(&diff)?,
         ],
     )?;
+    crate::workflows::reconcile_material_state(&tx,paths,target_id,None)?;
     tx.commit()?;
 
     Ok(CoverLetterGenerationResult {
@@ -459,13 +467,6 @@ fn locate_typst_binary(paths: &AppPaths) -> Result<PathBuf> {
         if path.is_file() { return Ok(path) }
     }
     bail!("没有找到内置 Typst 运行时")
-}
-
-fn target_material_dir(paths: &AppPaths, target_id: &str) -> PathBuf {
-    let safe = target_id.chars().map(|character| {
-        if character.is_ascii_alphanumeric() || character == '-' { character } else { '_' }
-    }).collect::<String>();
-    paths.generated.join("contact-targets").join(safe)
 }
 
 fn resolve_data_path(root: &Path, value: &str) -> PathBuf {

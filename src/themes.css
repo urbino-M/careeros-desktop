@@ -1,0 +1,122 @@
+/* Interface tokens only: document previews keep their own paper colours. */
+:root {
+  --icon-surface: rgba(72,205,208,.08);
+  --icon-border: rgba(72,205,208,.22);
+  --on-accent: #042027;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f6f3;
+  --bg-deep: #e9efea;
+  --panel: #ffffff;
+  --panel-strong: #ffffff;
+  --panel-soft: #edf3ee;
+  --line: rgba(39,79,68,.18);
+  --line-bright: rgba(13,113,98,.42);
+  --text: #183b36;
+  --muted: #506863;
+  --muted-2: #60736d;
+  --accent: #096f66;
+  --accent-strong: #07564f;
+  --accent-dim: #e0efea;
+  --blue: #236599;
+  --amber: #946005;
+  --red: #b43849;
+  --green: #25714c;
+  --icon-surface: #e7f0e9;
+  --icon-border: #cbded3;
+  --on-accent: #fff;
+  --mark-ring-start: #32a793;
+  --mark-ring-mid: #168374;
+  --mark-ring-end: #075950;
+  --mark-plane-start: #527e77;
+  --mark-plane-end: #143f3a;
+}
+
+.interface-preferences { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.interface-preferences.compact { grid-template-columns: 1fr; gap: 14px; }
+.interface-preferences .language-label { color: var(--muted); margin-bottom: 8px; }
+.interface-preferences .segmented { background: var(--panel-soft); }
+.theme-options button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.interface-settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .9fr); align-items: center; gap: 28px; }
+.interface-settings h2 { margin: 0 0 8px; font: 600 25px/1.2 var(--serif); }
+.interface-settings p { max-width: 520px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.onboarding-interface { max-width: 900px; margin: 0 auto 28px; }
+.onboarding-interface .interface-preferences { max-width: 480px; margin-left: auto; }
+.sidebar { overflow-y: auto; min-height: 0; }
+.sidebar-footer { padding-top: 16px; }
+.brand-kicker { line-height: 1.5; letter-spacing: .09em; }
+.brand-lockup > div { min-width: 0; }
+.nav-button { gap: 10px; }
+.nav-icon { display: grid; place-items: center; flex: none; width: 31px; height: 31px; border-radius: 9px; color: var(--accent); background: var(--icon-surface); border: 1px solid var(--icon-border); }
+.settings-icon, .planning-icon, .feature-tour svg { border-radius: 11px; background: var(--icon-surface); border-color: var(--icon-border); }
+.button.primary, .material-language-switch button.selected { color: var(--on-accent); }
+input, textarea, select { accent-color: var(--accent); }
+input::placeholder, textarea::placeholder { color: var(--muted-2); opacity: 1; }
+html[lang="en"] .status-tabs button { padding-inline: 8px; font-size: 12px; }
+html[lang="en"] .brand-kicker { font-size: 8px; }
+
+:root[data-theme="light"] body { background: var(--bg); }
+:root[data-theme="light"] body::before { opacity: .45; }
+:root[data-theme="light"] .sidebar,
+:root[data-theme="light"] .onboarding-rail {
+  background: linear-gradient(170deg, #fbfcf8, #e9f0e9);
+  box-shadow: 8px 0 30px rgba(32,61,47,.035);
+}
+:root[data-theme="light"] .window-titlebar { color: var(--muted-2); background: linear-gradient(#f4f6f3, rgba(244,246,243,.8), transparent); }
+:root[data-theme="light"] .onboarding-drag { color: var(--muted-2); }
+:root[data-theme="light"] .careeros-mark { padding: 5px; border: 1px solid var(--icon-border); border-radius: 15px; background: linear-gradient(145deg, #fff, #dfece1); filter: drop-shadow(0 5px 7px rgba(31,74,53,.08)); }
+:root[data-theme="light"] .nav-button { color: var(--muted); }
+:root[data-theme="light"] .nav-button:hover { background: #e9f0e9; color: var(--text); }
+:root[data-theme="light"] .nav-button.active { color: var(--text); background: linear-gradient(90deg, #dbece2, #edf4ed); box-shadow: inset 2px 0 var(--accent); }
+:root[data-theme="light"] .nav-icon-dashboard { color: #92652b; background: #f6ecda; border-color: #ebdbc0; }
+:root[data-theme="light"] .nav-icon-automation { color: #466897; background: #e8eef8; border-color: #d4dff0; }
+:root[data-theme="light"] .nav-icon-settings { color: #726687; background: #f0edf4; border-color: #e0dbe8; }
+:root[data-theme="light"] .nav-button.active .nav-icon { border-color: var(--line-bright); }
+:root[data-theme="light"] .hero-panel { border-color: var(--line); background: linear-gradient(115deg, #e4eee4, #f8faf5 75%); box-shadow: 0 10px 30px rgba(45,75,52,.045); }
+:root[data-theme="light"] .hero-rings { opacity: .4; }
+:root[data-theme="light"] :is(.target-card, .career-overview-panel, .career-overview-panel.internship, .internship-planning, .application-update-card) { background: linear-gradient(140deg, #fff, #f5f8f3); box-shadow: 0 5px 18px rgba(31,72,49,.04); }
+:root[data-theme="light"] :is(.panel, .priority-item, .planning-card, .form-card, .gmail-draft-panel, .job-card, .onboarding-panel, .auth-grid article, .feature-tour article, .state-panel, .default-row, .task-composer, .update-dialog) { background: var(--panel); }
+:root[data-theme="light"] :is(.career-overview-metric, .internship-context-strip, .planning-track-list span, .rail-submission-control, .approval-row, .check-item, .material-language-switch, .revision-entry, .reply-entry, .technical-details, .revision-summary, .job-section, .job-run-facts, .job-request-details, .verification-strip, .cv-page-count-control, .update-notes, .choice-grid button, .onboarding-rail li i, .revision-diff-card) { background: var(--panel-soft); }
+:root[data-theme="light"] :is(.career-overview-metric:hover, .choice-grid button.selected, .file-tile.selected) { background: var(--accent-dim); }
+:root[data-theme="light"] :is(.status-tabs button, .application-view-tabs) { background: var(--panel); }
+:root[data-theme="light"] :is(.status-tabs button.selected, .application-view-tabs button.selected) { background: var(--accent-dim); }
+:root[data-theme="light"] .button.secondary { background: var(--panel); }
+:root[data-theme="light"] .button.secondary:hover { background: var(--accent-dim); }
+:root[data-theme="light"] :is(.field input, .field select, .field textarea, .model-controls select, .account-copy input, .provider-connect-fields input, .default-row select, .rail-submission-control select, .cv-page-count-control select, .cv-page-count-control input, .cv-customization-grid textarea, .onboarding-form input, .onboarding-form textarea, .onboarding-form select, .auth-grid input, .letter-editor) { background: var(--panel); color: var(--text); }
+:root[data-theme="light"] :is(.pdf-preview-panel > header, .document-toolbar, .job-section-toggle, .update-dialog > header, .update-dialog > footer, .revision-diff-card > header) { background: linear-gradient(110deg, #e8f1eb, #f5f8f2); }
+:root[data-theme="light"] .job-section-toggle:hover { background: #dfebe2; }
+:root[data-theme="light"] :is(.on-demand-material, .dashboard-agent-cta) { background: linear-gradient(110deg, #e5f0e9, #f5f8f3); }
+:root[data-theme="light"] .pdf-preview-panel { background: #e0e7e1; box-shadow: 0 12px 35px rgba(30,60,43,.12); }
+:root[data-theme="light"] :is(.composer-backdrop, .update-backdrop) { background: rgba(35,61,47,.24); }
+:root[data-theme="light"] :is(.task-composer, .update-dialog) { box-shadow: 0 25px 90px rgba(27,54,40,.2); }
+:root[data-theme="light"] .job-event-dot { background: var(--panel); border-color: #9bb6aa; }
+
+/* Older components used pale literal text colours. Keep them on the same scale. */
+:root[data-theme="light"] :is(.hero-panel p, .career-overview-metric span, .region-row > span, .priority-copy p, .internship-search-profile-item strong, .evidence-count span, .improvement-title strong, .target-role, .target-card dd, .rail-role, .rail-facts dd, .rail-submission-control > span, .material-tabs button, .field, .field > span, .model-controls label > span, .letter-editor textarea, .revision-entry pre, .reply-entry pre, .technical-details pre, .revision-summary, .revision-locations strong, .revision-diff-columns p, .job-card-title h3, .job-card > p, .job-live-status > strong, .job-run-facts strong, .job-activity-timeline > summary > span, .job-activity-timeline li strong, .job-activity-timeline li.current strong, .job-request-details > summary > span, .job-request-body p, .job-request-body pre, .queue-task b, .retry-task-title, .cv-page-count-control label > span, .cv-customization-grid label > span, .update-notes, .onboarding-rail li.done, .choice-grid button, .onboarding-form label > span, .onboarding-notice) { color: var(--text); }
+:root[data-theme="light"] .material-tabs button.selected { color: var(--accent); }
+:root[data-theme="light"] :is(.planning-source-row span, .revision-locations span, .inline-notice, .info-card) { color: var(--accent-strong); }
+:root[data-theme="light"] :is(.status-explainer, .info-card.blue, .status-contacted, .status-completed) { color: var(--blue); }
+:root[data-theme="light"] .email-value { color: var(--blue) !important; }
+:root[data-theme="light"] :is(.status-shelved, .submission-not_required) { color: var(--muted); }
+:root[data-theme="light"] .status-queued { color: #725499; }
+:root[data-theme="light"] :is(.inline-notice.error, .manual-save-feedback.error, .diff-before strong) { color: var(--red); }
+:root[data-theme="light"] .diff-after strong { color: var(--green); }
+:root[data-theme="light"] .update-dialog-symbol { color: var(--on-accent); }
+:root[data-theme="light"] .onboarding-optional { border-color: var(--line); }
+
+@media (max-width: 1100px) {
+  .interface-settings { grid-template-columns: 1fr; gap: 18px; }
+  .interface-settings > .interface-preferences { max-width: 560px; }
+  html[lang="en"] .default-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  html[lang="en"] .default-row > strong { grid-column: 1 / -1; }
+}
+@media (max-width: 720px) {
+  .interface-preferences { gap: 12px; }
+  .onboarding-interface .interface-preferences { margin: 0; }
+  .interface-settings { padding: 18px; }
+  .interface-settings > .interface-preferences { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
