@@ -33,6 +33,18 @@ run_checks() {
   (cd "$ROOT_DIR/src-tauri" && cargo test)
 }
 
+require_runtime_binaries() {
+  local runtime_dir="$ROOT_DIR/src-tauri/resources/runtime"
+  local name
+  for name in codex typst; do
+    if [[ ! -x "$runtime_dir/$name" ]]; then
+      echo "Missing bundled runtime executable: $runtime_dir/$name" >&2
+      echo "Prepare the platform runtime files before packaging." >&2
+      exit 1
+    fi
+  done
+}
+
 adhoc_sign_app() {
   if [[ ! -d "$APP_BUNDLE" ]]; then
     echo "Built app is missing: $APP_BUNDLE" >&2
@@ -175,12 +187,14 @@ case "$MODE" in
     ;;
   --verify|verify)
     stop_app
+    require_runtime_binaries
     run_checks
     npm run desktop:build -- --bundles app
     launch_app_bundle "$APP_BUNDLE"
     verify_running_build
     ;;
   --install-unsigned|install-unsigned)
+    require_runtime_binaries
     run_checks
     npm run desktop:build -- --bundles app --no-sign
     stop_app
@@ -197,12 +211,14 @@ case "$MODE" in
     ;;
   --release|release)
     stop_app
+    require_runtime_binaries
     run_checks
     npm run desktop:build
     echo "Release app: $APP_BUNDLE"
     echo "Release DMG: $DMG_PATH"
     ;;
   --adhoc-dmg|adhoc-dmg)
+    require_runtime_binaries
     npm run desktop:build -- --bundles app --no-sign
     adhoc_sign_app
     create_adhoc_dmg

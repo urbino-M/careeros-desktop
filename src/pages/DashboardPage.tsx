@@ -93,7 +93,7 @@ function TrackOverview({ system, data, onNavigate }: { system: CareerSystem; dat
   const Icon = internship ? BriefcaseBusiness : FlaskConical;
   const title = internship ? "Internship 申请" : "Postdoc 申请";
   const description = internship
-    ? "多渠道发现、官方来源核验、资格判断与官网投递跟踪。"
+    ? "GPT / Codex 网页搜索、官方来源核验、资格判断与官网投递跟踪。"
     : "PI / 实验室检索、材料准备与联系跟进。";
   return (
     <section className={`career-overview-panel ${internship ? "internship" : "postdoc"}`}>

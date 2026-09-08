@@ -5,8 +5,8 @@ description: Evidence-based industry internship discovery and eligibility review
 
 # Internship Hunter discovery contract
 
-Read `CAREEROS_TASK.json` first, then `input/request.json`,
-`input/channel-results.json`, and every available file in `profile/`. The JSON
+Read `CAREEROS_TASK.json` first, then `input/request.json`
+and every available file in `profile/`. The JSON
 contract is authoritative for output paths, limits, and field names. Write only
 below the current workspace's `output/` directory.
 
@@ -23,21 +23,32 @@ below the current workspace's `output/` directory.
 
 - Return current industry internships only. Exclude postdoctoral, doctoral,
   faculty, volunteer, and regular full-time roles.
-- Use every available normalized result in `input/channel-results.json`. The
-  channels are official Web / ATS, Exa, RSS, LinkedIn, Facebook, and Twitter / X;
-  a failed or unavailable channel is not a reason to stop the search.
+- Use the existing Codex web-search capability to discover public recruitment
+  information. Include accessible LinkedIn and Twitter / X recruitment posts
+  alongside employer careers pages and official ATS listings.
+- Do not install or invoke channel tools, start MCP integrations or dedicated
+  browsers, request social-account login, or bypass login/access restrictions.
+  Legacy `rssFeeds` in the profile is retained data, not a feed-fetching task.
+- Public visibility does not guarantee complete or current search coverage.
+  If a source cannot be opened or only a search snippet is available, record
+  that limitation and continue with accessible sources. Do not invent missing
+  details or treat a search snippet as primary verification.
 - Deduplicate by canonical URL, stable job identifier, or a conservative
-  company-title-location fingerprint across channels. Keep the best source
+  company-title-location fingerprint across public sources. Keep the best source
   evidence on the retained opportunity and preserve each source entry.
 - Prefer the employer's official careers page or its official ATS record for
   verification. Only a `web_ats` source with `evidenceType: primary` may produce
-  a `verified` opportunity. Exa, RSS, LinkedIn, Facebook, and Twitter / X are
-  useful discovery evidence but remain `unverified` unless the same opportunity
-  also has that official primary source.
+  a `verified` opportunity. Public posts and search-index snippets are useful
+  discovery evidence but remain `unverified` unless the same opportunity also
+  has an inspected official primary source.
 - Confirm that the role is active at check time when the source supports it.
   Preserve the exact title, company, location, deadline, job identifier, URL,
-  channel, backend, checkedAt, and evidenceType. Never upgrade a social or
-  search-index result by inference.
+  channel, backend, checkedAt, and evidenceType. Use `backend: codex_web_search`
+  for the current retrieval path, but label social sources by their platform
+  (`linkedin`, `twitter`, or `facebook`), not `web_ats`. Other public-web
+  evidence may use `web_ats` with `evidenceType: secondary`; only an inspected
+  employer/ATS page is primary. Never upgrade a social or search-index result
+  by inference.
 - Score fit conservatively from the requested search and available verified
   candidate facts. Research similarity cannot override a failed hard
   eligibility requirement.

@@ -190,35 +190,6 @@ export interface SourceEvidence {
   backend: string;
 }
 
-export interface ChannelHealth {
-  channel: SearchChannel;
-  backend: string;
-  available: boolean;
-  authenticated: boolean;
-  status: string;
-  message: string;
-  checkedAt: string;
-}
-
-export interface SearchCapabilities {
-  checkedAt: string;
-  channels: ChannelHealth[];
-  warnings: string[];
-}
-
-export interface SearchSetupResult {
-  completed: boolean;
-  messages: string[];
-  capabilities: SearchCapabilities;
-}
-
-export interface AuthGuide {
-  channel: SearchChannel;
-  title: string;
-  url?: string | null;
-  instructions: string[];
-}
-
 export interface ProviderModelInfo {
   id: string;
   slug: string;
@@ -294,6 +265,7 @@ export interface InternshipProfile {
   enrollmentStatus: string;
   constraints: string;
   cvPath?: string;
+  /** Legacy profile data retained on save; no feed setup or fetching. */
   rssFeeds: string[];
   updatedAt?: string;
 }
@@ -388,6 +360,6 @@ export type AppRoute =
   | { page: "automation"; composer?: AutomationComposer }
   | { page: "applications"; careerSystem: CareerSystem; status: ApplicationFilter; view?: ApplicationView }
   | { page: "application"; targetId: string; careerSystem: CareerSystem; tab?: ApplicationTab; returnPage?: "automation"; jobId?: string }
-  | { page: "settings"; focus?: "search-channels" };
+  | { page: "settings" };
 
 export type Locale = "zh" | "en";

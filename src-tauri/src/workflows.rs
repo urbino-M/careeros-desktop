@@ -235,8 +235,9 @@ pub fn result_contract(job_type: &str) -> Value {
                 "Use exact camelCase keys shown below; do not emit snake_case alternatives.",
                 "Return current industry internships only; exclude postdoctoral, doctoral, faculty and full-time roles.",
                 "Use eligibilityStatus=uncertain when the supplied evidence or Internship profile cannot establish candidate eligibility.",
-                "Read input/channel-results.json and combine every available channel; Web/ATS is the primary verification route.",
-                "Preserve source channel, backend, checkedAt and evidenceType for every source; do not turn social, Exa or RSS evidence into verified evidence.",
+                "Use Codex web search for public recruitment information, including accessible LinkedIn and Twitter / X posts; verify against official company careers pages or official ATS records.",
+                "Do not install or invoke channel tools, connect social accounts, or bypass login restrictions. State any access or freshness limits instead of claiming complete coverage.",
+                "Preserve source channel, backend=codex_web_search, checkedAt and evidenceType for every source. Label social sources by their platform; only an inspected official Web/ATS page may be primary, never a public post or search snippet.",
                 "Score against the requested search brief; missing profile information makes eligibility uncertain rather than blocking discovery.",
                 "Do not create a CV, outreach email, Gmail draft or application submission."
             ],
@@ -246,7 +247,7 @@ pub fn result_contract(job_type: &str) -> Value {
                 "opportunities": [{
                     "opportunityKind": "industry_internship",
                     "externalId": "optional stable source id",
-                    "sourceUrl": "channel result URL",
+                    "sourceUrl": "public source URL",
                     "sourceTitle": "source title",
                     "title": "internship title",
                     "organization": "company or organization",
@@ -255,7 +256,7 @@ pub fn result_contract(job_type: &str) -> Value {
                     "region": "optional region",
                     "location": "optional exact or remote location",
                     "deadline": "ISO date or null",
-                    "summary": "verified role summary",
+                    "summary": "source-grounded role summary with uncertainties noted",
                     "keywords": ["keyword"],
                     "active": true,
                     "eligibilityStatus": "eligible|uncertain|ineligible",
@@ -264,7 +265,7 @@ pub fn result_contract(job_type: &str) -> Value {
                     "fitAnalysis": "complete reviewable Markdown",
                     "fitAnalysisZh": "complete Chinese reviewable Markdown",
                     "verifiedAt": "UTC ISO-8601",
-                    "sources": [{"title":"source","url":"https://...","checkedAt":"UTC ISO-8601","evidenceType":"primary|secondary|inferred","channel":"web_ats|exa|rss|linkedin|facebook|twitter","backend":"backend identifier"}],
+                    "sources": [{"title":"source","url":"https://...","checkedAt":"UTC ISO-8601","evidenceType":"primary|secondary|inferred","channel":"web_ats|exa|rss|linkedin|facebook|twitter","backend":"codex_web_search"}],
                     "checklist": [{"itemType":"eligibility_confirmation","required":true,"status":"ready|review|missing","origin":"verified|inferred","evidence":"text","sourceUrl":"https://...","note":"optional","sortOrder":10}]
                 }]
             }
@@ -1265,6 +1266,12 @@ mod tests{
         assert!(internship["rules"]
             .as_array()
             .is_some_and(|rules| rules.iter().any(|rule| rule.as_str().is_some_and(|text| text.contains("Do not create a CV")))));
+        let rules = internship["rules"].to_string();
+        assert!(rules.contains("Codex web search"));
+        assert!(rules.contains("Do not install or invoke channel tools"));
+        assert!(rules.contains("never a public post or search snippet"));
+        assert!(!rules.contains("channel-results.json"));
+        assert_eq!(internship["required"]["opportunities"][0]["sources"][0]["backend"], "codex_web_search");
         let search = result_contract("research_pi");
         assert_eq!(search["required"]["schemaVersion"], 1);
         assert_eq!(search["required"]["opportunities"][0]["contacts"][0]["materials"]["cvData"]["schemaVersion"], 1);

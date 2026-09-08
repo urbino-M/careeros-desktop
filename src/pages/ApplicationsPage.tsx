@@ -144,7 +144,7 @@ export function ApplicationsPage({
           <div className="status-explainer">
             <Mail size={18} />
             {internship
-              ? "CareerOS 会保留多渠道发现结果；只有官方 Web / ATS 主证据标记为已核验，待核验机会不能直接投递。"
+              ? "GPT / Codex 搜索公开招聘线索；只有官方 Web / ATS 主证据标记为已核验，待核验机会不能直接投递。"
               : "Gmail 草稿不会改变状态；回复 Agent 完成后才进入“跟进”，明确拒绝会进入“搁置”。每位 PI 都是独立联系目标。"}
           </div>
 

@@ -261,6 +261,24 @@ impl CodexManager {
                     let _ = sender.send(message);
                 }
             }
+            if method == "item/tool/call" {
+                client
+                    .respond_to_server_request(
+                        event.get("id").context("Codex 动态工具请求缺少 request id")?,
+                        json!({
+                            "success": false,
+                            "contentItems": [{
+                                "type": "inputText",
+                                "text": "CareerOS 不提供客户端动态工具；请使用任务工作区中的内置文件或网页能力。"
+                            }]
+                        }),
+                    )
+                    .await?;
+                if let Some(sender) = &activities {
+                    let _ = sender.send("已拒绝不受支持的客户端动态工具，继续使用 CareerOS 内置能力".into());
+                }
+                continue;
+            }
             if matches!(method, "turn/completed" | "turn/complete") {
                 return Ok(CodexTaskResult {
                     thread_id,
@@ -362,6 +380,13 @@ impl CodexClient {
         for value in config_overrides {
             command.arg("-c").arg(value);
         }
+        // CareerOS is an App Server client, not a host for Codex Apps or the
+        // client-side unified `exec` tool. Those features emit `item/tool/call`
+        // requests that require a separate callback loop. Built-in sandboxed
+        // file and shell tools remain available with these features disabled.
+        for value in ["features.apps=false", "features.unified_exec=false"] {
+            command.arg("-c").arg(value);
+        }
         command
             .arg("app-server")
             .arg("--listen")
@@ -388,10 +413,12 @@ impl CodexClient {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
-                if let Some(id) = value.get("id").and_then(Value::as_u64) {
-                    if let Some(sender) = reader_pending.lock().await.remove(&id) {
-                        let _ = sender.send(value);
-                        continue;
+                if value.get("method").is_none() {
+                    if let Some(id) = value.get("id").and_then(Value::as_u64) {
+                        if let Some(sender) = reader_pending.lock().await.remove(&id) {
+                            let _ = sender.send(value);
+                            continue;
+                        }
                     }
                 }
                 let _ = reader_events.send(value);
@@ -441,6 +468,10 @@ impl CodexClient {
 
     async fn notify(&self, method: &str, params: Value) -> Result<()> {
         self.write(&json!({"jsonrpc":"2.0","method":method,"params":params})).await
+    }
+
+    async fn respond_to_server_request(&self, id: &Value, result: Value) -> Result<()> {
+        self.write(&json!({"jsonrpc":"2.0","id":id,"result":result})).await
     }
 
     async fn write(&self, value: &Value) -> Result<()> {

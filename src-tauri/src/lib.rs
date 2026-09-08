@@ -14,16 +14,14 @@ mod paths;
 mod providers;
 mod scheduler;
 mod secrets;
-mod search_channels;
 mod typst;
 mod workflows;
 
 use codex::CodexManager;
 use base64::Engine;
 use models::{
-    AuthGuide, DashboardData, GmailDraftInfo, GmailOAuthStart, GmailStatus, InboundReplyRequest,
-    JobGroups, MigrationReport, ProviderInfo, ReplyItem, SearchCapabilities, SearchChannel,
-    SearchSetupResult, TargetCard, TargetDetail, TaskModelDefault,
+    DashboardData, GmailDraftInfo, GmailOAuthStart, GmailStatus, InboundReplyRequest,
+    JobGroups, MigrationReport, ProviderInfo, ReplyItem, TargetCard, TargetDetail, TaskModelDefault,
 };
 use paths::AppPaths;
 use scheduler::{EnqueueRequest, Scheduler};
@@ -298,31 +296,6 @@ fn save_internship_profile(
 }
 
 #[tauri::command]
-async fn get_search_capabilities(
-    state: tauri::State<'_, AppState>,
-) -> Result<SearchCapabilities, String> {
-    search_channels::capabilities(&state.paths).await.map_err(display_error)
-}
-
-#[tauri::command(rename_all = "camelCase")]
-async fn setup_search_capabilities(
-    state: tauri::State<'_, AppState>,
-    channels: Option<Vec<SearchChannel>>,
-) -> Result<SearchSetupResult, String> {
-    search_channels::setup(&state.paths, channels)
-        .await
-        .map_err(display_error)
-}
-
-#[tauri::command(rename_all = "camelCase")]
-async fn begin_search_channel_auth(
-    state: tauri::State<'_, AppState>,
-    channel: SearchChannel,
-) -> Result<AuthGuide, String> {
-    search_channels::begin_auth(&state.paths, channel).await.map_err(display_error)
-}
-
-#[tauri::command]
 fn get_jobs(
     state: tauri::State<'_, AppState>,
     page_size: Option<usize>,
@@ -503,9 +476,6 @@ pub fn run() {
             import_internship_cv,
             get_internship_profile,
             save_internship_profile,
-            get_search_capabilities,
-            setup_search_capabilities,
-            begin_search_channel_auth,
             get_jobs,
             enqueue_job,
             cancel_job,
