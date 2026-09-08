@@ -1,4 +1,9 @@
 export const applicationsMessages: Record<string, string> = {
+  "公开线索不等于官方核验；研究方向证据不等于正在招聘。": "Public leads are not official verification; research fit is not evidence of hiring.",
+  "来源待核验": "Source verification needed",
+  "公开线索 · 非已核验岗位": "Public lead · Not a verified opening",
+  "线索已保存。补齐官方来源后才能生成联系人与申请材料。": "Lead saved. Official evidence is required before creating contacts and application materials.",
+  "继续核验这条线索": "Verify this lead",
   "公开招聘岗位": "Advertised positions",
   "套磁机会": "Prospective outreach",
   "类型待核实": "Type to verify",

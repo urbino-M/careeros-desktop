@@ -32,6 +32,7 @@ Rust paths below are relative to `src-tauri/src/`.
 | Onboarding | `src/pages/OnboardingPage.tsx`, `onboarding.rs` | CV upload, local extraction/Mac OCR, optional preferences and source-profile versions |
 | Internship profile | `src/components/InternshipPlanningPanel.tsx`, `internship.rs` | Separate optional CV/preferences and immutable task snapshots; no Postdoc-profile fallback |
 | Opportunities | `workflows.rs`, `opportunity_identity.rs`, `models.rs` | Structured result validation/import, Postdoc identity evidence shared by search and continuation, domain/result shapes |
+| Public search evidence | `public_search.rs`, `workflows.rs`, `src/components/SourcesPanel.tsx` | Shared public-web discovery policy and primary-source classification for both tracks; existing Codex transport, no extra search service |
 | Contacts and outreach | `src/pages/ApplicationDetailPage.tsx`, `db.rs`, `workflows.rs`, `materials.rs` | Manual status, reply persistence/decisions, outreach edits and generated reply artifacts; not Gmail authentication |
 | Materials | `materials.rs`; artifact queries in `db.rs` | Workspace/input preparation, target-owned copies, revisions, backups, base-hash conflict checks and publication |
 | CV | `cv_schema.rs`, `typst.rs`, `src-tauri/resources/templates/cv.typ` | Content/schema policy, user-directed structure, configurable references, page/layout preflight and rendering |
@@ -69,6 +70,8 @@ These are starting points, not prohibitions on a necessary cross-module fix.
 5. Retry retains source evidence and saved outputs. Same-provider retries can resume the original thread; a provider change uses a compatible new thread with workspace evidence. Scoped continuation is a separate task, not automatically a resumed historical search.
 
 See [Postdoc pipeline](features/postdoc-pipeline.md) for freshness, contact-status precedence, scoped continuation, identity compatibility and publication contracts.
+
+Both tracks use `public_search.rs` for public-web discovery guidance and primary-source classification. Postdoc saves secondary-only leads as unverified, uncertain opportunities without contacts or materials; they remain in Discovery and can use scoped continuation. Known social/search hosts cannot qualify as primary merely through a model label. Official research profiles establish research direction, not necessarily a vacancy. Primary-verified results retain the existing contact/material pipeline and original-thread retry behavior. A secondary result cannot overwrite an existing verified opportunity's metadata. Existing schema-15 verification/evidence columns are reused, with no new migration or legacy-data reset.
 
 Internship uses a separate public-web search contract and importer. When no result file was delivered, its bounded retry uses a fresh thread while retaining the original profile snapshot. Official-source verification is tracked separately from submission status; unverified results cannot be marked ready/submitted. No channel installation or social-login extension is required.
 

@@ -274,6 +274,7 @@ fn is_european_country(country: &str) -> bool {
 
 // Legacy prospect types may carry status=open; explicit kind takes precedence.
 const POSTDOC_CATEGORY: &str = "CASE
+    WHEN o.verification_status='unverified' THEN 'uncertain'
     WHEN o.opportunity_type IN ('prospective_contact','prospective_pi','cold_outreach','fellowship_host') THEN 'prospective'
     WHEN o.status='prospective' THEN 'prospective'
     WHEN o.opportunity_type IN ('advertised_position','formal_position','formal_postdoc','fellowship','program') THEN 'advertised'
@@ -344,7 +345,7 @@ pub fn list_opportunities_by_view(path: &Path, search: Option<&str>, offset: usi
     let mut items = tx.prepare(&format!(
         "SELECT o.id,o.title,o.organization,o.summary,o.country,o.region,o.deadline,o.source_url,o.status,o.discovered_at,
             (o.shelved_at IS NOT NULL OR (EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id AND t.archived_at IS NULL)
-              AND NOT EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id AND t.archived_at IS NULL AND t.shelved_at IS NULL)))
+              AND NOT EXISTS(SELECT 1 FROM contact_targets_v2 t WHERE t.opportunity_id=o.id AND t.archived_at IS NULL AND t.shelved_at IS NULL))),o.verification_status
          FROM opportunities o WHERE {eligible} AND {matching}
          ORDER BY {order} LIMIT ?2 OFFSET ?3"
     ))?.query_map(params![query, limit.clamp(1, 100) as i64, offset.min(i64::MAX as usize) as i64], |r| {
@@ -352,6 +353,7 @@ pub fn list_opportunities_by_view(path: &Path, search: Option<&str>, offset: usi
             id:r.get(0)?, title:r.get(1)?, organization:r.get(2)?, summary:r.get(3)?,
             country:r.get(4)?, region:r.get(5)?, deadline:r.get(6)?, source_url:r.get(7)?,
             status:r.get(8)?, discovered_at:r.get(9)?, shelved:r.get(10)?, contacts:Vec::new(), latest_job:None,
+            verification_status:VerificationStatus::parse(&r.get::<_,String>(11)?), sources:Vec::new(),
         })
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     {
@@ -362,6 +364,7 @@ pub fn list_opportunities_by_view(path: &Path, search: Option<&str>, offset: usi
                 id:r.get(0)?, name:r.get(1)?, material_status:r.get(2)?, shelved:r.get(3)?,
             }))?.collect::<rusqlite::Result<Vec<_>>>()?;
             item.latest_job = continuation_job(&tx, &item.id)?;
+            item.sources = source_evidence(&tx,Some(&item.id),None)?;
         }
     }
     tx.commit()?;
@@ -620,11 +623,7 @@ pub fn target_detail(path: &Path, data_root: &Path, target_id: &str) -> Result<T
     let unpublished_cv = if target.material_status == "pending" && !artifacts.iter().any(|item| item.artifact_type == "cv_data") {
         unpublished_cv_candidates(data_root,target_id)?
     } else { Vec::new() };
-    let mut sources_statement = conn.prepare("SELECT title,url,checked_at,evidence_type,source_channel,backend FROM native_source_evidence WHERE (entity_type='opportunity' AND entity_id=?1) OR (entity_type='contact_target' AND entity_id=?2) ORDER BY checked_at DESC,id")?;
-    let sources = sources_statement.query_map(params![target.opportunity_id, target_id], |r| Ok(SourceEvidence {
-        title:r.get(0)?, url:r.get(1)?, checked_at:r.get(2)?, evidence_type:r.get(3)?,
-        channel:SearchChannel::parse(&r.get::<_,String>(4)?), backend:r.get(5)?,
-    }))?.collect::<std::result::Result<Vec<_>,_>>()?;
+    let sources = source_evidence(&conn,target.opportunity_id.as_deref(),Some(target_id))?;
     Ok(TargetDetail {
         target,
         summary,
@@ -1439,6 +1438,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn empty_jobs_fixture(conn: &Connection) -> Result<()> {
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS native_source_evidence(id TEXT,entity_type TEXT,entity_id TEXT,title TEXT,url TEXT,checked_at TEXT,evidence_type TEXT,source_channel TEXT,backend TEXT);")?;
         conn.execute_batch("CREATE TABLE native_jobs(id TEXT,job_type TEXT,target_id TEXT,status TEXT,progress INTEGER,
             message TEXT,provider_id TEXT,account_id TEXT,model_id TEXT,reasoning TEXT,thread_id TEXT,error TEXT,
             created_at TEXT,started_at TEXT,finished_at TEXT,payload_json TEXT);")?;
@@ -1573,7 +1573,7 @@ mod tests {
         conn.execute_batch("CREATE TABLE opportunities(
             id TEXT PRIMARY KEY,title TEXT,organization TEXT,summary TEXT,country TEXT,region TEXT,
             deadline TEXT,source_url TEXT,status TEXT DEFAULT 'discovered',discovered_at TEXT,
-            created_at TEXT DEFAULT '2026-09-01',opportunity_type TEXT DEFAULT 'advertised_position',shelved_at TEXT);
+            created_at TEXT DEFAULT '2026-09-01',opportunity_type TEXT DEFAULT 'advertised_position',shelved_at TEXT,verification_status TEXT DEFAULT 'verified');
             CREATE TABLE contact_targets_v2(id TEXT PRIMARY KEY,opportunity_id TEXT,name TEXT,
                 material_status TEXT DEFAULT 'ready',archived_at TEXT,shelved_at TEXT);
             INSERT INTO opportunities(id,title,organization,discovered_at) VALUES
@@ -1924,4 +1924,13 @@ mod tests {
         assert!(!String::from_utf8_lossy(&raw).contains("test-secret-value"));
         Ok(())
     }
+}
+
+fn source_evidence(conn:&Connection,opportunity_id:Option<&str>,target_id:Option<&str>)->Result<Vec<SourceEvidence>> {
+    let mut sources_statement = conn.prepare("SELECT title,url,checked_at,evidence_type,source_channel,backend FROM native_source_evidence WHERE (entity_type='opportunity' AND entity_id=?1) OR (entity_type='contact_target' AND entity_id=?2) ORDER BY checked_at DESC,id")?;
+    let sources = sources_statement.query_map(params![opportunity_id, target_id], |r| Ok(SourceEvidence {
+        title:r.get(0)?, url:r.get(1)?, checked_at:r.get(2)?, evidence_type:r.get(3)?,
+        channel:SearchChannel::parse(&r.get::<_,String>(4)?), backend:r.get(5)?,
+    }))?.collect::<std::result::Result<Vec<_>,_>>()?;
+    Ok(sources)
 }

@@ -1,3 +1,5 @@
+import { SourcesPanel } from "../components/SourcesPanel";
+export { SourcesPanel } from "../components/SourcesPanel";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
@@ -24,7 +26,7 @@ import { ModelControls, type ModelSelection } from "../components/ModelControls"
 import { ManualMaterialEditor } from "../components/ManualMaterialEditor";
 import { OpportunityContinuationComposer } from "./ApplicationsPage";
 import { JobCard } from "./AutomationPage";
-import { ErrorState, LoadingState, StatusBadge, VerificationBadge, formatLocalTime, submissionStatusLabels, searchChannelLabels } from "../components/Ui";
+import { ErrorState, LoadingState, StatusBadge, VerificationBadge, formatLocalTime, submissionStatusLabels } from "../components/Ui";
 import type { ApplicationTab, AppRoute, ArtifactItem, ContactStatus, DiffEntry, GmailDraftInfo, GmailStatus, Locale, SubmissionStatus, TargetDetail } from "../types";
 
 type DetailTab = ApplicationTab;
@@ -181,7 +183,7 @@ export function ApplicationDetailPage({
           {!internship && target.materialStatus === "pending" && <div className="inline-notice" role="status"><strong>{t("材料待补齐")}</strong><p>{target.materialError || t("这条机会已保存，但申请材料尚未全部完成。可从机会卡片继续完善。")}</p></div>}
           {!internship && target.materialStatus === "pending" && (activeTab === "cv" || activeTab === "revision") &&
             <MaterialRecoveryPanel detail={detail} onChanged={load} onNavigate={onNavigate} />}
-          {internship && <SourcesPanel sources={detail.sources} />}
+          <SourcesPanel sources={detail.sources} />
           <div className="material-body">
             {activeTab === "cv" && <CvPanel detail={detail} onChanged={load} />}
             {activeTab === "cover_letter" && <CoverLetterPanel detail={detail} onChanged={load} />}
@@ -962,16 +964,6 @@ function OtherPanel({ detail }: { detail: TargetDetail }) {
   </div>;
 }
 
-export function SourcesPanel({ sources = [] }: { sources: TargetDetail["sources"] }) {
-  return <section className="source-evidence-panel">
-    <div className="content-title"><ExternalLink size={21} /><div><h3>{t("来源与核验证据")}</h3><p>{t("保留每个渠道、后端、检查时间和证据类型；官方 Web / ATS 主证据才会成为已核验机会。")}</p></div></div>
-    {sources.length === 0 ? <p className="muted-copy">{t("当前没有可展示的来源证据。")}</p> : <div className="source-evidence-list">{sources.map((source, index) => <article key={`${source.url}-${index}`}>
-      <div><strong>{source.title}</strong><span>{t(searchChannelLabels[source.channel] || source.channel)} · {source.backend} · {source.evidenceType}</span></div>
-      <a href={source.url} onClick={(event) => { event.preventDefault(); void openUrl(source.url); }}>{source.url}<ExternalLink size={12} /></a>
-      <small>检查时间：{formatLocalTime(source.checkedAt)}</small>
-    </article>)}</div>}
-  </section>;
-}
 
 function RevisionLocations({ value }: { value: string }) {
   const locations = parseLocations(value);

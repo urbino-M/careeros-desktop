@@ -1,60 +1,166 @@
 # CareerOS Desktop
 
-CareerOS 的本机桌面版本，目前发布 Apple Silicon macOS 和 Windows x64 安装包。生产包使用 Tauri 2、React、Rust、SQLite、内置 Codex App Server 和内置 Typst；安装后不会启动 localhost 服务，也不依赖 Python、Streamlit、Node.js 或 MacTeX。
+把机会搜索、简历定制、申请材料和联系进度放在一个桌面工作区里。
 
-## 安装与首次启动
+上传一份现有 CV，告诉 CareerOS 你的方向和目标，Agent 就可以搜索机会、整理来源、分析匹配程度，并为具体目标准备材料。你可以在同一个地方查看结果、修改 CV、准备联系邮件，以及管理后续回复。
 
-1. macOS：打开 `CareerOS.dmg`，把 CareerOS 拖入“应用程序”。当前使用 ad-hoc 签名；如果 macOS 阻止启动，请在 Finder 中右键 CareerOS，选择“打开”，再确认一次。
-2. Windows：运行 `CareerOS_*_x64-setup.exe`。当前尚无 Authenticode 证书，首次安装可能出现 SmartScreen 提示。
-3. CareerOS 的数据默认写入平台应用数据目录下的 `CareerOS`，数据库为 `database/careeros.sqlite3`；不会读取或迁移旧品牌目录。
-4. 在首次引导或“设置”中连接 ChatGPT/Codex，或使用兼容 Responses 的模型 URL 与 API Key；Gmail 草稿功能需要单独完成 Google OAuth。
+目前提供 **Postdoc 学术申请**和 **Internship 行业实习**两个工作区，支持 Apple Silicon macOS 与 Windows x64，以及中英文界面、明亮与黑暗主题。
 
-应用只会创建 Gmail 草稿并附加已审核 CV，不包含发送邮件的接口。创建草稿也不会自动把申请标记为“已联系”。
+[下载安装包](https://github.com/urbino-M/careeros-desktop/releases) · [开发指南](CONTRIBUTING.md) · [软件结构](docs/ARCHITECTURE.md)
 
-## 开发与验证
+## 可以做什么
 
-- 贡献代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)；安全问题请遵循
-  [SECURITY.md](SECURITY.md) 的私下报告流程。
-- `CAREEROS_DATA_DIR`：指定隔离的数据目录，供本地验证使用。
-- `CAREEROS_RUNTIME_DIR`：指定开发环境中的运行时目录。
-- `CAREEROS_CODEX_BIN` / `CAREEROS_TYPST_BIN`：指定开发环境中的 Codex / Typst 可执行文件。
-- `./node_modules/.bin/tsc --noEmit`：前端类型检查。
-- `./node_modules/.bin/vite build`：前端生产构建。
-- 在 `src-tauri` 运行 `cargo test --lib`：Rust、迁移、并发、去重、Gmail MIME 和 Typst 回归。
-- `./node_modules/.bin/tauri build`：生成 `.app` 与 DMG。
+| 功能 | 使用方式与结果 |
+| --- | --- |
+| 导入个人背景 | 上传 CV，补充职业阶段、学科、地区和目标偏好，作为后续任务的资料 |
+| 搜索 Postdoc | 按研究方向和地区寻找公开招聘、导师与实验室联系机会，整理匹配分析和来源 |
+| 搜索 Internship | 使用独立的实习资料与偏好搜索行业实习，核验岗位并记录官网投递进度 |
+| 查看搜索证据 | 展开来源网页、证据类型和核验时间；公开线索可以继续核验、补齐材料 |
+| 定制申请材料 | 按目标准备 CV、Cover Letter、联系信、申请清单、匹配分析和联系人简报，具体材料随任务与机会而定 |
+| 修订 CV | 用自然语言让 Agent 调整，或手动编辑；查看修改摘要、前后差异和历史版本 |
+| 管理申请 | 按待处理、已联系、已回复、跟进和搁置管理，区分公开招聘与套磁机会 |
+| 准备 Gmail 草稿 | 将审核后的 CV 附到草稿，在 Gmail 中检查并发送，再回到应用确认联系状态 |
+| 处理回复 | 录入回复，让 Agent 整理判断及后续回复材料，也可以手动调整进度 |
+| 跟踪 Agent 任务 | 展开当前运行、等待队列和任务记录，查看执行轨迹、实际指令与失败原因，调整后重试 |
 
-## GitHub 自动发布
+## 从这里开始
 
-`.github/workflows/release.yml` 只在推送 `v*` tag 时运行。它会先要求 tag、
-`package.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的版本完全
-一致，再分别生成 Apple Silicon ad-hoc signed DMG 和 Windows x64 NSIS 安装
-EXE。两个平台都成功后才会创建 GitHub Release，并附带 `SHA256SUMS.txt` 和
-第三方归属文件。
+### 1. 安装并打开
 
-在打 tag 前，也可以从 GitHub Actions 手动运行该 workflow 做一次只构建、不
-发布的双平台预检；手动运行生成的 DMG/EXE 只保留为 workflow artifacts。
+- **macOS（Apple Silicon）**：下载 DMG，把 CareerOS 拖入“应用程序”。
+- **Windows（x64）**：下载 `*_x64-setup.exe` 并运行安装。
 
-例如当前版本在相关修改已经提交后执行：
+当前安装包使用 macOS ad-hoc 签名，Windows 尚未配置 Authenticode 签名。首次打开可能遇到系统确认提示；macOS 可在“系统设置 → 隐私与安全性”中查看被阻止应用的打开选项。
+
+### 2. 上传 CV
+
+首次引导中选择现有简历，支持 **PDF、DOCX、Markdown 和 TXT，最大 25 MB**。可以先上传一份 PDF 开始，不必逐项填写全部经历。
+
+随后选择自己的职业阶段、学科和目标偏好。学科选项包括人文艺术、社会科学、自然科学、工程技术、医学与生命科学、跨学科等。
+
+建议使用文字可选中的 PDF；macOS 还支持本地 OCR 处理扫描内容，Windows 请使用带文字层的文件。
+
+### 3. 连接模型
+
+在首次引导或“设置”中选择一种方式：
+
+- **ChatGPT / Codex**：点击连接，在浏览器完成账号授权后返回应用。
+- **模型服务 / 中转站**：填写服务 URL 和 API Key，点击“验证并连接”。通过验证后，选择可用模型和推理强度。
+
+自定义服务当前使用 **OpenAI Responses 兼容接口**，连接时会检测接口并发现模型。是否能使用某个模型取决于服务端兼容性和账号权限；DeepSeek 或其他服务也按同一连接检测结果使用。检索任务还需要所选服务支持任务中的网页搜索能力。
+
+### 4. 发起第一次搜索
+
+进入对应工作区或 Agent 运行中心，新建搜索，写清楚方向、地区与偏好。例如：
+
+> 寻找欧洲数字人文方向的博士后机会，优先有公开招聘和明确截止日期的岗位，也考虑研究方向相符的导师联系机会。
+
+> 寻找新加坡的数据分析实习，面向硕士在读，优先三个月以上的岗位。
+
+选择模型、推理强度，以及任务提供的结果上限后运行。到 Agent 运行中心查看执行轨迹和实际任务指令；结果保存后，可在申请工作区继续处理。
+
+## Postdoc：从发现机会到联系跟进
+
+### 找到的机会在哪里？
+
+- **已发现**：来源或申请材料仍需补齐的机会。可展开简介和来源，点击“继续完善这条机会”或“继续核验这条线索”。
+- **待处理**：进入联系人申请流程、等待你审核和操作的记录。
+- **已联系 / 已回复 / 跟进 / 搁置**：按联系进度管理。可以手动标记已回复、移入跟进或搁置。
+- **全部**：查看所有机会，包括材料未齐的记录。
+
+公开招聘与套磁机会分别呈现。仪表盘中的公开招聘优先按截止时间展示，套磁机会优先按匹配程度展示；未知截止日期另行标注。
+
+一个机会可以关联多个联系人，各自保留联系进度。重复搜索会进行机会和联系人身份比对，已有材料与跟进记录继续保留。
+
+### 如何使用公开线索？
+
+Postdoc 和 Internship 共用公开网页检索与来源核验能力。Agent 可从公开网页及可访问的社交帖子发现线索，再查找学校、实验室、雇主或招聘网站的依据。
+
+只有二手线索时，Postdoc 会先保存到“已发现”，显示“来源待核验”。继续核验后再进入联系人和材料准备流程。导师研究主页可用于判断研究方向；是否有公开岗位会单独判断。
+
+### 审核材料并联系
+
+打开联系人详情，在 CV、Cover Letter、联系信、匹配分析等标签中查看材料。修改满意后审核当前 CV；配置 Gmail 的用户可以创建带附件的草稿。
+
+在 Gmail 发出邮件后，点击 **“确认已实际发送”**。官网待投递、已投递等通过卡片上的投递标记记录。收到回复后，在“回复处理”中录入并处理，也可以直接使用手动进度按钮。
+
+## CV 定制与修改
+
+### 设置所有后续 CV 的偏好
+
+进入 **“设置 → CV 定制”**：
+
+- 页数选择自动，或指定需要的页数。
+- 填写需要重点强调、弱化或简写的内容。
+- 在其他定制要求中说明语言、章节顺序、详略和表达风格。
+
+例如：
+
+> 教育经历放在前面；论文和专利放在项目经历之前；重点突出与目标方向相关的方法和成果；CV 使用英文，两页。
+
+Agent 会结合原始 CV、学科与具体目标组织内容。推荐人按原资料和定制要求处理；章节顺序和条目数量可以调整。
+
+### 修改某一份 CV
+
+进入联系人详情的 **“编辑与修订”**：
+
+1. 选择要修改的材料。
+2. 使用“让 Codex 改”填写要求，或切换到“我自己改”编辑内容。
+3. 提交修订或点击“保存为新版本”。
+4. 查看修改差异，并回到 CV 标签确认生成的 PDF。
+
+手动编辑 CV 时，编辑的是结构化 JSON，保存时需要保持格式完整。保存会进行内容和 PDF 排版校验；遇到提示时，按具体原因修订后再保存。全局定制用于后续任务，已有 CV 可通过单独修订更新。
+
+## Agent 运行中心
+
+当前运行、等待队列和任务记录均可展开或收起。任务卡显示具体需求、模型、运行时间和最近执行轨迹；展开“本次任务”可以查看发送给 Agent 的指令。
+
+失败后可以：
+
+- **按原设置重试**：使用已保存的任务资料继续处理。
+- **调整后重新运行**：查看并修改提示词、模型、推理强度，以及适用任务的结果上限。
+
+同一服务商下可恢复的任务会沿用原会话上下文；切换服务商时会使用兼容的新会话，并保留工作区资料。对单个已发现机会的“继续完善”则是聚焦该机会的新任务。
+
+## Gmail 配置（可选）
+
+1. 按应用内的 Google 官方教程启用 Gmail API，创建“桌面应用”类型的 OAuth 客户端，下载客户端 JSON。
+2. 在“设置”的 Gmail 区域导入 JSON。
+3. 点击连接，在浏览器中授权 Gmail 账号。
+4. 回到申请详情，审核 CV 后创建草稿。
+
+Gmail 是可选功能；搜索、CV 定制和申请管理可以先使用。邮件发送在 Gmail 中完成，回复可在应用中录入处理。
+
+## 数据、界面与更新
+
+- 简历副本、机会、联系进度、任务资料和材料版本保存在本机应用数据目录，数据库位于其中的 `database/careeros.sqlite3`。
+- Agent 任务会将所需资料交给你选择的模型服务处理；本地存储与云端模型调用是两部分。
+- 移动源码文件夹不等于移动应用数据。换电脑或手动迁移时，应保留完整应用数据目录，包含材料和任务文件，而不只是数据库。
+- 界面支持中文 / English 和明亮 / 黑暗切换；材料语言通过任务或 CV 定制要求设置。
+- “设置”中可以检查新版本；应用也会自动检查 GitHub Release 的更新信息。
+
+## 本地开发
+
+应用由 **Tauri 2、React / TypeScript、Rust 和 SQLite** 构成，安装包内置 Codex App Server 与 Typst。普通用户直接安装即可；开发环境需要 Node.js、Rust 和对应平台的 Tauri 构建依赖。
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+pnpm install --frozen-lockfile
+pnpm desktop:dev
 ```
 
-当前自动发布不使用 Apple Developer ID、公证或 Windows Authenticode 证书。
-macOS 包需要按未识别开发者应用的方式首次打开；Windows 可能显示 SmartScreen
-提示。流水线下载固定版本的官方 Codex/Typst 平台二进制，并在打包前验证 SHA256。
+运行时准备与平台要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。常用检查及 Mac App 构建：
 
-第三方模型数据库、账号、能力和路由接口已预留；当前版本仅启用 OpenAI/Codex，未实现的服务商不能被任务选中。
+```bash
+pnpm typecheck
+pnpm test
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+pnpm desktop:build --bundles app
+```
 
-## 第三方集成与服务账号
+开发时可用 `CAREEROS_DATA_DIR` 指定测试数据目录，`CAREEROS_RUNTIME_DIR` 指定运行时目录，或用 `CAREEROS_CODEX_BIN` / `CAREEROS_TYPST_BIN` 指定可执行文件。
 
-OpenAI Codex CLI 和 Typst CLI 是随桌面应用分发的独立第三方组件，不属于 CareerOS 自有的 MIT 源码。OpenAI、Codex、ChatGPT 和 Typst 等名称仅用于准确说明兼容性、集成方式和上游来源。
-
-CareerOS 是独立项目，与 OpenAI 或 Typst Project 不存在隶属、联合开发、认可或背书关系。用户通过 ChatGPT/Codex 登录或其他合法 provider/API 使用云服务时，仍须遵守相应服务商的条款、账号资格和 API 使用规则；软件许可证不授予任何云服务权益。
+GitHub Actions 支持手动双平台构建预检；推送与项目版本一致的 `v*` tag 后，发布流程生成 macOS 和 Windows 安装包。细节见 [发布工作流](.github/workflows/release.yml) 和 [桌面更新说明](docs/features/desktop-updates.md)。README 描述当前源码功能，已发布安装包的内容以对应版本说明为准。
 
 ## License
 
-本项目原创源码采用 [MIT License](LICENSE)。MIT License 仅覆盖 CareerOS 自有源码，不覆盖随应用分发的第三方组件。
-
-OpenAI Codex CLI 和 Typst CLI 分别依据各自的 Apache License 2.0 条款独立许可。详细版本、哈希、修改状态、上游归属以及对应 LICENSE/NOTICE 文件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+CareerOS 原创源码采用 [MIT License](LICENSE)。随包分发的 Codex CLI 与 Typst CLI 使用 Apache-2.0；组件版本、许可证与归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

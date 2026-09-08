@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, errorMessage } from "../api";
 import { t } from "../i18n";
+import { SourcesPanel } from "../components/SourcesPanel";
 import { InternshipPlanningPanel, InternshipPlanningSummary } from "../components/InternshipPlanningPanel";
 import { ModelControls, type ModelSelection } from "../components/ModelControls";
 import { JobCard } from "./AutomationPage";
@@ -56,11 +57,12 @@ export function DiscoveredOpportunityCard({ opportunity, category, onNavigate, o
   const active = latestJob && ["running", "queued"].includes(latestJob.status);
   useEffect(() => { if (latestJob) setCreatedJob(""); }, [latestJob]);
   const sourceUrl = opportunitySourceUrl(opportunity.sourceUrl);
+  const unverified = opportunity.verificationStatus === "unverified";
   const incomplete = opportunity.contacts.length === 0 || opportunity.contacts.some((contact) => contact.materialStatus === "pending");
   const pending = !opportunity.shelved && (opportunity.contacts.length === 0 || opportunity.contacts.some((contact) => !contact.shelved && contact.materialStatus === "pending"));
   const availability = opportunity.status === "closed" ? "已关闭" : category === "prospective" ? "潜在联系 · 非公开岗位" : ({ open: "公开招聘", prospective: "潜在联系 · 非公开岗位" } as Record<string, string>)[opportunity.status] ?? "招聘状态待核实";
   return <article className="target-card discovered-opportunity-card">
-    <div className="target-card-top"><span className="badge">{t(opportunity.shelved ? "已搁置" : shelvedOnly ? "部分联系人已搁置" : incomplete ? "材料待完成" : "材料已齐")}</span><span className="muted">{t(availability)}</span></div>
+    <div className="target-card-top"><span className="badge">{t(opportunity.shelved ? "已搁置" : shelvedOnly ? "部分联系人已搁置" : unverified ? "来源待核验" : incomplete ? "材料待完成" : "材料已齐")}</span><span className="muted">{t(unverified ? "公开线索 · 非已核验岗位" : availability)}</span></div>
     <h3>{opportunity.organization}</h3>
     <p className="target-role">{opportunity.title}</p>
     <dl>
@@ -68,8 +70,10 @@ export function DiscoveredOpportunityCard({ opportunity, category, onNavigate, o
       <div><dt>{t("截止")}</dt><dd>{category === "prospective" && !opportunity.deadline ? t("套磁无统一截止日期") : deadlineLabel(opportunity.deadline)}</dd></div>
     </dl>
     {opportunity.summary && <details className="opportunity-summary"><summary>{t("查看机会简介")}</summary><p>{opportunity.summary}</p></details>}
+    {!!opportunity.sources?.length && <details className="opportunity-summary"><summary>{t("来源与核验证据")}</summary><SourcesPanel sources={opportunity.sources}/></details>}
+    {unverified && <p className="muted">{t("线索已保存。补齐官方来源后才能生成联系人与申请材料。")}</p>}
     {opportunity.contacts.length === 0
-      ? <p className="muted">{t("尚无联系人 · 可继续核验联系渠道并完善材料，机会已保存。")}</p>
+      ? !unverified && <p className="muted">{t("尚无联系人 · 可继续核验联系渠道并完善材料，机会已保存。")}</p>
       : <div className="opportunity-contacts">{opportunity.contacts.filter((contact) => !shelvedOnly || contact.shelved).map((contact) => <button key={contact.id} className="card-action" onClick={() => onNavigate({ page: "application", careerSystem: "postdoc", targetId: contact.id })}>
         <span>{contact.name} · {t(contact.shelved ? "已搁置 · 查看记录" : contact.materialStatus === "ready" ? "查看材料与联系记录" : "材料待完成")}</span><ArrowRight size={17} />
       </button>)}</div>}
@@ -78,7 +82,7 @@ export function DiscoveredOpportunityCard({ opportunity, category, onNavigate, o
       void openUrl(sourceUrl).catch((error) => setSourceError(errorMessage(error)));
     }}>{t("打开来源网页")} <ArrowRight size={17} /></button> : <p className="muted">{t("来源链接待补充")}</p>}
     {sourceError && <p role="alert">{t("无法打开来源：{0}", sourceError)}</p>}
-    {pending && !shelvedOnly && !createdJob && !active && <button className="button primary wide" onClick={() => setContinuing(true)}>{t(latestJob ? "新建补齐任务" : "继续完善这条机会")} <ArrowRight size={17} /></button>}
+    {pending && !shelvedOnly && !createdJob && !active && <button className="button primary wide" onClick={() => setContinuing(true)}>{t(unverified ? "继续核验这条线索" : latestJob ? "新建补齐任务" : "继续完善这条机会")} <ArrowRight size={17} /></button>}
     <div className="opportunity-shelf-control">
       {confirmShelf ? <div role="group" aria-label={t("确认机会状态变更")}>
         <p>{t(opportunity.shelved ? "恢复这条机会及全部联系人，保留各自原来的联系阶段。" : "搁置整条机会及其全部联系人。保留材料和记录，不会删除文件。")}</p>

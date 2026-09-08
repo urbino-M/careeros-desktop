@@ -9,6 +9,7 @@ mod internship;
 mod materials;
 mod migration;
 mod models;
+mod public_search;
 mod onboarding;
 mod paths;
 mod providers;

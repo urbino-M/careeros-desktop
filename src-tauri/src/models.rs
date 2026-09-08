@@ -160,6 +160,10 @@ pub struct DiscoveredOpportunityPage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredOpportunity {
+    #[serde(default)]
+    pub verification_status: VerificationStatus,
+    #[serde(default)]
+    pub sources: Vec<SourceEvidence>,
     pub id: String,
     pub title: String,
     pub organization: String,

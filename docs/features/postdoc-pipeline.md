@@ -11,6 +11,10 @@
 
 ## Scope
 
+### Shared public-web discovery
+
+Postdoc now shares the Internship public-search policy and source classifier in `public_search.rs`, not its eligibility rules or fresh-thread retry behavior. Accessible social posts and Scholar/search results may discover leads; an inspected official institution/lab/funder/ATS source is required before contacts and materials. Secondary-only discoveries are saved with `verification_status=unverified` and uncertain availability, no contacts, and `unverifiedOpportunityIds` in the reviewable job result. The Discovery card shows source evidence and a scoped verification action. If the official URL differs, the existing identity/explicit-source-confirmation guard still applies; a matching title alone does not authorize merging. Retries deduplicate leads and preserve verified metadata and contact state. Schema 15 fields are reused; legacy source records retain their defaults.
+
 Generic-user onboarding, durable Postdoc discoveries, material completion and continuation. This is one pipeline within the existing scheduler, not a new agent framework. Gmail, provider transport and Internship-specific behavior remain separately owned.
 
 ## Architecture and source ownership

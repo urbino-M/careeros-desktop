@@ -80,6 +80,8 @@ export interface DiscoveredOpportunityPage {
 }
 
 export interface DiscoveredOpportunity {
+  verificationStatus?: VerificationStatus;
+  sources?: SourceEvidence[];
   id: string;
   title: string;
   organization: string;

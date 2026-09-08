@@ -13,6 +13,20 @@ const opportunity: DiscoveredOpportunity = {
 };
 
 describe("discovered opportunities", () => {
+  it("shows unverified public leads with evidence and a scoped verification action", () => {
+    setUiPreferences({locale:"en"});
+    const lead:DiscoveredOpportunity={...opportunity,status:"open",verificationStatus:"unverified",sources:[{
+      title:"原始证据",url:"https://example.invalid/post",checkedAt:"2026-09-09T00:00:00Z",channel:"linkedin",backend:"codex_web_search",evidenceType:"secondary",
+    }]};
+    const html=renderToStaticMarkup(<DiscoveredOpportunityCard opportunity={lead} onNavigate={()=>{}}/>);
+    expect(html).toContain("Source verification needed");
+    expect(html).toContain("Verify this lead");
+    expect(html).toContain("原始证据");
+    expect(html).not.toContain("Materials complete");
+    const request=buildOpportunityContinuationRequest(lead,"Verify the official source");
+    expect(request.payload?.opportunityId).toBe(lead.id);
+    expect(request.jobType).toBe("full_search");
+  });
   it("switches card and list copy both ways without translating opportunity facts or task input", () => {
     const userOpportunity = { ...opportunity, organization: "用户大学", title: "用户保留的职位名称", summary: "用户保存的原始证据" };
     const before = buildOpportunityContinuationRequest(userOpportunity, "保留我的中文要求");

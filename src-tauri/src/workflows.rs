@@ -263,7 +263,7 @@ fn protocol_version() -> u8 { 1 }
 fn opportunity_contract() -> Value {
     json!({
         "externalId":"optional stable source id",
-        "sourceUrl":"verified primary URL",
+        "sourceUrl":"public opportunity URL; primary verification required before creating contacts",
         "sourceTitle":"source title",
         "title":"role title",
         "organization":"institution",
@@ -278,7 +278,7 @@ fn opportunity_contract() -> Value {
         "eligibilityStatus":"eligible|uncertain|ineligible",
         "availability":"open|closed|prospective|uncertain",
         "verifiedAt":"UTC ISO-8601",
-        "sources":[{"title":"primary source","url":"https://...","checkedAt":"UTC ISO-8601","evidenceType":"primary"}],
+        "sources":[{"title":"source","url":"https://...","checkedAt":"UTC ISO-8601","evidenceType":"primary|secondary|inferred","channel":"web_ats|exa|rss|linkedin|facebook|twitter","backend":"codex_web_search"}],
         "contacts":[{
             "name":"contact or responsible person","email":"verified email or null","fitScore":86,
             "priority":1,"homepageUrl":"optional","labUrl":"optional","researchSummary":"verified",
@@ -310,6 +310,7 @@ pub fn result_contract(job_type: &str) -> Value {
             "file": "output/internship-search-results.json",
             "schemaVersion": 1,
             "rules": [
+                crate::public_search::POLICY,
                 "Use exact camelCase keys shown below; do not emit snake_case alternatives.",
                 "Return current industry internships only; exclude postdoctoral, doctoral, faculty and full-time roles.",
                 "Use eligibilityStatus=uncertain when the supplied evidence or Internship profile cannot establish candidate eligibility.",
@@ -350,7 +351,7 @@ pub fn result_contract(job_type: &str) -> Value {
         }),
         "full_run" | "full_search" | "research_pi" => {
             let mut rules = vec![
-                "Use exact camelCase keys. Stage 1: search and verify opportunities, then write output/search-results.json with contacts but OMIT materials; stop for the application to save discoveries. Stage 2 begins only when explicitly asked to prepare pending materials.".into(),
+                "Use exact camelCase keys. Stage 1: search and verify opportunities, then write output/search-results.json with primary-verified contacts (empty contacts for unverified leads) but OMIT materials; stop for the application to save discoveries. Stage 2 begins only when explicitly asked to prepare pending materials.".into(),
                 "Read profile/master_profile.json and the source CV. Derive stage, discipline and background automatically. Source CV claims are user-provided evidence, not independently verified; do not require approved flags. Unknown eligibility, dates and constraints remain unknown.".into(),
                 "When no named supervisor is found, search the institution and Google Scholar by name, affiliation and topic, then follow DOI/publisher links. Academic papers show research fit, not a vacancy. An official application portal or recruiting office may be a contact target with its real label; never invent a person or email.".into(),
                 "For an advertised opening, use current primary recruitment evidence and tailor materials to the duties. Otherwise label availability prospective or uncertain. Do not infer open from a professor profile. Return an empty opportunities array if no matches; do not fabricate results.".into(),
@@ -359,6 +360,7 @@ pub fn result_contract(job_type: &str) -> Value {
                 "CV sections are discipline-appropriate and source-backed, not a mandatory eight-section template. Respect pageCount and enabled customization, including reference display. Section and entry counts are never locked; current user instructions guide source-backed additions, removals and ordering.".into(),
             ];
             rules.extend(crate::cv_schema::generation_rules().into_iter().map(str::to_owned));
+            rules.push(crate::public_search::POLICY.into());
             rules.extend(typst::layout_generation_rules());
             json!({
                 "file": "output/search-results.json",
@@ -653,6 +655,7 @@ async fn import_search_output(
     let mut identity_reviews = 0;
     let mut identity_review_names = Vec::new();
     let mut stale_results = 0;
+    let mut unverified = Vec::new();
     for opportunity in output.opportunities {
         if let Err(error) = validate_opportunity(&opportunity) {
             rejected += 1;
@@ -675,8 +678,19 @@ async fn import_search_output(
         record_sources(&tx, "opportunity", &opportunity_id, &opportunity.sources)?;
         let current = opportunity_result_is_current(&tx, &opportunity_id, &opportunity.verified_at)?;
         let closed = saved_opportunity_closed(&tx,&opportunity_id)?;
+        let stored_verified: bool = tx.query_row("SELECT verification_status='verified' FROM opportunities WHERE id=?1",[&opportunity_id],|r|r.get(0))?;
         let shelved = db::opportunity_shelved(&tx, &opportunity_id)?;
         tx.commit()?;
+        if !opportunity.sources.iter().any(crate::public_search::is_primary) {
+            if stored_verified {
+                stale_results += 1;
+                warnings.push(format!("{}：已有官方核验，本次较弱线索未更新原记录；可从“全部”查看",opportunity.title));
+                continue;
+            }
+            unverified.push(opportunity_id);
+            warnings.push(format!("{}：公开线索已保存，须补充官方来源；未创建联系人或材料",opportunity.title));
+            continue;
+        }
         if shelved {
             warnings.push(format!("{}：机会已搁置，仅保留来源记录，不生成联系人或材料", opportunity.title));
             continue;
@@ -811,9 +825,11 @@ async fn import_search_output(
             }
         }
     }
+    unverified.sort();
+    unverified.dedup();
     let outcome = if !pending.is_empty() { "materials_pending" }
         else if imported.is_empty() && identity_reviews > 0 { "identity_needs_review" }
-        else if imported.is_empty() && rejected > 0 { "sources_need_review" }
+        else if imported.is_empty() && (rejected > 0 || !unverified.is_empty()) { "sources_need_review" }
         else if imported.is_empty() && stale_results > 0 { "stale_results_ignored" }
         else if imported.is_empty() { "no_matches" } else { "ready" };
     let summary = match outcome {
@@ -825,8 +841,9 @@ async fn import_search_output(
         _ => "机会与材料已保存，等待审核。",
     };
     let summary = if identity_reviews>0 { format!("{summary} 另有 {identity_reviews} 条需核对身份：{}。请核对机会来源与联系人的邮箱／个人主页。",identity_review_names.into_iter().take(3).collect::<Vec<_>>().join("；")) } else {summary.into()};
+    let summary = if !unverified.is_empty() { format!("{summary} {} 条公开线索已保存到“已发现”，可继续核验官方来源。",unverified.len()) } else { summary };
     Ok(json!({
-        "outcome":outcome,"imported":imported,"pendingMaterials":pending,"warnings":warnings,
+        "outcome":outcome,"imported":imported,"pendingMaterials":pending,"warnings":warnings,"unverifiedOpportunityIds":unverified,
         "identityReviewCount":identity_reviews,
         "thresholdStrictlyGreaterThan":threshold,
         "summary":summary
@@ -1164,6 +1181,9 @@ fn upsert_discovered_contact(
     confirmed_source: Option<&str>,
 ) -> Result<ImportedTarget> {
     validate_opportunity(opportunity)?;
+    if !opportunity.sources.iter().any(crate::public_search::is_primary) {
+        bail!("来源待核验：未获得官方主来源，不能创建联系人或材料")
+    }
     validate_contact_identity(contact)?;
     for source in &opportunity.sources { validate_source(source)?; }
     let conn = db::connect(&paths.database)?;
@@ -1402,13 +1422,18 @@ fn opportunity_result_is_current(conn: &Connection, id: &str, verified_at: &str)
 }
 
 fn upsert_opportunity(conn:&Connection,value:&FoundOpportunity,scoped_id:Option<&str>,confirmed_source:Option<&str>)->Result<String>{
-    let availability = opportunity_availability(value);
+    let (verification,channel,backend) = crate::public_search::verification(&value.sources);
+    let availability = if verification == VerificationStatus::Verified { opportunity_availability(value) } else { "uncertain" };
     let identity=opportunity_identity(value);
     let existing:Option<String>=if let Some(id) = scoped_id {
         ensure_continuation_scope(conn, id, std::slice::from_ref(value), confirmed_source)?;
         Some(id.to_owned())
     } else { matching_opportunity(conn, value)? };
     if let Some(id)=existing{
+        let stored: String = conn.query_row("SELECT verification_status FROM opportunities WHERE id=?1",[&id],|r|r.get(0))?;
+        // A new social lead is not consent to overwrite verified metadata or
+        // advance its freshness timestamp. Its evidence is recorded separately.
+        if verification == VerificationStatus::Unverified && stored == "verified" { return Ok(id); }
         let (old_deadline, old_source, old_title, old_organization, old_kind): (Option<String>, Option<String>, String, String, Option<String>) = conn.query_row(
             "SELECT deadline,source_url,title,organization,opportunity_type FROM opportunities WHERE id=?1",
             [&id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
@@ -1428,9 +1453,10 @@ fn upsert_opportunity(conn:&Connection,value:&FoundOpportunity,scoped_id:Option<
              opportunity_type=COALESCE(?10,opportunity_type),title=COALESCE(?11,title),
              organization=COALESCE(?12,organization),department=COALESCE(?13,department),
              country=COALESCE(?14,country),region=COALESCE(?15,region),
+             verification_status=?16,source_channel=?17,source_backend=?18,
              updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?1
              AND (julianday(last_verified_at) IS NULL OR julianday(last_verified_at)<=julianday(?2))",
-            params![id,value.verified_at,value.contacts.iter().map(|item|item.fit_score).fold(0.0,f64::max),opportunity_availability(&verified),
+            params![id,value.verified_at,value.contacts.iter().map(|item|item.fit_score).fold(0.0,f64::max),if verification == VerificationStatus::Verified { opportunity_availability(&verified) } else { "uncertain" },
                 deadline,value.source_url,value.source_title.as_deref().filter(|v| meaningful_metadata(v)),
                 Some(value.summary.as_str()).filter(|v| meaningful_metadata(v)),
                 identity.starts_with("external-v2:").then_some(identity.as_str()),verified.opportunity_type,
@@ -1438,7 +1464,7 @@ fn upsert_opportunity(conn:&Connection,value:&FoundOpportunity,scoped_id:Option<
                 Some(value.organization.as_str()).filter(|v| meaningful_metadata(v)),
                 value.department.as_deref().filter(|v| meaningful_metadata(v)),
                 value.country.as_deref().filter(|v| meaningful_metadata(v)),
-                value.region.as_deref().filter(|v| meaningful_metadata(v))],
+                value.region.as_deref().filter(|v| meaningful_metadata(v)),verification.as_str(),channel.as_str(),backend],
         )?;
         if changed > 0 {
             // Refresh copied display fields only while they still inherit the old
@@ -1458,12 +1484,14 @@ fn upsert_opportunity(conn:&Connection,value:&FoundOpportunity,scoped_id:Option<
     conn.execute(
         "INSERT INTO opportunities(
             id,identity_key,title,organization,department,country,region,opportunity_type,status,
-            deadline,source_url,source_title,discovered_at,last_verified_at,summary,keywords_json,fit_score,priority,notes
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?18,?9,?10,?11,?12,?12,?13,?14,?15,?16,?17)",
+            deadline,source_url,source_title,discovered_at,last_verified_at,summary,keywords_json,fit_score,priority,notes,
+            verification_status,source_channel,source_backend
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?18,?9,?10,?11,?12,?12,?13,?14,?15,?16,?17,?19,?20,?21)",
         params![id,identity,value.title,value.organization,value.department,value.country,value.region,
             value.opportunity_type.as_deref().unwrap_or("formal_position"),value.deadline,value.source_url,
             value.source_title,value.verified_at,value.summary,serde_json::to_string(&value.keywords)?,
-            value.contacts.iter().map(|item|item.fit_score).fold(0.0,f64::max),"review",value.external_id,availability],
+            value.contacts.iter().map(|item|item.fit_score).fold(0.0,f64::max),"review",value.external_id,availability,
+            verification.as_str(),channel.as_str(),backend],
     )?;
     Ok(id)
 }
@@ -1735,7 +1763,7 @@ fn validate_opportunity(value:&FoundOpportunity)->Result<()> {
     if let Some(kind)=value.opportunity_type.as_deref() {
         if !matches!(kind,"formal_position"|"fellowship"|"program"|"prospective_contact"|"other"|"formal_postdoc"|"prospective_pi") { bail!("机会类型无效：{kind}") }
     }
-    if !value.sources.iter().any(|source| source.evidence_type == "primary") { bail!("缺少官方主来源证据；学术搜索可发现线索，但不能单独证明招聘状态") }
+    if value.sources.is_empty() { bail!("缺少可追溯的公开来源证据") }
     if value.availability.as_deref().is_some_and(|status| !matches!(status,"open"|"closed"|"prospective"|"uncertain")) { bail!("招聘状态无效") }
     for source in &value.sources { validate_source(source)?; }
     Ok(())
@@ -2012,27 +2040,7 @@ fn validate_source(value:&SourceEvidence)->Result<()> {
 }
 
 fn internship_verification(value: &FoundInternshipOpportunity) -> (VerificationStatus, SearchChannel, String) {
-    value
-        .sources
-        .iter()
-        .find(|source| {
-            source.channel == SearchChannel::WebAts && source.evidence_type == "primary"
-        })
-        .map(|source| {
-            (
-                VerificationStatus::Verified,
-                source.channel.clone(),
-                source.backend.clone(),
-            )
-        })
-        .unwrap_or_else(|| {
-            let source = &value.sources[0];
-            (
-                VerificationStatus::Unverified,
-                source.channel.clone(),
-                source.backend.clone(),
-            )
-        })
+    crate::public_search::verification(&value.sources)
 }
 
 fn opportunity_identity(value:&FoundOpportunity)->String {
@@ -3244,8 +3252,58 @@ The exact team size, future funding, preferred start date, and use of one specia
         opportunity.deadline=Some("2000-01-01".into());
         assert_eq!(opportunity_availability(&opportunity),"closed");
         opportunity.sources[0].evidence_type="secondary".into();
-        assert!(validate_opportunity(&opportunity).is_err());
+        assert!(validate_opportunity(&opportunity).is_ok()); // Save as a lead, never as a verified opening.
+        assert_eq!(crate::public_search::verification(&opportunity.sources).0,VerificationStatus::Unverified);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn postdoc_public_leads_are_durable_and_only_primary_evidence_unlocks_contacts() -> Result<()> {
+        let temp=TempDir::new()?;
+        let (paths,official)=pipeline_fixture(&temp)?;
+        let mut lead=official.clone();
+        lead["opportunities"][0]["availability"]=json!("open");
+        lead["opportunities"][0]["sources"]=json!([{"title":"Public recruitment post","url":"https://www.linkedin.com/posts/recruitment",
+            "checkedAt":"2026-09-05T00:00:00Z","evidenceType":"primary","channel":"web_ats","backend":"codex_web_search"}]);
+        for _ in 0..2 {
+            let result=import_search_output(&paths,"pipeline",&json!({}),serde_json::from_value(lead.clone())?).await?;
+            assert_eq!(result["outcome"],"sources_need_review");
+            assert_eq!(result["pendingMaterials"],json!([]));
+            assert_eq!(result["unverifiedOpportunityIds"].as_array().unwrap().len(),1);
+        }
+        let saved=db::list_opportunities_by_view(&paths.database,None,0,10,true,Some("uncertain"),false)?;
+        assert_eq!(saved.items.len(),1);
+        let id=saved.items[0].id.clone();
+        assert_eq!(saved.items[0].status,"uncertain");
+        assert_eq!(saved.items[0].verification_status,VerificationStatus::Unverified);
+        assert_eq!(saved.items[0].sources.len(),1);
+        assert!(db::list_targets(&paths.database,"postdoc",None,None,None,0,20)?.is_empty());
+        let mut verified=official.clone();
+        verified["opportunities"][0]["sources"].as_array_mut().unwrap().push(lead["opportunities"][0]["sources"][0].clone());
+        let result=import_search_output(&paths,"pipeline",&json!({"opportunityId":id}),serde_json::from_value(verified)?).await?;
+        assert_eq!(result["outcome"],"materials_pending");
+        let targets=db::list_targets(&paths.database,"postdoc",None,None,None,0,20)?;
+        assert_eq!(targets.len(),1);
+        assert_eq!(targets[0].opportunity_id.as_deref(),Some(id.as_str()));
+        assert_eq!(targets[0].verification_status,VerificationStatus::Verified);
+        db::update_target_status(&paths.database,&targets[0].id,"follow_up")?;
+        lead["opportunities"][0]["verifiedAt"]=json!("2026-09-09T00:00:00Z");
+        lead["opportunities"][0]["summary"]=json!("Do not replace verified metadata");
+        import_search_output(&paths,"pipeline",&json!({}),serde_json::from_value(lead)?).await?;
+        let conn=db::connect(&paths.database)?;
+        let state:(String,String)=conn.query_row("SELECT verification_status,summary FROM opportunities WHERE id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        assert_eq!(state,("verified".into(),"Institutional research group".into()));
+        assert_eq!(db::list_targets(&paths.database,"postdoc",None,None,None,0,20)?[0].status,"follow_up");
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM opportunities",[],|r|r.get::<_,i64>(0))?,1);
+        Ok(())
+    }
+
+    #[test]
+    fn both_search_contracts_share_public_discovery_policy() {
+        for kind in ["full_search","research_pi","full_run","internship_search"] {
+            let contract=result_contract(kind);
+            assert!(contract["rules"].as_array().unwrap().iter().any(|rule|rule.as_str()==Some(crate::public_search::POLICY)));
+        }
     }
 
 }

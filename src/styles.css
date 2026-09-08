@@ -313,6 +313,17 @@ body::before {
 .target-card::before { content: ""; position: absolute; left: -1px; top: 28px; bottom: 28px; width: 2px; background: transparent; }
 .target-card:hover::before { background: var(--accent); }
 .target-card-top { display: flex; align-items: center; justify-content: space-between; }
+.discovered-opportunity-card .target-card-top { gap: 8px 16px; flex-wrap: wrap; font-size: 12px; line-height: 1.5; }
+.source-evidence-panel { min-width: 0; margin: 16px 0; }
+.source-evidence-panel .content-title { align-items: flex-start; }
+.source-evidence-panel .content-title h3 { margin: 0; font-size: 16px; }
+.source-evidence-panel .content-title p { white-space: normal; }
+.source-evidence-list { display: grid; gap: 10px; }
+.source-evidence-list article { min-width: 0; padding: 12px; background: var(--panel-soft); border: 1px solid var(--line); }
+.source-evidence-list article strong, .source-evidence-list article span, .source-evidence-list article small { display: block; overflow-wrap: anywhere; }
+.source-evidence-list article span, .source-evidence-list article small { margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.source-evidence-list a { display: block; margin-top: 8px; color: var(--blue); overflow-wrap: anywhere; font-size: 12px; }
+.source-evidence-list a svg { margin-left: 6px; }
 .target-card-badges { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .score strong { font: 600 25px var(--serif); }
 .score span { color: var(--muted-2); font-size: 11px; }
