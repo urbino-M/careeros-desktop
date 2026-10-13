@@ -34,6 +34,7 @@ export function SettingsPage({ onRestartOnboarding }: { onRestartOnboarding: () 
   const [defaults, setDefaults] = useState<TaskModelDefault[]>();
   const [cvCustomization, setCvCustomization] = useState<CvCustomizationSettings>();
   const [error, setError] = useState("");
+  const [refreshingModels, setRefreshingModels] = useState(false);
   const [notice, setNotice] = useUiNotice();
   const load = () => Promise.all([api.providers(), api.taskDefaults(), api.cvCustomization()])
     .then(([p, d, cv]) => { setProviders(p); setDefaults(d); setCvCustomization(cv); })
@@ -63,6 +64,12 @@ export function SettingsPage({ onRestartOnboarding }: { onRestartOnboarding: () 
       </SettingsSection>
 
       <SettingsSection index="02" title={t("任务默认模型")} icon={PlugZap} badge={t("可逐次覆盖")}>
+        <button className="button ghost" disabled={refreshingModels} onClick={async () => {
+          setRefreshingModels(true);
+          try { await api.codexModels(); await load(); setNotice(() => t("模型列表已更新；原任务默认设置保持不变。")); }
+          catch (value) { setNotice(errorMessage(value)); }
+          finally { setRefreshingModels(false); }
+        }}><RefreshCw size={16} /> {t(refreshingModels ? "正在刷新模型…" : "刷新可用模型")}</button>
         <div className="defaults-table">
           {defaults.map((value) => (
             <DefaultRow key={value.taskType} value={value} providers={providers} onSaved={(message) => { setNotice(message); load(); }} />

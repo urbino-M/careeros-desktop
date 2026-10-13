@@ -923,6 +923,30 @@ pub fn providers(path: &Path) -> Result<Vec<ProviderInfo>> {
         .collect()
 }
 
+// Add the runtime's current catalog without rewriting user defaults/history.
+pub fn sync_codex_models(path: &Path, catalog: &serde_json::Value) -> Result<()> {
+    let data = catalog.get("data").and_then(|v| v.as_array()).context("Codex 模型列表格式不正确")?;
+    let mut conn = connect(path)?;
+    let tx = conn.transaction()?;
+    for item in data {
+        if item.get("hidden").and_then(|v|v.as_bool()) == Some(true) { continue; }
+        let Some(slug) = item.get("model").and_then(|v|v.as_str()).filter(|s|!s.is_empty()) else { continue; };
+        let levels: Vec<&str> = item.get("supportedReasoningEfforts").and_then(|v|v.as_array()).into_iter().flatten()
+            .filter_map(|v|v.get("reasoningEffort").and_then(|v|v.as_str()))
+            .filter(|s| matches!(*s,"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra")).collect();
+        if levels.is_empty() { continue; }
+        let name = item.get("displayName").and_then(|v|v.as_str()).unwrap_or(slug);
+        let vision = item.get("inputModalities").and_then(|v|v.as_array()).is_some_and(|v|v.iter().any(|i|i.as_str()==Some("image")));
+        tx.execute("INSERT INTO provider_models(id,provider_id,model_slug,display_name,supports_reasoning,supports_tools,supports_vision,metadata_json)
+            VALUES(?1,'openai',?2,?3,1,1,?4,?5)
+            ON CONFLICT(provider_id,model_slug) DO UPDATE SET display_name=excluded.display_name,
+            supports_vision=excluded.supports_vision,metadata_json=excluded.metadata_json,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+            params![format!("openai:{slug}"),slug,name,vision,serde_json::json!({"reasoningLevels":levels}).to_string()])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn task_defaults(path: &Path) -> Result<Vec<TaskModelDefault>> {
     let conn = connect(path)?;
     let mut statement = conn.prepare(

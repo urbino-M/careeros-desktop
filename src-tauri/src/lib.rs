@@ -352,7 +352,9 @@ async fn get_codex_account(state: tauri::State<'_, AppState>) -> Result<Value, S
 
 #[tauri::command]
 async fn get_codex_models(state: tauri::State<'_, AppState>) -> Result<Value, String> {
-    state.codex.model_list().await.map_err(display_error)
+    let catalog = state.codex.model_list().await.map_err(display_error)?;
+    db::sync_codex_models(&state.paths.database, &catalog).map_err(display_error)?;
+    Ok(catalog)
 }
 
 #[tauri::command]

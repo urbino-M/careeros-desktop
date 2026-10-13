@@ -10,7 +10,7 @@ on:
       version:
         description: Version to build without publishing a Release
         required: true
-        default: "0.1.0"
+        default: "0.1.6"
 
 permissions:
   contents: read
@@ -22,10 +22,10 @@ concurrency:
 env:
   NODE_VERSION: "22"
   PNPM_VERSION: "11.19.0"
-  CODEX_VERSION: "0.144.3"
-  CODEX_MACOS_ARCHIVE_SHA256: "249aaf12644add3876e740998cba0eac8d7d175e903add8cbc8d8eaa1f02e2b5"
-  CODEX_MACOS_BINARY_SHA256: "718724d7221cf1298071ca92411cb74caa8422809154150cedca7b569a4518e3"
-  CODEX_WINDOWS_BINARY_SHA256: "e5dcc9f9b08102c58596af85345f689a69fd53a87d8d408bdc0fcdaf99fcf6e3"
+  CODEX_VERSION: "0.162.1"
+  CODEX_MACOS_ARCHIVE_SHA256: "b293a0fcdd871900a44c0a4f40a1aa401b31e02854f790ebdb8bd5d1177fd1fe"
+  CODEX_MACOS_BINARY_SHA256: "74c6a6d263f40d65f99c27a815275f5b4ed0bcc2baecc396b4cf3255498bdfc0"
+  CODEX_WINDOWS_BINARY_SHA256: "dd13bdb162a184fa04039488b234a8258ef9b76f84e926c505d5742b19249a6a"
   TYPST_VERSION: "0.15.1"
   TYPST_MACOS_ARCHIVE_SHA256: "48f62ed034aa3a7978309579ac6ca00045e2ef0da73114e8af27cfd8e74dc05a"
   TYPST_MACOS_BINARY_SHA256: "7c4a136b377f3689400afe37b4f0fe3528d50faaa55cbb1106ac8a128f86ba1a"
@@ -152,6 +152,14 @@ jobs:
           hdiutil verify "src-tauri/target/release/bundle/dmg/CareerOS_${{ needs.metadata.outputs.version }}_aarch64.dmg"
           test -f src-tauri/target/release/bundle/macos/CareerOS.app.tar.gz
           test -f src-tauri/target/release/bundle/macos/CareerOS.app.tar.gz.sig
+
+      - name: Verify shipped macOS archive launch
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_check="$(mktemp -d "$RUNNER_TEMP/careeros-shipped.XXXXXX")"
+          tar -xzf src-tauri/target/release/bundle/macos/CareerOS.app.tar.gz -C "$archive_check"
+          node script/verify_macos_launch.mjs "$archive_check/CareerOS.app"
 
       - uses: actions/upload-artifact@v4
         with:

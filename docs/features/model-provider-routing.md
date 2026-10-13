@@ -38,7 +38,7 @@ Settings calls the typed Tauri boundary, `providers.rs` validates the remote Res
 - Rust: `ProviderConnectionRequest`, `ProviderDiscovery`, `ProviderInfo`, `ProviderRuntimeConfig`, `CodexTaskRequest`.
 - TypeScript: `ProviderConnectionRequest`, `ProviderInfo`, `ProviderModelInfo`.
 - External API: Bearer-authenticated `GET <base>/models` and `POST <base>/responses`.
-- Codex config: custom `model_providers.<id>` with `base_url`, `env_key`, and `wire_api = "responses"`; `model_catalog_json` supplies discovered model metadata. Bundled Codex 0.144.3 receives these through global `-c` overrides because `--profile` is rejected for `app-server`.
+- Codex config: custom `model_providers.<id>` with `base_url`, `env_key`, and `wire_api = "responses"`; `model_catalog_json` supplies discovered model metadata. Bundled Codex 0.162.1 receives these through global `-c` overrides because `--profile` is rejected for `app-server`.
 
 ## Safety Rules
 

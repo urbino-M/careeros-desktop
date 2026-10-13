@@ -83,6 +83,10 @@ The Agent selects source-backed content for the target, discipline and language.
 
 Manual and Agent revisions go through `materials.rs`; revisions check the trusted base SHA-256 before replacing current material. Direct email editing shares the same draft and base-hash flow as the revision editor. Render into a fresh version directory and publish artifact pointers transactionally only after preflight. Searches preserve existing packages; explicit revisions own replacement. Invalid/missing revision outputs and CV layout failures share a bounded original-thread repair path. Changing retry settings updates the instruction, never silently rebases the source or discards conflict checks.
 
+### Model catalog
+
+Migration 16 adds GPT-6.1 Sol, GPT-6 Astra, GPT-6 Sol and GPT-6 Luna without changing saved task defaults. The settings refresh action queries the bundled Codex `model/list` and updates names/capabilities/reasoning levels through `db::sync_codex_models`; it does not disable old models or rewrite historical jobs. ChatGPT/Codex reasoning options come from the runtime, while Responses relay options use API-compatible levels (without Codex-only Ultra). Model access still depends on the account/service.
+
 ### Interface language and theme
 
 `uiPreferences.ts` owns device-local Chinese/English and light/dark preferences (`careeros-locale`, `careeros-theme`). `InterfacePreferences` exposes the same controls in the shell, settings and onboarding. Switching updates React subscribers without remounting forms; it does not change material language, source content or Agent requests. Explicit UI text uses `src/i18n/` catalogues; research facts, mail/CV bodies and unknown diagnostic text retain their original language. `themes.css` layers the light palette and adaptive icon surfaces over the existing dark styles. `public/theme-init.js` applies the stored palette before rendering without relaxing CSP.

@@ -15,7 +15,7 @@ const NATIVE_MIGRATION: &str = include_str!("../migrations/0008_native_desktop.s
 const REPLY_ROUTING_MIGRATION: &str = include_str!("../migrations/0009_reply_routing_and_submission_status.sql");
 const RESPONSES_PROVIDERS_MIGRATION: &str = include_str!("../migrations/0010_responses_model_providers.sql");
 const SCHEDULER_LEASES_MIGRATION: &str = include_str!("../migrations/0011_scheduler_leases.sql");
-const LATEST_NATIVE_SCHEMA_VERSION: i64 = 15;
+const LATEST_NATIVE_SCHEMA_VERSION: i64 = 16;
 
 pub fn initialize(paths: &AppPaths) -> Result<MigrationReport> {
     initialize_with_legacy_root(paths, None)
@@ -194,6 +194,18 @@ fn apply_native_schema(conn: &mut Connection) -> Result<()> {
     }
     tx.commit()?;
     apply_integration_schema(conn)?;
+    apply_current_models(conn)?;
+    Ok(())
+}
+
+fn apply_current_models(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let applied: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM native_schema_migrations WHERE version=16)", [], |r| r.get(0))?;
+    if !applied {
+        tx.execute_batch(include_str!("../migrations/0016_current_models.sql"))?;
+        tx.execute("INSERT INTO native_schema_migrations(version,name) VALUES(16,'current-model-catalog')", [])?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1059,7 +1071,7 @@ mod tests {
                 assert_eq!(conn.query_row("SELECT verification_status FROM opportunities WHERE id='opp'",[],|r|r.get::<_,String>(0))?,"unverified");
                 assert_eq!(conn.query_row("SELECT source_channel FROM native_source_evidence WHERE id='source'",[],|r|r.get::<_,String>(0))?,"linkedin");
             }
-            assert_eq!(conn.query_row("SELECT MAX(version) FROM native_schema_migrations",[],|r|r.get::<_,i64>(0))?,15);
+            assert_eq!(conn.query_row("SELECT MAX(version) FROM native_schema_migrations",[],|r|r.get::<_,i64>(0))?,LATEST_NATIVE_SCHEMA_VERSION);
             assert_eq!(conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get::<_,i64>(0))?,0);
             let before:i64 = conn.query_row("SELECT status_version FROM contact_targets_v2 WHERE id='contact'",[],|r|r.get(0))?;
             conn.execute("UPDATE contact_targets_v2 SET status='follow_up' WHERE id='contact'", [])?;
@@ -1068,6 +1080,35 @@ mod tests {
             assert!(initialize(&paths)?.backup_path.is_none(),"second upgrade must be a no-op");
             assert_eq!(fs::read(paths.generated.join("original.pdf"))?,b"unchanged artifact");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn current_models_preserve_defaults_and_sync_runtime_capabilities() -> Result<()> {
+        let temp = TempDir::new()?;
+        let root = temp.path().to_path_buf();
+        let paths = AppPaths { database:root.join("database/test.sqlite3"),generated:root.join("generated"),profile:root.join("profile"),
+            workspaces:root.join("workspaces"),codex_home:root.join("codex"),backups:root.join("backups"),cache:root.join("cache"),
+            logs:root.join("logs"),runtime:root.join("runtime"),data_root:root };
+        initialize(&paths)?;
+        let before = crate::db::task_defaults(&paths.database)?;
+        let conn = Connection::open(&paths.database)?;
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM provider_models WHERE model_slug LIKE 'gpt-6%'",[],|r|r.get::<_,i64>(0))?,4);
+        conn.execute("UPDATE provider_models SET enabled=0 WHERE model_slug='gpt-6.1-sol'",[])?;
+        drop(conn);
+        crate::db::sync_codex_models(&paths.database,&serde_json::json!({"data":[{
+            "model":"gpt-6.1-sol","displayName":"GPT-6.1 Sol","inputModalities":["text","image"],
+            "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"max"},{"reasoningEffort":"ultra"}]
+        },{"model":"hidden-model","hidden":true}]}))?;
+        initialize(&paths)?;
+        assert_eq!(serde_json::to_value(before)?,serde_json::to_value(crate::db::task_defaults(&paths.database)?)?);
+        let providers = crate::db::providers(&paths.database)?;
+        let sol=providers.iter().find(|p|p.id=="openai").unwrap().models.iter().find(|m|m.slug=="gpt-6.1-sol").unwrap();
+        assert!(!sol.enabled);
+        assert!(sol.supports_vision);
+        assert_eq!(sol.reasoning_levels,vec!["low","max","ultra"]);
+        let luna=providers.iter().find(|p|p.id=="openai").unwrap().models.iter().find(|m|m.slug=="gpt-6-luna").unwrap();
+        assert!(!luna.reasoning_levels.iter().any(|r|r=="ultra"));
         Ok(())
     }
 

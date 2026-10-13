@@ -1,4 +1,8 @@
 export const settingsMessages: Record<string, string> = {
+  "刷新可用模型": "Refresh available models",
+  "正在刷新模型…": "Refreshing models…",
+  "模型列表已更新；原任务默认设置保持不变。": "Models updated; saved task defaults are unchanged.",
+
   "等待 Google 授权": "Waiting for Google authorization",
   "账号已核验": "Account verified",
   "Responses 已验证": "Responses verified",

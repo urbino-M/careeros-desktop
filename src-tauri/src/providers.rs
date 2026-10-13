@@ -136,7 +136,6 @@ pub fn prepare_codex_provider(
         "model_catalog_json".into(),
         toml::Value::String(catalog_path.display().to_string()),
     );
-    root.insert("preferred_auth_method".into(), toml::Value::String("apikey".into()));
     root.insert("forced_login_method".into(), toml::Value::String("api".into()));
     let mut provider = toml::Table::new();
     provider.insert("name".into(), toml::Value::String(config.display_name.clone()));
@@ -156,7 +155,6 @@ pub fn prepare_codex_provider(
             format!("model={}", quote(&default_model.slug)),
             format!("model_provider={}", quote(&config.id)),
             format!("model_catalog_json={}", quote(&catalog_path.display().to_string())),
-            format!("preferred_auth_method={}", quote("apikey")),
             format!("forced_login_method={}", quote("api")),
             format!("model_providers.{}.name={}", config.id, quote(&config.display_name)),
             format!("model_providers.{}.base_url={}", config.id, quote(&config.base_url)),
@@ -300,7 +298,10 @@ fn model_catalog(config: &ProviderRuntimeConfig) -> Value {
     };
     json!({
         "models": config.models.iter().enumerate()
-            .map(|(index, model)| model_catalog_entry(model, index, context_window))
+            .map(|(index, model)| {
+                let window = if matches!(model.slug.as_str(), "gpt-6.1-sol" | "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna") { 1_050_000 } else { context_window };
+                model_catalog_entry(model, index, window)
+            })
             .collect::<Vec<_>>()
     })
 }
@@ -414,7 +415,7 @@ impl ProviderFlavor {
     fn select_probe_model(self, models: &[String]) -> String {
         let preferred = match self {
             Self::DeepSeek => ["deepseek-v4-flash", "deepseek-v4-pro"].as_slice(),
-            Self::GenericResponses => ["gpt-5.6-sol", "gpt-5", "gpt-4.1"].as_slice(),
+            Self::GenericResponses => ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5", "gpt-4.1"].as_slice(),
         };
         preferred.iter()
             .find(|preferred| models.iter().any(|model| model == **preferred))
@@ -424,9 +425,11 @@ impl ProviderFlavor {
     }
 
     fn model(self, id: &str) -> AdapterModel {
-        let vision = id.to_ascii_lowercase().contains("vision");
+        let vision = id.to_ascii_lowercase().contains("vision") || matches!(id, "gpt-6.1-sol" | "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna");
         let reasoning_levels = match self {
             Self::DeepSeek => vec!["low".into(), "high".into(), "max".into()],
+            Self::GenericResponses if matches!(id, "gpt-6.1-sol" | "gpt-6-astra") => ["low", "medium", "high", "xhigh", "max"].into_iter().map(str::to_owned).collect(),
+            Self::GenericResponses if matches!(id, "gpt-6-sol" | "gpt-6-luna") => ["none", "low", "medium", "high", "xhigh", "max"].into_iter().map(str::to_owned).collect(),
             Self::GenericResponses => vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()],
         };
         AdapterModel {
@@ -539,4 +542,16 @@ mod tests {
         assert!(discovery.validation_message.contains("Responses 已验证"));
         Ok(())
     }
+    #[test]
+    fn current_responses_models_have_api_reasoning_levels() {
+        let flavor=ProviderFlavor::GenericResponses;
+        assert_eq!(flavor.select_probe_model(&["gpt-6-astra".into(),"gpt-6.1-sol".into()]),"gpt-6.1-sol");
+        let sol=flavor.model("gpt-6.1-sol");
+        assert!(sol.capabilities.vision);
+        assert!(sol.reasoning_levels.contains(&"max".into()));
+        assert!(!sol.reasoning_levels.contains(&"ultra".into()));
+        assert!(!sol.reasoning_levels.contains(&"none".into()));
+        assert!(flavor.model("gpt-6-luna").reasoning_levels.contains(&"none".into()));
+    }
+
 }

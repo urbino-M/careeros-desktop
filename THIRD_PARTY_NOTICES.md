@@ -24,18 +24,18 @@ documented data directory and common system installation paths.
 
 ```text
 Component: OpenAI Codex CLI
-Version: 0.144.3
-Upstream tag: rust-v0.144.3
+Version: 0.162.1
+Upstream tag: rust-v0.162.1
 Platform: aarch64-apple-darwin (Apple Silicon)
-SHA256: 718724d7221cf1298071ca92411cb74caa8422809154150cedca7b569a4518e3
+SHA256: 74c6a6d263f40d65f99c27a815275f5b4ed0bcc2baecc396b4cf3255498bdfc0
 License: Apache-2.0
 Modified: No
 ```
 
 The `Modified: No` statement was verified by downloading the official
-`codex-aarch64-apple-darwin.tar.gz` asset for `rust-v0.144.3`, verifying the
+`codex-aarch64-apple-darwin.tar.gz` asset for `rust-v0.162.1`, verifying the
 archive SHA256
-`249aaf12644add3876e740998cba0eac8d7d175e903add8cbc8d8eaa1f02e2b5`,
+`b293a0fcdd871900a44c0a4f40a1aa401b31e02854f790ebdb8bd5d1177fd1fe`,
 and comparing the extracted executable byte-for-byte with the release input.
 The macOS packaging step then replaces code-signature metadata with an ad-hoc
 signature so the complete application bundle can pass strict local validation;
@@ -45,16 +45,16 @@ it does not modify the executable code.
 
 ```text
 Component: OpenAI Codex CLI
-Version: 0.144.3
-Upstream tag: rust-v0.144.3
+Version: 0.162.1
+Upstream tag: rust-v0.162.1
 Platform: x86_64-pc-windows-msvc
-SHA256: e5dcc9f9b08102c58596af85345f689a69fd53a87d8d408bdc0fcdaf99fcf6e3
+SHA256: dd13bdb162a184fa04039488b234a8258ef9b76f84e926c505d5742b19249a6a
 License: Apache-2.0
 Modified: No
 ```
 
 The Windows binary is the official
-`codex-x86_64-pc-windows-msvc.exe` asset for `rust-v0.144.3`. Its SHA256 is
+`codex-x86_64-pc-windows-msvc.exe` asset for `rust-v0.162.1`. Its SHA256 is
 checked before every release build.
 
 Copyright: Copyright 2025 OpenAI. The corresponding upstream NOTICE also

@@ -125,7 +125,12 @@ export const api = {
 };
 
 export function errorMessage(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  return "发生未知错误";
+  const raw = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  if (/token exchange failed|auth\.openai\.com\/oauth\/token/i.test(raw)) {
+    return `${raw}\n\nChatGPT 登录的令牌交换未完成。请检查当前网络、代理和证书是否允许访问 auth.openai.com，然后重新授权。`;
+  }
+  if (/无法连接模型中转站/i.test(raw)) {
+    return `${raw}\n\n请检查服务 URL、网络连接和代理配置。具体原因需要结合连接错误判断。`;
+  }
+  return raw || "发生未知错误";
 }
